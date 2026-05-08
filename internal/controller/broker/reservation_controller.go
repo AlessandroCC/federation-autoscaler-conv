@@ -99,9 +99,13 @@ func (r *ReservationReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		return r.handleKubeconfigReady(ctx, log, &resv)
 	case brokerv1alpha1.ReservationPhaseUnpeering:
 		return r.handleUnpeering(ctx, log, &resv)
+	case brokerv1alpha1.ReservationPhaseReleased,
+		brokerv1alpha1.ReservationPhaseFailed,
+		brokerv1alpha1.ReservationPhaseExpired:
+		return r.handleTerminal(ctx, log, &resv)
 	default:
-		// GeneratingKubeconfig / Peering / Peered / Released / Expired /
-		// Failed are all moved by the instruction-result handler.
+		// GeneratingKubeconfig / Peering / Peered are moved by the
+		// instruction-result handler.
 		return ctrl.Result{}, nil
 	}
 }
@@ -208,6 +212,67 @@ func (r *ReservationReconciler) handleUnpeering(
 	}
 	log.Info("queued Unpeer", "consumer", resv.Spec.ConsumerClusterID)
 	return ctrl.Result{}, nil
+}
+
+// -----------------------------------------------------------------------------
+// Released / Failed / Expired → emit ProviderInstruction{Cleanup}
+// -----------------------------------------------------------------------------
+
+// handleTerminal queues a ProviderInstruction{Cleanup} so the provider
+// agent can drop the peering-user ServiceAccount/RoleBinding it created
+// in response to the original GenerateKubeconfig. The check on GK's
+// existence is what distinguishes a "we never spoke to the provider"
+// terminal (Pending → Failed direct, e.g. validation failure during
+// expiry on a still-pending reservation) from a normal terminal —
+// without it, every aborted Pending would queue a meaningless cleanup.
+//
+// The cleanup is emitted even when the provider's ClusterAdvertisement
+// is currently unavailable: the instruction sits in etcd until the
+// provider re-appears and replays its instruction queue, closing the
+// loop on otherwise-leaked peering-user state.
+func (r *ReservationReconciler) handleTerminal(
+	ctx context.Context, log logr.Logger, resv *brokerv1alpha1.Reservation,
+) (ctrl.Result, error) {
+	var gk autoscalingv1alpha1.ProviderInstruction
+	err := r.Get(ctx, types.NamespacedName{
+		Name: providerInstructionGKName(resv.Name), Namespace: resv.Namespace,
+	}, &gk)
+	if apierrors.IsNotFound(err) {
+		return ctrl.Result{}, nil
+	}
+	if err != nil {
+		return ctrl.Result{}, fmt.Errorf("get GenerateKubeconfig instruction: %w", err)
+	}
+
+	if err := r.ensureProviderCleanupInstruction(ctx, resv); err != nil {
+		return ctrl.Result{}, fmt.Errorf("ensure ProviderInstruction Cleanup: %w", err)
+	}
+	log.Info("queued provider Cleanup", "provider", resv.Spec.ProviderClusterID, "phase", resv.Status.Phase)
+	return ctrl.Result{}, nil
+}
+
+// ensureProviderCleanupInstruction emits a ProviderInstruction{Cleanup}
+// targeted at the provider. Same idempotency guarantees as
+// ensureInstruction: re-running on a Reservation whose provider Cleanup
+// already exists is a no-op.
+func (r *ReservationReconciler) ensureProviderCleanupInstruction(
+	ctx context.Context, resv *brokerv1alpha1.Reservation,
+) error {
+	pi := &autoscalingv1alpha1.ProviderInstruction{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      providerInstructionCleanupName(resv.Name),
+			Namespace: resv.Namespace,
+		},
+		Spec: autoscalingv1alpha1.ProviderInstructionSpec{
+			ReservationID:         resv.Name,
+			Kind:                  autoscalingv1alpha1.ProviderInstructionCleanup,
+			TargetClusterID:       resv.Spec.ProviderClusterID,
+			ConsumerClusterID:     resv.Spec.ConsumerClusterID,
+			ConsumerLiqoClusterID: resv.Spec.ConsumerLiqoClusterID,
+			ChunkCount:            resv.Spec.ChunkCount,
+		},
+	}
+	return r.ensureInstruction(ctx, resv, pi)
 }
 
 // -----------------------------------------------------------------------------
@@ -402,6 +467,14 @@ func reservationInstructionUnpeerName(reservationName string) string {
 
 func reservationInstructionCleanupName(reservationName string) string {
 	return "cleanup-" + reservationName
+}
+
+// providerInstructionCleanupName uses a distinct prefix from the
+// consumer-side cleanup-<resv> so the two terminal cleanups are
+// trivially distinguishable in `kubectl get` output even though they
+// live in different CRD kinds.
+func providerInstructionCleanupName(reservationName string) string {
+	return "pcleanup-" + reservationName
 }
 
 // kubeconfigSecretName must match the value the API instruction handler

@@ -26,6 +26,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	autoscalingv1alpha1 "github.com/netgroup-polito/federation-autoscaler/api/autoscaling/v1alpha1"
 	brokerv1alpha1 "github.com/netgroup-polito/federation-autoscaler/api/broker/v1alpha1"
@@ -36,7 +37,7 @@ const (
 	interval = 200 * time.Millisecond
 )
 
-var _ = Describe("Scale-up happy path: Pending → Peered", func() {
+var _ = Describe("Reservation lifecycle: Pending → Peered → Released", func() {
 	const (
 		ns           = "default"
 		resName      = "scaleup-resv"
@@ -45,17 +46,16 @@ var _ = Describe("Scale-up happy path: Pending → Peered", func() {
 	resvKey := types.NamespacedName{Name: resName, Namespace: ns}
 	gkKey := types.NamespacedName{Name: "gk-" + resName, Namespace: ns}
 	peerKey := types.NamespacedName{Name: "peer-" + resName, Namespace: ns}
+	unpeerKey := types.NamespacedName{Name: "unpeer-" + resName, Namespace: ns}
+	pcleanupKey := types.NamespacedName{Name: "pcleanup-" + resName, Namespace: ns}
 	cadvKey := types.NamespacedName{Name: providerName, Namespace: ns}
 
 	AfterEach(func() {
 		// Best-effort cleanup. envtest does not run the garbage collector,
-		// so we explicitly delete the children before the parent.
-		_ = k8sClient.Delete(ctx, &autoscalingv1alpha1.ProviderInstruction{
-			ObjectMeta: metav1.ObjectMeta{Name: gkKey.Name, Namespace: ns},
-		})
-		_ = k8sClient.Delete(ctx, &autoscalingv1alpha1.ReservationInstruction{
-			ObjectMeta: metav1.ObjectMeta{Name: peerKey.Name, Namespace: ns},
-		})
+		// so we explicitly delete instruction CRs before the parent.
+		// DeleteAllOf keeps the AfterEach robust to lifecycle additions.
+		_ = k8sClient.DeleteAllOf(ctx, &autoscalingv1alpha1.ProviderInstruction{}, client.InNamespace(ns))
+		_ = k8sClient.DeleteAllOf(ctx, &autoscalingv1alpha1.ReservationInstruction{}, client.InNamespace(ns))
 		_ = k8sClient.Delete(ctx, &brokerv1alpha1.Reservation{
 			ObjectMeta: metav1.ObjectMeta{Name: resName, Namespace: ns},
 		})
@@ -174,6 +174,40 @@ var _ = Describe("Scale-up happy path: Pending → Peered", func() {
 			ri := &autoscalingv1alpha1.ReservationInstruction{}
 			g.Expect(k8sClient.Get(ctx, peerKey, ri)).To(Succeed())
 			g.Expect(ri.Status.IssuedAt).NotTo(BeNil())
+		}, timeout, interval).Should(Succeed())
+
+		By("simulating a tear-down request — phase moves to Unpeering")
+		updateStatus(resvKey, func(r *brokerv1alpha1.Reservation) {
+			r.Status.Phase = brokerv1alpha1.ReservationPhaseUnpeering
+			r.Status.Message = "tear-down requested"
+		})
+
+		By("waiting for the Reservation reconciler to emit Unpeer and stay in Unpeering")
+		Eventually(func(g Gomega) {
+			ri := &autoscalingv1alpha1.ReservationInstruction{}
+			g.Expect(k8sClient.Get(ctx, unpeerKey, ri)).To(Succeed())
+			g.Expect(ri.Spec.Kind).To(Equal(autoscalingv1alpha1.ReservationInstructionUnpeer))
+			g.Expect(ri.Spec.LastChunk).To(BeTrue())
+
+			r := &brokerv1alpha1.Reservation{}
+			g.Expect(k8sClient.Get(ctx, resvKey, r)).To(Succeed())
+			g.Expect(r.Status.Phase).To(Equal(brokerv1alpha1.ReservationPhaseUnpeering))
+		}, timeout, interval).Should(Succeed())
+
+		By("simulating the consumer agent reporting an unpeer success — phase moves to Released")
+		simulateInstructionEnforced(unpeerKey, false)
+		updateStatus(resvKey, func(r *brokerv1alpha1.Reservation) {
+			r.Status.Phase = brokerv1alpha1.ReservationPhaseReleased
+			r.Status.Message = "all chunks released"
+		})
+
+		By("the Reservation reconciler emits a ProviderInstruction{Cleanup} on Released")
+		Eventually(func(g Gomega) {
+			pi := &autoscalingv1alpha1.ProviderInstruction{}
+			g.Expect(k8sClient.Get(ctx, pcleanupKey, pi)).To(Succeed())
+			g.Expect(pi.Spec.Kind).To(Equal(autoscalingv1alpha1.ProviderInstructionCleanup))
+			g.Expect(pi.Spec.TargetClusterID).To(Equal("provider-int"))
+			g.Expect(pi.Spec.ConsumerClusterID).To(Equal("consumer-int"))
 		}, timeout, interval).Should(Succeed())
 	})
 })

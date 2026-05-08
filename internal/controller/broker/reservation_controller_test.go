@@ -244,6 +244,42 @@ var _ = Describe("Reservation Controller", func() {
 		)).To(BeTrue())
 	})
 
+	It("Released → emits a ProviderInstruction{Cleanup} when GenerateKubeconfig was previously issued", func() {
+		By("first running the Pending reconcile so the GenerateKubeconfig instruction exists")
+		reconcileOnce()
+		Expect(k8sClient.Get(ctx, types.NamespacedName{
+			Name: "gk-" + resName, Namespace: "default",
+		}, &autoscalingv1alpha1.ProviderInstruction{})).To(Succeed())
+
+		setPhase(ctx, key, brokerv1alpha1.ReservationPhaseReleased)
+		reconcileOnce()
+
+		got := &autoscalingv1alpha1.ProviderInstruction{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{
+			Name: "pcleanup-" + resName, Namespace: "default",
+		}, got)).To(Succeed())
+		Expect(got.Spec.Kind).To(Equal(autoscalingv1alpha1.ProviderInstructionCleanup))
+		Expect(got.Spec.TargetClusterID).To(Equal(providerName))
+		Expect(got.Spec.ConsumerClusterID).To(Equal("consumer-test"))
+
+		By("re-reconciling does not duplicate the cleanup instruction")
+		reconcileOnce()
+		list := &autoscalingv1alpha1.ProviderInstructionList{}
+		Expect(k8sClient.List(ctx, list, client.InNamespace("default"))).To(Succeed())
+		// Two ProviderInstructions total: gk + pcleanup. No duplicates.
+		Expect(list.Items).To(HaveLen(2))
+	})
+
+	It("does not emit provider Cleanup when the reservation never reached GeneratingKubeconfig", func() {
+		By("flipping straight from Pending to Failed without ever reconciling Pending")
+		setPhase(ctx, key, brokerv1alpha1.ReservationPhaseFailed)
+		reconcileOnce()
+
+		piList := &autoscalingv1alpha1.ProviderInstructionList{}
+		Expect(k8sClient.List(ctx, piList, client.InNamespace("default"))).To(Succeed())
+		Expect(piList.Items).To(BeEmpty())
+	})
+
 	It("flips a non-terminal Reservation past ExpiresAt to Expired without emitting any instruction", func() {
 		expired := metav1.NewTime(time.Now().Add(-time.Minute))
 		res := &brokerv1alpha1.Reservation{}
