@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package provider
+package consumer
 
 import (
 	"context"
@@ -35,9 +35,10 @@ import (
 // noNetTransport returns an error for every request. We use it instead
 // of an httptest.Server because the unit tests here exercise wiring,
 // not HTTP behaviour — and we MUST NOT pass an uninitialised
-// *agentclient.Client to provider.Run (it spawns an advertisement
-// publisher goroutine that calls PostAdvertisement; a nil baseURL
-// would crash the test process the moment snapshot.Take succeeds).
+// *agentclient.Client to consumer.Run (it spawns a heartbeat goroutine
+// that immediately calls PostHeartbeat, and a nil baseURL would crash
+// the test process). The errored response propagates harmlessly
+// through the heartbeat loop until ctx is cancelled.
 type noNetTransport struct{}
 
 func (noNetTransport) RoundTrip(*http.Request) (*http.Response, error) {
@@ -68,9 +69,12 @@ func validOptions(t *testing.T) Options {
 		Client:        newTestBrokerClient(t),
 		Registry:      poller.NewRegistry(),
 		LocalClient:   newFakeClient(),
-		ClusterID:     "provider-test",
-		LiqoClusterID: "liqo-provider-test",
-		Probe:         health.New(health.Options{}),
+		ClusterID:     "consumer-test",
+		LiqoClusterID: "liqo-consumer-test",
+		// Port 0 = OS-assigned free port; avoids cross-test collisions
+		// in `go test -count=N` runs.
+		LocalAPIAddr: "127.0.0.1:0",
+		Probe:        health.New(health.Options{}),
 	}
 }
 
@@ -89,6 +93,7 @@ func TestRun_RejectsMissingFields(t *testing.T) {
 		{"missing local client", func(o *Options) { o.LocalClient = nil }, "LocalClient is required"},
 		{"missing cluster id", func(o *Options) { o.ClusterID = "" }, "ClusterID is required"},
 		{"missing liqo id", func(o *Options) { o.LiqoClusterID = "" }, "LiqoClusterID is required"},
+		{"missing local api addr", func(o *Options) { o.LocalAPIAddr = "" }, "LocalAPIAddr is required"},
 		{"missing probe", func(o *Options) { o.Probe = nil }, "Probe is required"},
 	}
 	for _, tc := range cases {
@@ -106,11 +111,12 @@ func TestRun_RejectsMissingFields(t *testing.T) {
 }
 
 func TestRun_BootstrapSucceedsWithValidOptions(t *testing.T) {
-	// Run spawns a long-lived advertisement publisher goroutine. Give
-	// it a cancellable ctx so it exits when the test finishes;
-	// otherwise leaked goroutines keep ticking against the no-network
-	// transport until the process dies. defer cancel() runs before
-	// t.Cleanup, ensuring orderly shutdown.
+	// Run spawns long-lived goroutines (heartbeat poster + loopback
+	// REST server). We MUST give them a cancellable ctx so they exit
+	// when the test finishes; otherwise leaked goroutines keep firing
+	// against the no-network transport / bound listener until the
+	// process dies. defer cancel() runs before t.Cleanup, ensuring
+	// orderly shutdown.
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 

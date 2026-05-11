@@ -1,0 +1,448 @@
+/*
+Copyright 2026 Politecnico di Torino - NetGroup.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+package localapi
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	ctrlclient "sigs.k8s.io/controller-runtime/pkg/client"
+	clientfake "sigs.k8s.io/controller-runtime/pkg/client/fake"
+
+	brokerv1alpha1 "github.com/netgroup-polito/federation-autoscaler/api/broker/v1alpha1"
+	agentclient "github.com/netgroup-polito/federation-autoscaler/internal/agent/client"
+	brokerapi "github.com/netgroup-polito/federation-autoscaler/internal/broker/api"
+)
+
+// rewriteScheme forwards a request whose URL the test client built
+// with scheme=https to the underlying httptest.Server's actual http URL.
+type rewriteScheme struct {
+	base   http.RoundTripper
+	target *url.URL
+}
+
+func (rt rewriteScheme) RoundTrip(req *http.Request) (*http.Response, error) {
+	cp := *req.URL
+	cp.Scheme = rt.target.Scheme
+	cp.Host = rt.target.Host
+	r2 := req.Clone(req.Context())
+	r2.URL = &cp
+	return rt.base.RoundTrip(r2)
+}
+
+// fakeBroker is the upstream Broker the localapi proxies through to.
+// It captures every inbound request for assertion.
+type fakeBroker struct {
+	t *testing.T
+
+	srv *httptest.Server
+
+	mu      sync.Mutex
+	method  string
+	path    string
+	headers http.Header
+	body    []byte
+	postCnt atomic.Int32
+
+	// nextHandler picks the response for the next request. Set
+	// per-test before issuing the local-API call.
+	nextHandler http.HandlerFunc
+}
+
+func newFakeBroker(t *testing.T) *fakeBroker {
+	t.Helper()
+	fb := &fakeBroker{t: t}
+	fb.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fb.postCnt.Add(1)
+		fb.mu.Lock()
+		fb.method = r.Method
+		fb.path = r.URL.Path
+		fb.headers = r.Header.Clone()
+		fb.body, _ = io.ReadAll(r.Body)
+		h := fb.nextHandler
+		fb.mu.Unlock()
+		if h == nil {
+			w.WriteHeader(http.StatusNotImplemented)
+			return
+		}
+		h(w, r)
+	}))
+	t.Cleanup(fb.srv.Close)
+	return fb
+}
+
+func (fb *fakeBroker) setHandler(h http.HandlerFunc) {
+	fb.mu.Lock()
+	defer fb.mu.Unlock()
+	fb.nextHandler = h
+}
+
+func (fb *fakeBroker) buildClient(t *testing.T) *agentclient.Client {
+	t.Helper()
+	u, _ := url.Parse(fb.srv.URL)
+	c, err := agentclient.New(agentclient.Options{
+		BrokerURL:      "https://" + u.Host,
+		Transport:      rewriteScheme{base: fb.srv.Client().Transport, target: u},
+		MaxRetries:     1,
+		InitialBackoff: time.Microsecond,
+		MaxBackoff:     time.Microsecond,
+		RequestTimeout: 2 * time.Second,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return c
+}
+
+func newFakeKubeClient() ctrlclient.Client {
+	scheme := runtime.NewScheme()
+	_ = clientgoscheme.AddToScheme(scheme)
+	return clientfake.NewClientBuilder().WithScheme(scheme).Build()
+}
+
+// localTestServer builds a localapi.Server mounted on an
+// httptest.NewServer for the test client to call.
+func localTestServer(t *testing.T, fb *fakeBroker) *httptest.Server {
+	t.Helper()
+	s, err := New(Options{
+		BindAddress: "127.0.0.1:0", // placeholder; httptest assigns its own
+		Client:      fb.buildClient(t),
+		LocalClient: newFakeKubeClient(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ts := httptest.NewServer(s.Handler())
+	t.Cleanup(ts.Close)
+	return ts
+}
+
+// -----------------------------------------------------------------------------
+// Validation
+// -----------------------------------------------------------------------------
+
+func TestNew_Validation(t *testing.T) {
+	cases := []struct {
+		name string
+		opts Options
+		want string
+	}{
+		{"missing bind", Options{Client: &agentclient.Client{}, LocalClient: newFakeKubeClient()}, "BindAddress is required"},
+		{"missing client", Options{BindAddress: "127.0.0.1:0", LocalClient: newFakeKubeClient()}, "Client is required"},
+		{"missing local client", Options{BindAddress: "127.0.0.1:0", Client: &agentclient.Client{}}, "LocalClient is required"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := New(tc.opts)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("expected error containing %q, got %v", tc.want, err)
+			}
+		})
+	}
+}
+
+// -----------------------------------------------------------------------------
+// GET /local/nodegroups
+// -----------------------------------------------------------------------------
+
+func TestNodeGroups_ProxiesToBroker(t *testing.T) {
+	fb := newFakeBroker(t)
+	fb.setHandler(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", brokerapi.ContentTypeJSON)
+		_ = json.NewEncoder(w).Encode(brokerapi.NodeGroupListResponse{
+			NodeGroups: []brokerapi.NodeGroupView{
+				{ID: "p1/standard", ProviderClusterID: "p1", Type: brokerv1alpha1.ChunkTypeStandard, MaxSize: 4},
+			},
+			Generation: 7,
+		})
+	})
+
+	ts := localTestServer(t, fb)
+	resp, err := ts.Client().Get(ts.URL + "/local/nodegroups")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status %d, body %s", resp.StatusCode, body)
+	}
+	var out brokerapi.NodeGroupListResponse
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatal(err)
+	}
+	if len(out.NodeGroups) != 1 || out.NodeGroups[0].ID != "p1/standard" || out.Generation != 7 {
+		t.Errorf("unexpected response: %+v", out)
+	}
+	if fb.path != "/api/v1/nodegroups" || fb.method != http.MethodGet {
+		t.Errorf("broker call mismatch: %s %s", fb.method, fb.path)
+	}
+}
+
+func TestNodeGroups_BrokerError_Forwarded(t *testing.T) {
+	fb := newFakeBroker(t)
+	fb.setHandler(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", brokerapi.ContentTypeJSON)
+		w.WriteHeader(http.StatusForbidden)
+		_ = json.NewEncoder(w).Encode(brokerapi.ErrorResponse{
+			Code: brokerapi.ErrCodeForbidden, Message: "no", RequestID: "rid",
+		})
+	})
+
+	ts := localTestServer(t, fb)
+	resp, err := ts.Client().Get(ts.URL + "/local/nodegroups")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("want 403, got %d", resp.StatusCode)
+	}
+	var out brokerapi.ErrorResponse
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatal(err)
+	}
+	if out.Code != brokerapi.ErrCodeForbidden || out.RequestID != "rid" {
+		t.Errorf("error body not forwarded: %+v", out)
+	}
+}
+
+// -----------------------------------------------------------------------------
+// POST /local/reservations
+// -----------------------------------------------------------------------------
+
+func TestReservationCreate_ProxiesAndPreservesIdempotencyKey(t *testing.T) {
+	fb := newFakeBroker(t)
+	fb.setHandler(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", brokerapi.ContentTypeJSON)
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(brokerapi.ReservationResponse{
+			ReservationID: "res-from-caller",
+			Status:        brokerv1alpha1.ReservationPhasePending,
+			ChunkCount:    1,
+			CreatedAt:     metav1.NewTime(time.Now()),
+		})
+	})
+
+	ts := localTestServer(t, fb)
+	req := brokerapi.ReservationRequest{
+		ProviderClusterID: "p1",
+		ChunkCount:        1,
+		ChunkType:         brokerv1alpha1.ChunkTypeStandard,
+	}
+	buf, _ := json.Marshal(req)
+	r, _ := http.NewRequestWithContext(context.Background(), http.MethodPost, ts.URL+"/local/reservations", bytes.NewReader(buf))
+	r.Header.Set(brokerapi.HeaderReservationID, "res-from-caller")
+	resp, err := ts.Client().Do(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusCreated {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status %d, body %s", resp.StatusCode, body)
+	}
+	// The reservation id must be propagated unchanged to the broker.
+	if got := fb.headers.Get(brokerapi.HeaderReservationID); got != "res-from-caller" {
+		t.Errorf("X-Reservation-Id to broker: want res-from-caller, got %q", got)
+	}
+	// And echoed back to the caller as a response header.
+	if got := resp.Header.Get(brokerapi.HeaderReservationID); got != "res-from-caller" {
+		t.Errorf("X-Reservation-Id in response: want res-from-caller, got %q", got)
+	}
+}
+
+func TestReservationCreate_MintsIdempotencyKeyWhenAbsent(t *testing.T) {
+	fb := newFakeBroker(t)
+	fb.setHandler(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", brokerapi.ContentTypeJSON)
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(brokerapi.ReservationResponse{ChunkCount: 1})
+	})
+
+	ts := localTestServer(t, fb)
+	buf, _ := json.Marshal(brokerapi.ReservationRequest{
+		ProviderClusterID: "p1", ChunkCount: 1, ChunkType: brokerv1alpha1.ChunkTypeStandard,
+	})
+	r, _ := http.NewRequestWithContext(context.Background(), http.MethodPost, ts.URL+"/local/reservations", bytes.NewReader(buf))
+	resp, err := ts.Client().Do(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+
+	if got := fb.headers.Get(brokerapi.HeaderReservationID); got == "" || !strings.HasPrefix(got, "res-") {
+		t.Errorf("expected minted X-Reservation-Id (res-*), got %q", got)
+	}
+}
+
+func TestReservationCreate_BadBody_400(t *testing.T) {
+	fb := newFakeBroker(t)
+	ts := localTestServer(t, fb)
+
+	r, _ := http.NewRequestWithContext(context.Background(), http.MethodPost, ts.URL+"/local/reservations", strings.NewReader("not json"))
+	resp, err := ts.Client().Do(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("want 400, got %d", resp.StatusCode)
+	}
+}
+
+// -----------------------------------------------------------------------------
+// DELETE /local/reservations/{id}
+// -----------------------------------------------------------------------------
+
+func TestReservationDelete_ProxiesToBroker(t *testing.T) {
+	fb := newFakeBroker(t)
+	fb.setHandler(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", brokerapi.ContentTypeJSON)
+		_ = json.NewEncoder(w).Encode(brokerapi.ReleaseResponse{
+			ReservationID: "res-xyz",
+			Status:        brokerv1alpha1.ReservationPhaseUnpeering,
+		})
+	})
+
+	ts := localTestServer(t, fb)
+	r, _ := http.NewRequestWithContext(context.Background(), http.MethodDelete, ts.URL+"/local/reservations/res-xyz", nil)
+	resp, err := ts.Client().Do(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status %d, body %s", resp.StatusCode, body)
+	}
+	if fb.path != "/api/v1/reservations/res-xyz" || fb.method != http.MethodDelete {
+		t.Errorf("broker call mismatch: %s %s", fb.method, fb.path)
+	}
+}
+
+// -----------------------------------------------------------------------------
+// GET /local/virtual-nodes
+// -----------------------------------------------------------------------------
+
+func TestVirtualNodes_EmptyListUntilStep11(t *testing.T) {
+	fb := newFakeBroker(t)
+	ts := localTestServer(t, fb)
+
+	resp, err := ts.Client().Get(ts.URL + "/local/virtual-nodes")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("want 200, got %d", resp.StatusCode)
+	}
+	var out VirtualNodeListResponse
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatal(err)
+	}
+	if out.VirtualNodes == nil {
+		t.Error("VirtualNodes should be an empty slice, not nil (JSON expects []) — got nil")
+	}
+	if len(out.VirtualNodes) != 0 {
+		t.Errorf("want empty list, got %+v", out.VirtualNodes)
+	}
+	// And the localapi did NOT call the broker for this route.
+	if got := fb.postCnt.Load(); got != 0 {
+		t.Errorf("virtual-nodes should not hit the broker; saw %d calls", got)
+	}
+}
+
+// -----------------------------------------------------------------------------
+// Healthz / lifecycle
+// -----------------------------------------------------------------------------
+
+func TestHealthz(t *testing.T) {
+	fb := newFakeBroker(t)
+	ts := localTestServer(t, fb)
+	resp, err := ts.Client().Get(ts.URL + "/healthz")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("want 200, got %d", resp.StatusCode)
+	}
+}
+
+func TestRun_StartsAndStops(t *testing.T) {
+	fb := newFakeBroker(t)
+	addr := pickFreeAddr(t)
+	s, err := New(Options{
+		BindAddress: addr,
+		Client:      fb.buildClient(t),
+		LocalClient: newFakeKubeClient(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- s.Run(ctx) }()
+
+	// Wait briefly for the listener to bind, then exercise it.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		resp, err := http.Get("http://" + addr + "/healthz") //nolint:noctx
+		if err == nil {
+			_ = resp.Body.Close()
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Run returned error on shutdown: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Run did not exit within 2s of ctx cancel")
+	}
+}
+
+// pickFreeAddr returns a 127.0.0.1 address the OS just confirmed is
+// free. There's a sub-millisecond race window between close and the
+// caller's bind on Linux; acceptable for unit tests.
+func pickFreeAddr(t *testing.T) string {
+	t.Helper()
+	srv := httptest.NewServer(http.NotFoundHandler())
+	addr := strings.TrimPrefix(srv.URL, "http://")
+	srv.Close()
+	return addr
+}

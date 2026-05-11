@@ -39,7 +39,9 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 
+	autoscalingv1alpha1 "github.com/netgroup-polito/federation-autoscaler/api/autoscaling/v1alpha1"
 	agentclient "github.com/netgroup-polito/federation-autoscaler/internal/agent/client"
+	"github.com/netgroup-polito/federation-autoscaler/internal/agent/consumer"
 	"github.com/netgroup-polito/federation-autoscaler/internal/agent/health"
 	"github.com/netgroup-polito/federation-autoscaler/internal/agent/poller"
 	"github.com/netgroup-polito/federation-autoscaler/internal/agent/provider"
@@ -57,6 +59,11 @@ var (
 
 func init() {
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
+	// VirtualNodeState is read by the consumer Reconcile handler
+	// (step 9e) and produced by the gRPC server's reconciler (step 11).
+	// Registering it on the agent's scheme lets the local-cluster
+	// client list / get the CRs without resorting to unstructured.
+	utilruntime.Must(autoscalingv1alpha1.AddToScheme(scheme))
 }
 
 // nolint:gocyclo
@@ -178,9 +185,19 @@ func main() {
 
 	switch role {
 	case roleConsumer:
-		setupLog.Info("consumer role selected", "localAPIAddr", localAPIAddr,
-			"note", "loopback REST API + Peer/Unpeer handlers land in step 9")
-		_ = localClient // step 9 will plumb localClient + localAPIAddr.
+		if err := consumer.Run(ctx, consumer.Options{
+			Client:        brokerClient,
+			Registry:      registry,
+			LocalClient:   localClient,
+			ClusterID:     clusterID,
+			LiqoClusterID: liqoClusterID,
+			LocalAPIAddr:  localAPIAddr,
+			Logger:        ctrl.Log.WithName("consumer"),
+			Probe:         probe,
+		}); err != nil {
+			setupLog.Error(err, "failed to bootstrap consumer role")
+			os.Exit(1)
+		}
 	case roleProvider:
 		if err := provider.Run(ctx, provider.Options{
 			Client:        brokerClient,

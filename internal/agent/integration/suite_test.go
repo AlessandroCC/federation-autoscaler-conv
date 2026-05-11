@@ -38,6 +38,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
+	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -81,9 +82,10 @@ var _ = BeforeSuite(func() {
 	logf.SetLogger(zap.New(zap.WriteTo(GinkgoWriter), zap.UseDevMode(true)))
 	suiteCtx, suiteCancel = context.WithCancel(context.TODO())
 
-	By("registering Broker + autoscaling schemes")
+	By("registering Broker + autoscaling + apiextensions schemes")
 	Expect(brokerv1alpha1.AddToScheme(scheme.Scheme)).To(Succeed())
 	Expect(autoscalingv1alpha1.AddToScheme(scheme.Scheme)).To(Succeed())
+	Expect(apiextensionsv1.AddToScheme(scheme.Scheme)).To(Succeed())
 
 	By("bootstrapping test environment")
 	testEnv = &envtest.Environment{
@@ -101,6 +103,9 @@ var _ = BeforeSuite(func() {
 
 	k8sClient, err = client.New(cfg, client.Options{Scheme: scheme.Scheme})
 	Expect(err).NotTo(HaveOccurred())
+
+	By("installing stub Liqo CRDs so the consumer Peer/Unpeer handlers can create the CRs they need")
+	Expect(installLiqoStubCRDs(suiteCtx, k8sClient)).To(Succeed())
 
 	By("generating in-test PKI (CA + server cert + agent client cert)")
 	certDir := GinkgoT().TempDir()
