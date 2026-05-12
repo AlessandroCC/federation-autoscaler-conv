@@ -43,6 +43,8 @@ import (
 
 	autoscalingv1alpha1 "github.com/netgroup-polito/federation-autoscaler/api/autoscaling/v1alpha1"
 	autoscalingcontroller "github.com/netgroup-polito/federation-autoscaler/internal/controller/autoscaling"
+	"github.com/netgroup-polito/federation-autoscaler/internal/grpcserver"
+	"github.com/netgroup-polito/federation-autoscaler/internal/grpcserver/agentclient"
 	fedmanager "github.com/netgroup-polito/federation-autoscaler/internal/manager"
 )
 
@@ -101,13 +103,51 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Build the typed agent client (step 10b) so the gRPC RPCs can
+	// proxy to the co-located Consumer Agent's loopback REST.
+	agent, err := agentclient.New(agentclient.Options{
+		BaseURL: agentLocalAPIURL,
+		Logger:  ctrl.Log.WithName("grpc-agentclient"),
+	})
+	if err != nil {
+		setupLog.Error(err, "unable to build agent client")
+		os.Exit(1)
+	}
+
+	// Build the externalgrpc server. Read-mostly RPCs land in 10c;
+	// mutating + lifecycle RPCs in 10d/10e; everything else remains
+	// Unimplemented for now.
+	gs, err := grpcserver.New(grpcserver.Options{
+		BindAddress: grpcBindAddress,
+		TLS: grpcserver.TLSConfig{
+			CertDir:  grpcCertPath,
+			CertName: grpcCertName,
+			KeyName:  grpcKeyName,
+			CAName:   grpcCAName,
+		},
+		AgentClient: agent,
+		Logger:      ctrl.Log.WithName("grpcserver"),
+	})
+	if err != nil {
+		setupLog.Error(err, "unable to build externalgrpc server")
+		os.Exit(1)
+	}
+
+	ctx := ctrl.SetupSignalHandler()
+
 	setupLog.Info("gRPC externalgrpc server configured",
 		"grpcBindAddress", grpcBindAddress,
-		"agentLocalAPIURL", agentLocalAPIURL,
-		"TODO", "start externalgrpc server + wire Consumer Agent client")
+		"agentLocalAPIURL", agentLocalAPIURL)
+
+	go func() {
+		if err := gs.Run(ctx); err != nil {
+			setupLog.Error(err, "externalgrpc server stopped with error")
+			os.Exit(1)
+		}
+	}()
 
 	setupLog.Info("starting grpc-server manager")
-	if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {
+	if err := mgr.Start(ctx); err != nil {
 		setupLog.Error(err, "problem running manager")
 		os.Exit(1)
 	}

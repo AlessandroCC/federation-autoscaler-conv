@@ -1,0 +1,173 @@
+/*
+Copyright 2026 Politecnico di Torino - NetGroup.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+// This file collects the read-mostly CloudProvider RPCs (step 10c):
+// NodeGroups, NodeGroupForNode, NodeGroupTargetSize,
+// NodeGroupTemplateNodeInfo. They each translate CA's request into
+// one HTTP call against the Consumer Agent's loopback REST
+// (`GET /local/nodegroups` and/or `GET /local/virtual-nodes`) and
+// reshape the response into the externalgrpc proto types.
+
+package grpcserver
+
+import (
+	"context"
+	"fmt"
+
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+
+	"github.com/netgroup-polito/federation-autoscaler/internal/grpcserver/agentclient"
+	"github.com/netgroup-polito/federation-autoscaler/internal/grpcserver/protos"
+)
+
+// NodeGroups returns every node group the broker is advertising for
+// this consumer cluster. Mapped 1:1 from
+// brokerapi.NodeGroupView{ID, MinSize, MaxSize} onto protos.NodeGroup.
+func (s *Server) NodeGroups(ctx context.Context, _ *protos.NodeGroupsRequest) (*protos.NodeGroupsResponse, error) {
+	if s.agent == nil {
+		return nil, status.Error(codes.FailedPrecondition, "agent client not configured")
+	}
+	resp, err := s.agent.GetNodeGroups(ctx)
+	if err != nil {
+		return nil, mapAgentError(err, "GetNodeGroups")
+	}
+	out := &protos.NodeGroupsResponse{
+		NodeGroups: make([]*protos.NodeGroup, 0, len(resp.NodeGroups)),
+	}
+	for i := range resp.NodeGroups {
+		ng := &resp.NodeGroups[i]
+		out.NodeGroups = append(out.NodeGroups, &protos.NodeGroup{
+			Id:      ng.ID,
+			MinSize: ng.MinSize,
+			MaxSize: ng.MaxSize,
+			Debug: fmt.Sprintf("provider=%s type=%s current=%d max=%d",
+				ng.ProviderClusterID, ng.Type, ng.CurrentReserved, ng.MaxSize),
+		})
+	}
+	return out, nil
+}
+
+// NodeGroupForNode resolves which group a virtual node belongs to.
+// The proto convention is to return NodeGroup{Id: ""} when the node
+// is not managed by this provider — CA treats that as "ignore", not
+// an error.
+func (s *Server) NodeGroupForNode(ctx context.Context, req *protos.NodeGroupForNodeRequest) (*protos.NodeGroupForNodeResponse, error) {
+	if req == nil || req.Node == nil || req.Node.Name == "" {
+		return nil, status.Error(codes.InvalidArgument, "node is required")
+	}
+	if s.agent == nil {
+		return nil, status.Error(codes.FailedPrecondition, "agent client not configured")
+	}
+	list, err := s.agent.GetVirtualNodes(ctx)
+	if err != nil {
+		return nil, mapAgentError(err, "GetVirtualNodes")
+	}
+	for i := range list.VirtualNodes {
+		vn := &list.VirtualNodes[i]
+		if vn.Name == req.Node.Name {
+			return &protos.NodeGroupForNodeResponse{
+				NodeGroup: &protos.NodeGroup{Id: vn.NodeGroupID},
+			}, nil
+		}
+	}
+	// Not ours — return an empty NodeGroup per the proto contract.
+	return &protos.NodeGroupForNodeResponse{NodeGroup: &protos.NodeGroup{}}, nil
+}
+
+// NodeGroupTargetSize returns the number of virtual nodes currently
+// known on the consumer cluster for the requested group. This is
+// CA's only view of "did the last scale-up actually materialise" so
+// the count must be the live one, not a cached "desired".
+func (s *Server) NodeGroupTargetSize(ctx context.Context, req *protos.NodeGroupTargetSizeRequest) (*protos.NodeGroupTargetSizeResponse, error) {
+	if req == nil || req.Id == "" {
+		return nil, status.Error(codes.InvalidArgument, "id is required")
+	}
+	if s.agent == nil {
+		return nil, status.Error(codes.FailedPrecondition, "agent client not configured")
+	}
+	list, err := s.agent.GetVirtualNodes(ctx)
+	if err != nil {
+		return nil, mapAgentError(err, "GetVirtualNodes")
+	}
+	var count int32
+	for i := range list.VirtualNodes {
+		if list.VirtualNodes[i].NodeGroupID == req.Id {
+			count++
+		}
+	}
+	return &protos.NodeGroupTargetSizeResponse{TargetSize: count}, nil
+}
+
+// NodeGroupTemplateNodeInfo builds a synthetic v1.Node that mirrors
+// the shape every real virtual node in this group would carry —
+// allocatable resources, labels, taints, topology — and returns it
+// proto-serialised in NodeBytes. CA feeds those bytes through its
+// scheduler simulator to decide whether the group can accommodate
+// the pending pod set.
+func (s *Server) NodeGroupTemplateNodeInfo(ctx context.Context, req *protos.NodeGroupTemplateNodeInfoRequest) (*protos.NodeGroupTemplateNodeInfoResponse, error) {
+	if req == nil || req.Id == "" {
+		return nil, status.Error(codes.InvalidArgument, "id is required")
+	}
+	if s.agent == nil {
+		return nil, status.Error(codes.FailedPrecondition, "agent client not configured")
+	}
+	resp, err := s.agent.GetNodeGroups(ctx)
+	if err != nil {
+		return nil, mapAgentError(err, "GetNodeGroups")
+	}
+	for i := range resp.NodeGroups {
+		ng := &resp.NodeGroups[i]
+		if ng.ID != req.Id {
+			continue
+		}
+		node := buildNodeTemplate(ng)
+		bytes, err := node.Marshal()
+		if err != nil {
+			return nil, status.Errorf(codes.Internal, "marshal template node: %v", err)
+		}
+		return &protos.NodeGroupTemplateNodeInfoResponse{NodeBytes: bytes}, nil
+	}
+	return nil, status.Errorf(codes.NotFound, "node group %q not found", req.Id)
+}
+
+// mapAgentError translates an agentclient typed error into the gRPC
+// status code CA understands. Substep 10d's mutating RPCs share this
+// helper so the entire externalgrpc surface uses one consistent
+// mapping — without it, CA would see opaque internal errors for what
+// are really "broker said 412".
+func mapAgentError(err error, rpc string) error {
+	switch {
+	case agentclient.IsBadRequest(err):
+		return status.Errorf(codes.InvalidArgument, "%s: %v", rpc, err)
+	case agentclient.IsUnauthenticated(err):
+		return status.Errorf(codes.Unauthenticated, "%s: %v", rpc, err)
+	case agentclient.IsForbidden(err):
+		return status.Errorf(codes.PermissionDenied, "%s: %v", rpc, err)
+	case agentclient.IsNotFound(err):
+		return status.Errorf(codes.NotFound, "%s: %v", rpc, err)
+	case agentclient.IsConflict(err):
+		return status.Errorf(codes.AlreadyExists, "%s: %v", rpc, err)
+	case agentclient.IsPreconditionFailed(err):
+		return status.Errorf(codes.FailedPrecondition, "%s: %v", rpc, err)
+	case agentclient.IsTooManyRequests(err):
+		return status.Errorf(codes.ResourceExhausted, "%s: %v", rpc, err)
+	case agentclient.IsTransient(err):
+		return status.Errorf(codes.Unavailable, "%s: %v", rpc, err)
+	default:
+		return status.Errorf(codes.Internal, "%s: %v", rpc, err)
+	}
+}
