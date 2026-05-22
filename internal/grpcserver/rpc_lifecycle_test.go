@@ -24,7 +24,6 @@ import (
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
-	"google.golang.org/protobuf/types/known/timestamppb"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -69,9 +68,9 @@ func TestPricingNodePrice_ScalesByHours(t *testing.T) {
 	end := start.Add(2 * time.Hour)
 
 	resp, err := client.PricingNodePrice(context.Background(), &protos.PricingNodePriceRequest{
-		Node:           &protos.ExternalGrpcNode{Name: "vn-1"},
-		StartTimestamp: timestamppb.New(start),
-		EndTimestamp:   timestamppb.New(end),
+		Node:      &protos.ExternalGrpcNode{Name: "vn-1"},
+		StartTime: &metav1.Time{Time: start},
+		EndTime:   &metav1.Time{Time: end},
 	})
 	if err != nil {
 		t.Fatalf("err: %v", err)
@@ -89,9 +88,9 @@ func TestPricingNodePrice_UnknownNode_Zero(t *testing.T) {
 	client := newRunningServer(t, fb)
 	now := time.Now()
 	resp, err := client.PricingNodePrice(context.Background(), &protos.PricingNodePriceRequest{
-		Node:           &protos.ExternalGrpcNode{Name: "unknown"},
-		StartTimestamp: timestamppb.New(now),
-		EndTimestamp:   timestamppb.New(now.Add(time.Hour)),
+		Node:      &protos.ExternalGrpcNode{Name: "unknown"},
+		StartTime: &metav1.Time{Time: now},
+		EndTime:   &metav1.Time{Time: now.Add(time.Hour)},
 	})
 	if err != nil {
 		t.Fatalf("err: %v", err)
@@ -115,9 +114,9 @@ func TestPricingNodePrice_MissingCost_Zero(t *testing.T) {
 	client := newRunningServer(t, fb)
 	now := time.Now()
 	resp, err := client.PricingNodePrice(context.Background(), &protos.PricingNodePriceRequest{
-		Node:           &protos.ExternalGrpcNode{Name: "vn-1"},
-		StartTimestamp: timestamppb.New(now),
-		EndTimestamp:   timestamppb.New(now.Add(time.Hour)),
+		Node:      &protos.ExternalGrpcNode{Name: "vn-1"},
+		StartTime: &metav1.Time{Time: now},
+		EndTime:   &metav1.Time{Time: now.Add(time.Hour)},
 	})
 	if err != nil {
 		t.Fatalf("err: %v", err)
@@ -141,16 +140,13 @@ func TestPricingNodePrice_RejectsMissingNode(t *testing.T) {
 
 func TestPricingPodPrice_Zero(t *testing.T) {
 	client := newRunningServer(t, &fakeLocalAPI{})
-	// Build a minimal v1.Pod and proto-marshal it.
+	// v1.32 externalgrpc proto: structured v1.Pod on Pod (was: marshalled
+	// bytes blob on PodBytes).
 	pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "test"}}
-	bytes, err := pod.Marshal()
-	if err != nil {
-		t.Fatal(err)
-	}
 	resp, err := client.PricingPodPrice(context.Background(), &protos.PricingPodPriceRequest{
-		PodBytes:       bytes,
-		StartTimestamp: timestamppb.Now(),
-		EndTimestamp:   timestamppb.New(time.Now().Add(time.Hour)),
+		Pod:       pod,
+		StartTime: &metav1.Time{Time: time.Now()},
+		EndTime:   &metav1.Time{Time: time.Now().Add(time.Hour)},
 	})
 	if err != nil {
 		t.Fatalf("err: %v", err)
@@ -160,7 +156,7 @@ func TestPricingPodPrice_Zero(t *testing.T) {
 	}
 }
 
-func TestPricingPodPrice_RejectsEmptyPodBytes(t *testing.T) {
+func TestPricingPodPrice_RejectsEmptyPod(t *testing.T) {
 	client := newRunningServer(t, &fakeLocalAPI{})
 	_, err := client.PricingPodPrice(context.Background(), &protos.PricingPodPriceRequest{})
 	if status.Code(err) != codes.InvalidArgument {

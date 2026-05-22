@@ -127,8 +127,10 @@ func TestPeer_HappyPath_PersistsSecretRunsLiqoctlAndCreatesCRs(t *testing.T) {
 	if exists, _ := objectExists(context.Background(), c, resourceSliceGVK, testNamespace, "rs-"+testResID); !exists {
 		t.Error("ResourceSlice was not created")
 	}
-	// NamespaceOffloading created.
-	if exists, _ := objectExists(context.Background(), c, namespaceOffloadingGVK, testNamespace, "no-"+testResID); !exists {
+	// NamespaceOffloading created. Liqo's nsoff.validate.liqo.io webhook
+	// hardcodes the name to "offloading" (one per namespace, shared across
+	// Reservations) — see liqoNamespaceOffloadingName.
+	if exists, _ := objectExists(context.Background(), c, namespaceOffloadingGVK, testNamespace, liqoNamespaceOffloadingName); !exists {
 		t.Error("NamespaceOffloading was not created")
 	}
 	// VirtualNodeState CR created with the right spec.

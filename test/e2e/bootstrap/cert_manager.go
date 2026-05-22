@@ -63,8 +63,14 @@ func InstallCertManager(ctx context.Context, opts CertManagerOptions) error {
 	}
 	url := fmt.Sprintf(certManagerManifestURLFmt, version)
 
+	// --validate=false is required: the upstream cert-manager release
+	// bundle contains MutatingWebhookConfiguration / ValidatingWebhook-
+	// Configuration entries whose target Services don't exist yet, and
+	// some apiserver versions reject the bundle's OpenAPI validation.
+	// The manifest itself is fine — cert-manager's own docs recommend
+	// this flag for fresh clusters.
 	if err := runCommand(ctx, kubectl,
-		withKubeconfig(opts.Kubeconfig, "apply", "-f", url)...); err != nil {
+		withKubeconfig(opts.Kubeconfig, "apply", "-f", url, "--validate=false")...); err != nil {
 		return fmt.Errorf("apply cert-manager manifest: %w", err)
 	}
 	if err := runCommand(ctx, kubectl,

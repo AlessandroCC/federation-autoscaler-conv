@@ -33,10 +33,13 @@ import (
 )
 
 // scaleUpTimeout caps the full happy-path: synthetic workload →
-// Reservation Peered → VirtualNode Ready → Pods Running. 10 m is the
-// upper bound on a healthy host; CI runners with slow image pulls may
-// approach but not exceed it.
-const scaleUpTimeout = 10 * time.Minute
+// Reservation Peered → VirtualNode Ready → Pods Running. Each phase
+// has its own sub-timeout (scaleUpTimeout/3 = ~10 min in the scenario
+// helper's WaitForReservationPhase), which sets the upper bound on a
+// single liqoctl peer invocation. On constrained CI hosts (CrownLabs,
+// Kind-on-VM) peer routinely takes 3-5 min because of gateway Pod
+// pulls + WireGuard handshake; 30 m total gives generous headroom.
+const scaleUpTimeout = 30 * time.Minute
 
 var _ = Describe("happy-path federation scale-up across 4 Kind clusters", Ordered, func() {
 	var result *scenario.HappyPathResult

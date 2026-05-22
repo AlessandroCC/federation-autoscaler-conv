@@ -19,7 +19,13 @@ metadata:
     app.kubernetes.io/name: federation-autoscaler
     app.kubernetes.io/component: broker
 spec:
-  replicas: 2
+  # NOTE: only the leader-elected pod serves the API (Runnable opts into
+  # leader election so the apiserver doesn't run on followers). With
+  # replicas > 1 the Service round-robins to followers that won't
+  # answer, surfacing as TCP "connection refused" on the agents. A
+  # readiness probe gated on leadership would let us bump this back up;
+  # for v1 we stay at single-replica.
+  replicas: 1
   selector:
     matchLabels:
       app.kubernetes.io/name: federation-autoscaler
@@ -101,4 +107,8 @@ spec:
           secretName: broker-server-cert
           # tls.crt + tls.key are the broker server keypair; ca.crt is the
           # CA bundle the broker uses to verify agent client certs (mTLS).
-          defaultMode: 0400
+          # 0444 (world-readable) — the pod runs as UID 65532 and the
+          # Secret volume defaults to root:root ownership; without an
+          # fsGroup, a stricter 0400 would lock the binary out of its
+          # own TLS material.
+          defaultMode: 0444

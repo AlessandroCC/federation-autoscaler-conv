@@ -40,6 +40,8 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 
@@ -79,6 +81,10 @@ var _ = BeforeSuite(func() {
 	if os.Getenv("SKIP_IMAGE_BUILD") != "true" {
 		By("building component images via `make docker-build`")
 		cmd := exec.CommandContext(suiteCtx, "make", "docker-build")
+		// `go test` runs with cwd = the package dir (test/e2e/), but the
+		// Makefile lives at the repo root — set Dir explicitly so make
+		// finds the docker-build target.
+		cmd.Dir = repoRoot()
 		out, err := cmd.CombinedOutput()
 		Expect(err).NotTo(HaveOccurred(),
 			"make docker-build failed: %s", string(out))
@@ -115,6 +121,16 @@ var _ = BeforeSuite(func() {
 		}
 	}
 
+	// The broker overlay ships the federation-autoscaler-system
+	// Namespace, but it lands on the central cluster only. Agent +
+	// gRPC server overlays target the same namespace on the consumer /
+	// provider clusters, so pre-create it everywhere (idempotent).
+	for _, role := range topology.Roles() {
+		By(fmt.Sprintf("[%s] ensuring %s namespace", role, bootstrap.BrokerNamespace))
+		Expect(bootstrap.EnsureNamespace(suiteCtx,
+			topology.Kubeconfig(role), bootstrap.BrokerNamespace)).To(Succeed())
+	}
+
 	for _, role := range topology.Roles() {
 		for _, overlay := range bootstrap.OverlayPathForRole(role) {
 			By(fmt.Sprintf("[%s] applying overlay %s", role, overlay))
@@ -129,6 +145,18 @@ var _ = BeforeSuite(func() {
 	Expect(bootstrap.PinBrokerServiceNodePort(suiteCtx,
 		topology.Kubeconfig(kind.RoleCentral))).To(Succeed())
 
+	// cert-manager is per-cluster; the agent / grpc-server / CA
+	// Certificates reference Issuer/federation-autoscaler-ca-issuer
+	// which the broker overlay only creates on central. Mirror the CA
+	// Secret + Issuer to every other cluster so cert-manager there can
+	// sign client certs that chain to the broker's root.
+	for _, role := range []kind.Role{kind.RoleConsumer1, kind.RoleProvider1, kind.RoleProvider2} {
+		By(fmt.Sprintf("[%s] mirroring broker CA + Issuer", role))
+		Expect(bootstrap.MirrorBrokerCA(suiteCtx,
+			topology.Kubeconfig(kind.RoleCentral),
+			topology.Kubeconfig(role))).To(Succeed())
+	}
+
 	for _, role := range []kind.Role{kind.RoleConsumer1, kind.RoleProvider1, kind.RoleProvider2} {
 		By(fmt.Sprintf("[%s] stamping agent-config with cluster identity", role))
 		Expect(bootstrap.PatchAgentConfig(suiteCtx, bootstrap.AgentConfigOptions{
@@ -137,6 +165,23 @@ var _ = BeforeSuite(func() {
 			CertificateName: "agent-client",
 		})).To(Succeed())
 	}
+
+	// PatchAgentConfig flipped the agent-client Certificate's commonName
+	// from REPLACE_ME_CLUSTER_ID to the real cluster id; cert-manager
+	// reissues the Secret, but pods that loaded the original
+	// REPLACE_ME cert at startup keep using it in memory until they
+	// restart. Force a rollout so they pick up the rotated cert (otherwise
+	// every mTLS call to the broker returns 403). The grpc-server has the
+	// same problem because it also runs from a Certificate created with
+	// the placeholder issuerRef before MirrorBrokerCA fired.
+	for _, role := range []kind.Role{kind.RoleConsumer1, kind.RoleProvider1, kind.RoleProvider2} {
+		By(fmt.Sprintf("[%s] restarting agent to pick up rotated TLS cert", role))
+		Expect(bootstrap.RolloutRestart(suiteCtx,
+			topology.Kubeconfig(role), bootstrap.BrokerNamespace, "agent")).To(Succeed())
+	}
+	By("[consumer-1] restarting grpc-server to pick up rotated TLS cert")
+	Expect(bootstrap.RolloutRestart(suiteCtx,
+		topology.Kubeconfig(kind.RoleConsumer1), bootstrap.BrokerNamespace, "grpc-server")).To(Succeed())
 
 	By("[consumer-1] deploying Cluster Autoscaler with --cloud-provider=externalgrpc")
 	Expect(bootstrap.DeployClusterAutoscaler(suiteCtx, bootstrap.ClusterAutoscalerOptions{
@@ -156,3 +201,15 @@ var _ = AfterSuite(func() {
 		Expect(topology.Teardown(tdCtx)).To(Succeed())
 	}
 })
+
+// repoRoot resolves to the directory holding go.mod, walked up from this
+// source file at compile time. Used so `exec.Command("make", ...)` runs
+// at the repo root regardless of go test's cwd (which is the package dir).
+func repoRoot() string {
+	_, thisFile, _, ok := runtime.Caller(0)
+	if !ok {
+		return "."
+	}
+	// thisFile = .../test/e2e/e2e_suite_test.go → repo root = ../../
+	return filepath.Clean(filepath.Join(filepath.Dir(thisFile), "..", ".."))
+}

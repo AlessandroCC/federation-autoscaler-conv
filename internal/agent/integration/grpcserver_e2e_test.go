@@ -36,7 +36,6 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/status"
-	"google.golang.org/protobuf/types/known/timestamppb"
 
 	brokerv1alpha1 "github.com/netgroup-polito/federation-autoscaler/api/broker/v1alpha1"
 	agentclient "github.com/netgroup-polito/federation-autoscaler/internal/agent/client"
@@ -244,14 +243,14 @@ var _ = Describe("Step 10 end-to-end: gRPC server → localapi → broker over t
 		Expect(err).NotTo(HaveOccurred())
 		Expect(resSize.TargetSize).To(Equal(int32(0)))
 
-		By("NodeGroupTemplateNodeInfo: returns a marshalled v1.Node with the chunk allocatable")
+		By("NodeGroupTemplateNodeInfo: returns a structured v1.Node with the chunk allocatable")
 		resTpl, err := client.NodeGroupTemplateNodeInfo(ctx,
 			&protos.NodeGroupTemplateNodeInfoRequest{Id: nodeGroupID})
 		Expect(err).NotTo(HaveOccurred())
-		Expect(resTpl.NodeBytes).NotTo(BeEmpty())
-		var tpl corev1.Node
-		Expect(tpl.Unmarshal(resTpl.NodeBytes)).To(Succeed())
-		Expect(tpl.Status.Allocatable).NotTo(BeEmpty())
+		// v1.32 externalgrpc proto: structured v1.Node on NodeInfo, not
+		// a marshalled bytes blob on NodeBytes.
+		Expect(resTpl.NodeInfo).NotTo(BeNil())
+		Expect(resTpl.NodeInfo.Status.Allocatable).NotTo(BeEmpty())
 
 		// -------------------------------------------------------------
 		// Mutating RPCs (10d)
@@ -293,21 +292,21 @@ var _ = Describe("Step 10 end-to-end: gRPC server → localapi → broker over t
 
 		By("PricingNodePrice: unknown node returns 0, not an error")
 		resPrice, err := client.PricingNodePrice(ctx, &protos.PricingNodePriceRequest{
-			Node:           &protos.ExternalGrpcNode{Name: "no-such-virtual-node"},
-			StartTimestamp: timestamppb.Now(),
-			EndTimestamp:   timestamppb.New(time.Now().Add(time.Hour)),
+			Node:      &protos.ExternalGrpcNode{Name: "no-such-virtual-node"},
+			StartTime: &metav1.Time{Time: time.Now()},
+			EndTime:   &metav1.Time{Time: time.Now().Add(time.Hour)},
 		})
 		Expect(err).NotTo(HaveOccurred())
 		Expect(resPrice.Price).To(Equal(float64(0)))
 
 		By("PricingPodPrice: v1 returns 0 for any pod")
+		// v1.32 externalgrpc proto: structured v1.Pod on Pod, not a
+		// marshalled bytes blob on PodBytes.
 		pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "any"}}
-		podBytes, err := pod.Marshal()
-		Expect(err).NotTo(HaveOccurred())
 		resPodPrice, err := client.PricingPodPrice(ctx, &protos.PricingPodPriceRequest{
-			PodBytes:       podBytes,
-			StartTimestamp: timestamppb.Now(),
-			EndTimestamp:   timestamppb.New(time.Now().Add(time.Hour)),
+			Pod:       pod,
+			StartTime: &metav1.Time{Time: time.Now()},
+			EndTime:   &metav1.Time{Time: time.Now().Add(time.Hour)},
 		})
 		Expect(err).NotTo(HaveOccurred())
 		Expect(resPodPrice.Price).To(Equal(float64(0)))

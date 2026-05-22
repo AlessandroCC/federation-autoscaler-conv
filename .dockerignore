@@ -9,3 +9,8 @@
 # Re-include Go module files
 !go.mod
 !go.sum
+
+# Re-include the host-prefetched liqoctl binary the Makefile drops under
+# bin/liqoctl-<version>-<os>-<arch>/liqoctl. The agent runtime stage COPYs
+# from this path instead of curling github.com during the build.
+!bin/liqoctl-*/liqoctl

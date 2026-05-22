@@ -70,7 +70,6 @@ func InstallLiqo(ctx context.Context, opts LiqoOptions) error {
 	args := withKubeconfig(opts.Kubeconfig,
 		"install", "kind",
 		"--cluster-id", opts.Identity.LiqoClusterID,
-		"--cluster-name", opts.ClusterName,
 		"--timeout", "10m",
 	)
 	if err := runCommand(ctx, liqoctl, args...); err != nil {

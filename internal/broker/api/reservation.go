@@ -36,9 +36,17 @@ import (
 )
 
 // defaultReservationTimeout is the deadline by which a reservation must
-// reach Peered (docs/design.md §6 — chunk-config ConfigMap default 5m).
+// reach Peered (docs/design.md §6 — chunk-config ConfigMap default).
 // Step 4h surfaces the ConfigMap-backed value; 4g hard-codes it.
-const defaultReservationTimeout = 5 * time.Minute
+//
+// Bumped from the docs default of 5m because the consumer-side
+// `liqoctl peer` regularly takes 3-5 min on constrained CI hosts
+// (gateway Pod pull + start, WireGuard handshake, Service creation,
+// Identity CR materialization). At 5m we'd see Reservations Expire
+// just as they're about to reach Peered — the peer timeout was the
+// real bottleneck, but the reservation deadline is what flips the
+// phase to Expired and triggers a chunk-release + cleanup cascade.
+const defaultReservationTimeout = 15 * time.Minute
 
 // nodeGroupID returns the canonical node-group identifier the Broker
 // surfaces to consumers (`ng-<provider>-<chunkType>`). Used to validate the
@@ -500,6 +508,14 @@ func (s *Server) handleReservationRelease(w http.ResponseWriter, r *http.Request
 		s.log.Error(err, "decrement reservedChunks failed",
 			"clusterId", resv.Spec.ProviderClusterID,
 			"delta", -resv.Spec.ChunkCount, "requestId", requestID)
+	} else {
+		// Stamp the idempotency marker so the reconciler's handleTerminal
+		// doesn't double-release the chunks when the Reservation lands
+		// in Released / Failed / Expired downstream.
+		if err := s.markChunksReleased(ctx, patched); err != nil {
+			s.log.Error(err, "mark chunks-released annotation failed",
+				"name", resName, "requestId", requestID)
+		}
 	}
 
 	writeJSON(w, http.StatusAccepted, ReleaseResponse{
@@ -507,6 +523,34 @@ func (s *Server) handleReservationRelease(w http.ResponseWriter, r *http.Request
 		Status:              brokerv1alpha1.ReservationPhaseUnpeering,
 		RemainingChunkCount: 0,
 	})
+}
+
+// markChunksReleased patches the chunks-released annotation onto the
+// Reservation so subsequent reconciles see that the API path has
+// already credited the chunks back. Conflict-retry up to 3 times to
+// ride out concurrent reconciler updates. Idempotent: the annotation
+// is set, not appended.
+func (s *Server) markChunksReleased(ctx context.Context, resv *brokerv1alpha1.Reservation) error {
+	for attempt := 0; attempt < 3; attempt++ {
+		fresh := &brokerv1alpha1.Reservation{}
+		if err := s.client.Get(ctx, types.NamespacedName{
+			Name: resv.Name, Namespace: resv.Namespace,
+		}, fresh); err != nil {
+			return err
+		}
+		if brokerv1alpha1.IsChunksReleased(fresh) {
+			return nil
+		}
+		brokerv1alpha1.MarkChunksReleased(fresh)
+		if err := s.client.Update(ctx, fresh); err != nil {
+			if apierrors.IsConflict(err) {
+				continue
+			}
+			return err
+		}
+		return nil
+	}
+	return errors.New("exhausted conflict retries setting chunks-released annotation")
 }
 
 // parseChunksQuery returns the integer value of the ?chunks=N query

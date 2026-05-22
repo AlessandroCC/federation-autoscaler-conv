@@ -53,10 +53,21 @@ func resourceSliceName(reservationID string) string {
 	return "rs-" + reservationID
 }
 
-// namespaceOffloadingName returns the deterministic NamespaceOffloading
-// name for a reservation.
-func namespaceOffloadingName(reservationID string) string {
-	return "no-" + reservationID
+// liqoNamespaceOffloadingName is the only name Liqo's admission webhook
+// "nsoff.validate.liqo.io" accepts for a NamespaceOffloading CR — it
+// rejects anything else with "NamespaceOffloading name must match
+// offloading". This is by design: NamespaceOffloading is per-namespace,
+// not per-reservation, so multiple Reservations that target the same
+// consumer namespace share the same CR. Our ensure/delete helpers must
+// be idempotent on AlreadyExists / NotFound for this to hold across
+// concurrent Reservations.
+const liqoNamespaceOffloadingName = "offloading"
+
+// namespaceOffloadingName returns the (fixed) NamespaceOffloading name.
+// The reservationID is accepted for symmetry with resourceSliceName but
+// intentionally ignored — see liqoNamespaceOffloadingName.
+func namespaceOffloadingName(_ string) string {
+	return liqoNamespaceOffloadingName
 }
 
 // ensureResourceSlice creates a Liqo ResourceSlice claiming `resources`
@@ -146,20 +157,21 @@ func ensureNamespaceOffloading(
 	return name, nil
 }
 
-// deleteNamespaceOffloading removes the NamespaceOffloading for a
-// reservation. Idempotent on missing.
+// deleteNamespaceOffloading is intentionally a no-op. The Liqo
+// NamespaceOffloading "offloading" is a per-namespace singleton shared
+// by every Reservation that targets that namespace; per-reservation
+// Cleanup must not tear it down or it would break offloading for any
+// sibling Reservation that's still active. The CR is removed by the
+// operator when the consumer fully unpeers (a future v2 chore — for
+// v1 it persists for the lifetime of the cluster, which is harmless).
+//
+// reservationID is kept on the signature so callers stay symmetric with
+// deleteResourceSlice; both args are intentionally ignored.
 func deleteNamespaceOffloading(
-	ctx context.Context,
-	c ctrlclient.Client,
-	namespace, reservationID string,
+	_ context.Context,
+	_ ctrlclient.Client,
+	_, _ string,
 ) error {
-	obj := &unstructured.Unstructured{}
-	obj.SetGroupVersionKind(namespaceOffloadingGVK)
-	obj.SetName(namespaceOffloadingName(reservationID))
-	obj.SetNamespace(namespace)
-	if err := c.Delete(ctx, obj); err != nil && !apierrors.IsNotFound(err) {
-		return fmt.Errorf("delete NamespaceOffloading: %w", err)
-	}
 	return nil
 }
 

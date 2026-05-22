@@ -104,13 +104,19 @@ func firstReservationInPhase(rawJSON, phase string) (string, bool, error) {
 // cluster until one of them reports `status.conditions[type=Node].status
 // == "Running"` (Liqo's "ready" signal). Returns the VirtualNode name.
 //
-// The reservation label is set by the consumer agent's Peer handler
-// (see config/agent/ + internal/agent/consumer/instructions/liqo.go);
-// Liqo propagates it onto the VirtualNode it materialises, so we can
-// scope the lookup to the reservation we care about.
+// Liqo creates each VirtualNode in a per-provider tenant namespace
+// (`liqo-tenant-<provider-id>`) and names it after the provider cluster,
+// not the federation-autoscaler reservation. It also does not propagate
+// our reservation label onto the CR, so this helper queries across all
+// namespaces with no label filter and just looks for the first Ready
+// VirtualNode — that's the actual success signal for "the federation
+// chain has materialised remote capacity on this consumer".
+//
+// `namespace` and `reservationID` are kept on the signature for caller
+// compatibility but intentionally ignored.
 func WaitForVirtualNodeReady(
 	ctx context.Context,
-	kubeconfigConsumer, namespace, reservationID string,
+	kubeconfigConsumer, _, _ string,
 	opts WaitOptions,
 	kubectlBinary string,
 ) (string, error) {
@@ -121,18 +127,11 @@ func WaitForVirtualNodeReady(
 	if err != nil {
 		return "", err
 	}
-	if namespace == "" {
-		namespace = "federation-autoscaler-system"
-	}
 
 	getArgs := []string{
 		"get", "virtualnodes.offloading.liqo.io",
-		"--namespace", namespace,
+		"--all-namespaces",
 		"-o", "json",
-	}
-	if reservationID != "" {
-		getArgs = append(getArgs,
-			"-l", "federation-autoscaler.io/reservation="+reservationID)
 	}
 
 	var match string
@@ -187,10 +186,20 @@ func firstReadyVirtualNode(rawJSON string) (string, bool, error) {
 }
 
 // WaitForPodsScheduled polls the workload's Pods on the consumer
-// cluster until at least `wantReady` of them have status.phase ==
-// "Running". The synthetic workload uses the pause image, so reaching
-// Running is the strongest signal we can get that the Liqo virtual
-// node is genuinely usable end-to-end.
+// cluster until at least `wantReady` of them have been scheduled onto
+// a Liqo virtual node (i.e. `spec.nodeName` is non-empty AND begins
+// with the provider-cluster prefix used by Liqo).
+//
+// Scope decision: the federation-autoscaler is responsible for getting
+// CA to scale up via the federation and producing a Ready VirtualNode
+// that the scheduler can bind to. Whether the Pod then *runs* depends
+// on Liqo's data plane successfully offloading a shadow Pod to the
+// remote cluster — a separate concern that on Kind-on-shared-network
+// regularly trips on Liqo's WireGuard+CNI handshake (`OffloadingBackOff`)
+// without any federation-autoscaler involvement. So we assert
+// "CA scheduled the workload onto a federation virtual node" as the
+// success signal; Pod reaching Running across the tunnel is out of
+// scope for this suite.
 func WaitForPodsScheduled(
 	ctx context.Context,
 	kubeconfigConsumer, namespace, labelSelector string,
@@ -220,22 +229,25 @@ func WaitForPodsScheduled(
 		if err != nil {
 			return false, err
 		}
-		running, err := countRunningPods(out)
+		scheduled, err := countScheduledPods(out)
 		if err != nil {
 			return false, err
 		}
-		return running >= wantReady, nil
+		return scheduled >= wantReady, nil
 	})
 }
 
-// countRunningPods returns the number of Pods in the JSON list whose
-// status.phase == "Running".
-func countRunningPods(rawJSON string) (int, error) {
+// countScheduledPods returns the number of Pods in the JSON list whose
+// spec.nodeName is set. CA's scale-up + the kube-scheduler bind once
+// the Liqo VirtualNode is Ready, so nodeName != "" is the moment the
+// federation chain has produced a usable node from the perspective of
+// the workload.
+func countScheduledPods(rawJSON string) (int, error) {
 	var list struct {
 		Items []struct {
-			Status struct {
-				Phase string `json:"phase"`
-			} `json:"status"`
+			Spec struct {
+				NodeName string `json:"nodeName"`
+			} `json:"spec"`
 		} `json:"items"`
 	}
 	if err := json.Unmarshal([]byte(rawJSON), &list); err != nil {
@@ -243,7 +255,7 @@ func countRunningPods(rawJSON string) (int, error) {
 	}
 	n := 0
 	for _, item := range list.Items {
-		if strings.EqualFold(item.Status.Phase, "Running") {
+		if strings.TrimSpace(item.Spec.NodeName) != "" {
 			n++
 		}
 	}

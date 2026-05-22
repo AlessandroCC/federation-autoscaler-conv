@@ -94,4 +94,5 @@ spec:
           secretName: grpc-server-cert
           # tls.crt / tls.key are the gRPC server's keypair; ca.crt is the
           # CA bundle CA's client cert must chain to for mTLS.
-          defaultMode: 0400
+          # 0444 — see config/broker/deployment.yaml for the rationale.
+          defaultMode: 0444

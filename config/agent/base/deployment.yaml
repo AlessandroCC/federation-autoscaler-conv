@@ -108,7 +108,8 @@ spec:
       - name: tls
         secret:
           secretName: agent-client-cert
-          defaultMode: 0400
+          # 0444 — see config/broker/deployment.yaml for the rationale.
+          defaultMode: 0444
       - name: liqoctl-cache
         emptyDir: {}
       # liqoctl writes the staged kubeconfig under /tmp on the consumer side,

@@ -36,7 +36,18 @@ import (
 // PeerConfig field is unset.
 const (
 	DefaultPeerLiqoctlPath = "liqoctl"
-	DefaultPeerExecTimeout = 90 * time.Second
+	// DefaultPeerExecTimeout is the wall-clock cap on a single
+	// `liqoctl peer` invocation. The command does substantial
+	// orchestration work — pulling and starting Liqo gateway Pods on
+	// both sides, waiting for the gateway Service to be created, the
+	// gateway Pod to be Ready, the WireGuard tunnel to establish, and
+	// the foreign cluster's Identity / Tenant CRs to materialize. On
+	// constrained CI hosts (CrownLabs, Kind-on-VM) those steps
+	// regularly take 3-5 minutes; we used to use 90s and hit
+	// `signal: killed` mid-handshake right when "Waiting for gateway
+	// server Service to be created" was running. 10 minutes gives
+	// realistic headroom without masking a genuine hang.
+	DefaultPeerExecTimeout = 10 * time.Minute
 )
 
 // PeerConfig configures the Peer handler.
@@ -132,7 +143,21 @@ func NewPeerHandler(cfg PeerConfig) poller.HandlerFunc {
 
 		execCtx, cancelExec := context.WithTimeout(ctx, cfg.ExecTimeout)
 		defer cancelExec()
-		args := []string{"peer", "--remote-kubeconfig", kubeconfigPath}
+		// Force NodePort for the provider-side gateway-server Service.
+		// Liqo's default is LoadBalancer, which on Kind / on-prem
+		// clusters without an LB provisioner leaves the Service's
+		// EXTERNAL-IP stuck in <pending> forever. liqoctl peer then
+		// hangs at "Waiting for gateway server Service to be created"
+		// even though the Service technically exists — it never gets
+		// an externalIP and the wait loop times out. NodePort sidesteps
+		// the LB entirely; the underlying Pod gets a stable nodePort
+		// that the consumer side reaches via the shared kind docker
+		// network. See liqoctl peer --gw-server-service-type flag.
+		args := []string{
+			"peer",
+			"--remote-kubeconfig", kubeconfigPath,
+			"--gw-server-service-type", "NodePort",
+		}
 		logger.V(1).Info("running liqoctl", "path", cfg.LiqoctlPath, "args", args)
 		_, stderr, err := cfg.Run(execCtx, cfg.LiqoctlPath, args...)
 		if err != nil {

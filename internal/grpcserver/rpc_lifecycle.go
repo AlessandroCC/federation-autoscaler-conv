@@ -29,6 +29,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/anypb"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	autoscalingv1alpha1 "github.com/netgroup-polito/federation-autoscaler/api/autoscaling/v1alpha1"
 	brokerv1alpha1 "github.com/netgroup-polito/federation-autoscaler/api/broker/v1alpha1"
@@ -76,8 +77,20 @@ func (s *Server) PricingNodePrice(ctx context.Context, req *protos.PricingNodePr
 	if err != nil {
 		return nil, err
 	}
-	hours := windowHours(req.StartTimestamp.AsTime(), req.EndTimestamp.AsTime())
+	// v1.32 / 1.33 / 1.34 externalgrpc proto uses StartTime/EndTime
+	// (metav1.Time), not StartTimestamp/EndTimestamp (timestamppb).
+	hours := windowHours(timeFromMetaV1(req.StartTime), timeFromMetaV1(req.EndTime))
 	return &protos.PricingNodePriceResponse{Price: chunkCostFloat(group) * hours}, nil
+}
+
+// timeFromMetaV1 dereferences a *metav1.Time, returning zero time for
+// nil. Used to bridge the v1.32 proto's metav1.Time field types into
+// time.Time the chunk-pricing math expects.
+func timeFromMetaV1(t *metav1.Time) time.Time {
+	if t == nil {
+		return time.Time{}
+	}
+	return t.Time
 }
 
 // PricingPodPrice is intentionally always zero in v1: the broker
@@ -85,8 +98,8 @@ func (s *Server) PricingNodePrice(ctx context.Context, req *protos.PricingNodePr
 // price expander only consults pod price relatively, so any constant
 // (including 0) keeps node-group preference deterministic.
 func (s *Server) PricingPodPrice(_ context.Context, req *protos.PricingPodPriceRequest) (*protos.PricingPodPriceResponse, error) {
-	if req == nil || len(req.PodBytes) == 0 {
-		return nil, status.Error(codes.InvalidArgument, "podBytes is required")
+	if req == nil || req.Pod == nil {
+		return nil, status.Error(codes.InvalidArgument, "pod is required")
 	}
 	return &protos.PricingPodPriceResponse{Price: 0}, nil
 }

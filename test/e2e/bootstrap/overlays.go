@@ -108,24 +108,118 @@ func ApplyOverlay(ctx context.Context, opts ApplyOverlayOptions) error {
 	build := exec.CommandContext(ctx, kustomizeBin, "build", overlayPath)
 	apply := exec.CommandContext(ctx, kubectl, "--kubeconfig="+opts.Kubeconfig, "apply", "-f", "-")
 
-	apply.Stdin, err = build.StdoutPipe()
+	// Pipe kustomize's stdout into kubectl's stdin; capture each side's
+	// stderr separately so we can surface a useful diagnostic on either
+	// half failing.
+	stdoutPipe, err := build.StdoutPipe()
 	if err != nil {
 		return fmt.Errorf("kustomize stdout pipe: %w", err)
 	}
-	var applyStderr strings.Builder
+	apply.Stdin = stdoutPipe
+
+	var buildStderr, applyStderr strings.Builder
+	build.Stderr = &buildStderr
 	apply.Stderr = &applyStderr
 
+	if err := build.Start(); err != nil {
+		return fmt.Errorf("kustomize start: %w", err)
+	}
 	if err := apply.Start(); err != nil {
+		_ = build.Process.Kill()
 		return fmt.Errorf("kubectl apply start: %w", err)
 	}
-	buildOut, buildErr := build.CombinedOutput()
+
+	// kustomize must finish first (so it closes the pipe and kubectl can
+	// see EOF on stdin). Then kubectl drains and exits.
+	buildErr := build.Wait()
+	applyErr := apply.Wait()
+
 	if buildErr != nil {
-		_ = apply.Process.Kill()
 		return fmt.Errorf("kustomize build %q: %w: %s",
-			overlayPath, buildErr, strings.TrimSpace(string(buildOut)))
+			overlayPath, buildErr, strings.TrimSpace(buildStderr.String()))
 	}
-	if err := apply.Wait(); err != nil {
-		return fmt.Errorf("kubectl apply: %w: %s", err, strings.TrimSpace(applyStderr.String()))
+	if applyErr != nil {
+		return fmt.Errorf("kubectl apply: %w: %s",
+			applyErr, strings.TrimSpace(applyStderr.String()))
+	}
+	return nil
+}
+
+// EnsureNamespace creates the named Namespace on the target cluster
+// (idempotent — `apply` of an existing Namespace is a no-op). Used by
+// the e2e suite to pre-create federation-autoscaler-system on the
+// agent / grpc-server clusters: only the broker overlay ships the
+// Namespace resource, and it lands on the central cluster, so the
+// other clusters need it explicitly before their overlays can be
+// applied.
+func EnsureNamespace(ctx context.Context, kubeconfig, name string) error {
+	switch {
+	case kubeconfig == "":
+		return fmt.Errorf("EnsureNamespace: kubeconfig %w", errEmpty)
+	case name == "":
+		return fmt.Errorf("EnsureNamespace: name %w", errEmpty)
+	}
+	kubectl, err := resolveBinary("", envKubectl, defaultKubectlBin)
+	if err != nil {
+		return err
+	}
+	// Pipe a one-line Namespace manifest into `kubectl apply -f -`
+	// rather than `kubectl create namespace` (which errors when the
+	// namespace already exists).
+	manifest := fmt.Sprintf("apiVersion: v1\nkind: Namespace\nmetadata:\n  name: %s\n", name)
+	cmd := exec.CommandContext(ctx, kubectl,
+		"--kubeconfig="+kubeconfig, "apply", "-f", "-")
+	cmd.Stdin = strings.NewReader(manifest)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("ensure namespace %q: %w: %s",
+			name, err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+// RolloutRestart triggers a `kubectl rollout restart deployment/<name>`
+// on the target cluster and waits for the rollout to finish. Used by
+// the e2e suite to force agent / grpc-server pods to re-read their
+// freshly-rotated TLS Secrets after PatchAgentConfig flips the
+// Certificate's commonName from the REPLACE_ME placeholder to the
+// real cluster identity.
+//
+// Without this restart, pods that loaded the cert at startup keep the
+// old REPLACE_ME_CLUSTER_ID CN in memory even after kubelet has
+// refreshed the projected volume, and every mTLS call returns 403.
+func RolloutRestart(ctx context.Context, kubeconfig, namespace, deployment string) error {
+	switch {
+	case kubeconfig == "":
+		return fmt.Errorf("RolloutRestart: kubeconfig %w", errEmpty)
+	case deployment == "":
+		return fmt.Errorf("RolloutRestart: deployment %w", errEmpty)
+	}
+	kubectl, err := resolveBinary("", envKubectl, defaultKubectlBin)
+	if err != nil {
+		return err
+	}
+	if namespace == "" {
+		namespace = BrokerNamespace
+	}
+	out, err := exec.CommandContext(ctx, kubectl,
+		"--kubeconfig="+kubeconfig,
+		"rollout", "restart", "deployment/"+deployment,
+		"--namespace", namespace,
+	).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("rollout restart %s/%s: %w: %s",
+			namespace, deployment, err, strings.TrimSpace(string(out)))
+	}
+	out, err = exec.CommandContext(ctx, kubectl,
+		"--kubeconfig="+kubeconfig,
+		"rollout", "status", "deployment/"+deployment,
+		"--namespace", namespace,
+		"--timeout", "3m",
+	).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("rollout status %s/%s: %w: %s",
+			namespace, deployment, err, strings.TrimSpace(string(out)))
 	}
 	return nil
 }

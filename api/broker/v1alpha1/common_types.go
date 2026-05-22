@@ -21,6 +21,44 @@ limitations under the License.
 
 package v1alpha1
 
+// ChunksReleasedAnnotation marks a Reservation whose ReservedChunks
+// contribution has already been credited back to the provider's
+// ClusterAdvertisement.Status.ReservedChunks. Set by whichever code
+// path releases first — the API DELETE handler for the normal
+// consumer-initiated release, or the reservation reconciler's
+// handleTerminal for Failed / Expired transitions. Both call sites
+// check the annotation before decrementing, so double-release is
+// impossible. Without this marker the chunk counter drifts and the
+// provider's AvailableChunks gets stuck at 0 after any Reservation
+// that died mid-flight without going through the Unpeering API path.
+const ChunksReleasedAnnotation = "federation-autoscaler.io/chunks-released"
+
+// chunksReleasedAnnotationValue is the only value the annotation ever
+// carries — presence/absence is the actual semantic, but keeping the
+// literal in one place satisfies the goconst lint and lets callers
+// use IsChunksReleased / MarkChunksReleased instead of stringly typing.
+const chunksReleasedAnnotationValue = "true"
+
+// IsChunksReleased reports whether the chunks-released marker is set
+// on the Reservation. Nil-safe (returns false for a nil pointer or
+// missing annotations map).
+func IsChunksReleased(resv *Reservation) bool {
+	if resv == nil {
+		return false
+	}
+	return resv.Annotations[ChunksReleasedAnnotation] == chunksReleasedAnnotationValue
+}
+
+// MarkChunksReleased stamps the chunks-released marker on the
+// Reservation in place. Initialises the annotations map if needed.
+// Caller is responsible for persisting via client.Update.
+func MarkChunksReleased(resv *Reservation) {
+	if resv.Annotations == nil {
+		resv.Annotations = map[string]string{}
+	}
+	resv.Annotations[ChunksReleasedAnnotation] = chunksReleasedAnnotationValue
+}
+
 // ChunkType identifies the category of a capacity chunk.
 //
 // A provider is advertised as "gpu" when it exposes nvidia.com/gpu > 0,

@@ -72,6 +72,10 @@ spec:
   - broker.federation-autoscaler-system
   - broker.federation-autoscaler-system.svc
   - broker.federation-autoscaler-system.svc.cluster.local
+  # Kind docker-network hostnames the multi-cluster e2e suite dials via
+  # the broker NodePort (CentralBrokerNodePort = 30443 — see
+  # test/e2e/bootstrap/identity.go).
+  - fa-central-control-plane
   duration: 8760h      # 1 year
   renewBefore: 720h    # 30 d
   secretName: broker-server-cert

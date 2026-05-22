@@ -27,7 +27,6 @@ import (
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
-	"google.golang.org/protobuf/types/known/timestamppb"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -299,9 +298,9 @@ var _ = Describe("Step 11 end-to-end: Peer → VirtualNodeState → reconciler �
 
 		By("PricingNodePrice succeeds end-to-end (no cost advertised → 0)")
 		resPrice, err := client.PricingNodePrice(ctx, &protos.PricingNodePriceRequest{
-			Node:           &protos.ExternalGrpcNode{Name: liqoVNName},
-			StartTimestamp: timestamppb.Now(),
-			EndTimestamp:   timestamppb.New(time.Now().Add(time.Hour)),
+			Node:      &protos.ExternalGrpcNode{Name: liqoVNName},
+			StartTime: &metav1.Time{Time: time.Now()},
+			EndTime:   &metav1.Time{Time: time.Now().Add(time.Hour)},
 		})
 		Expect(err).NotTo(HaveOccurred())
 		Expect(resPrice.Price).To(Equal(float64(0)))

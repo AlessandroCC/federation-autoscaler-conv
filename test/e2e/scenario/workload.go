@@ -79,11 +79,23 @@ spec:
       labels:
         app.kubernetes.io/name: {{ .Name }}
     spec:
-      # No toleration for the Liqo virtual-node taint — Kubernetes will
-      # only schedule onto a Liqo virtual-node when CA explicitly
-      # provisions it AND adds the matching toleration; in our model
-      # CA's NodeGroupTemplate already strips the taint, so untolerated
-      # pods are admitted.
+      # Force scheduling onto a Liqo-provisioned virtual node — without
+      # this nodeSelector the synthetic workload usually fits on the
+      # consumer cluster's local Kind worker (which has the host's full
+      # CPU budget), CA never sees Pending pods, and the scale-up is
+      # never triggered. Liqo stamps liqo.io/type=virtual-node on the
+      # VirtualNodes it materialises, so the Pods stay Pending until
+      # the federation actually peers and a VirtualNode appears.
+      nodeSelector:
+        liqo.io/type: virtual-node
+      # The Liqo virtual node carries a NoExecute taint that's lifted
+      # only for workloads that opt into it explicitly. Match the taint
+      # key Liqo uses (virtual-node.liqo.io/not-allowed) so the
+      # scheduler will admit the pod once CA + Liqo bring the node up.
+      tolerations:
+      - key: virtual-node.liqo.io/not-allowed
+        operator: Exists
+        effect: NoExecute
       containers:
       - name: pause
         image: {{ .Image }}

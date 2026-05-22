@@ -110,6 +110,17 @@ func NewGenerateKubeconfigHandler(cfg GenerateKubeconfigConfig) poller.HandlerFu
 			"path", cfg.LiqoctlPath, "args", args, "reservationId", in.ReservationID)
 
 		stdout, stderr, err := cfg.Run(execCtx, cfg.LiqoctlPath, args...)
+		// NOTE: this handler intentionally does NOT self-heal on
+		// "peering-user already exists". The peering-user is a per-
+		// consumer singleton and every `liqoctl generate` call mints a
+		// fresh randomised CN; deleting + regenerating invalidates the
+		// kubeconfig the broker already captured for any prior
+		// Reservation against the same consumer (its cert no longer
+		// matches any RoleBinding subject). Subsequent collisions are
+		// expected and fail loudly — the first Reservation reaches
+		// Peered with a stable kubeconfig, which is what we want.
+		// Broker-side de-duplication (one GK per consumer+provider
+		// pair, shared kubeconfig) is the right longer-term fix.
 		if err != nil {
 			// Surface stderr in the broker-facing error so operators
 			// debugging a Failed reservation can see the underlying

@@ -17,10 +17,27 @@ limitations under the License.
 package grpcserver
 
 import (
+	"maps"
+
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	brokerapi "github.com/netgroup-polito/federation-autoscaler/internal/broker/api"
+)
+
+// Liqo stamps these on every VirtualNode it materialises. The template
+// node CA sees must carry both so its scheduler simulator (a) accepts
+// workloads that selected federation capacity via the documented Liqo
+// label and (b) only accepts workloads that opted-in via the matching
+// toleration — without the taint we'd scale up for any unschedulable
+// pod, then Liqo's real taint would keep it Pending forever.
+const (
+	LiqoNodeTypeLabel = "liqo.io/type"
+	LiqoNodeTypeValue = "virtual-node"
+
+	LiqoNotAllowedTaintKey    = "virtual-node.liqo.io/not-allowed"
+	LiqoNotAllowedTaintEffect = corev1.TaintEffectNoExecute
 )
 
 // buildNodeTemplate constructs a v1.Node Cluster Autoscaler can use as
@@ -43,7 +60,40 @@ func buildNodeTemplate(group *brokerapi.NodeGroupView) *corev1.Node {
 		return nil
 	}
 
-	labels := mergeLabels(group.Labels, topologyLabels(group))
+	// CA's scheduler simulator dereferences these labels when matching
+	// node selectors / topology constraints; if any are missing it can
+	// panic deep in the simulator. Stamp the standard set so a template
+	// produced from minimally-populated broker advertisements still
+	// works.
+	// LabelOSStable / LabelArchStable expand to "kubernetes.io/os" and
+	// "kubernetes.io/arch" — the values CA's scheduler simulator
+	// reads when matching nodeSelectors. LabelInstanceTypeStable is
+	// "node.kubernetes.io/instance-type"; the deprecated
+	// LabelInstanceType ("beta.kubernetes.io/instance-type") is
+	// included for backwards compat with older selectors.
+	//
+	// LiqoNodeTypeLabel / LiqoNodeTypeValue mirror the label Liqo
+	// stamps on every materialised VirtualNode. Without it on the
+	// template, any workload that selects federation capacity via
+	// `nodeSelector: liqo.io/type: virtual-node` (the documented Liqo
+	// pattern, and what real users will write) gets rejected by CA's
+	// NodeAffinity predicate during scale-up evaluation, so CA returns
+	// "No expansion options" and the Pods stay Pending forever.
+	defaults := map[string]string{
+		corev1.LabelHostname:           "template-" + group.ID,
+		corev1.LabelOSStable:           "linux",
+		corev1.LabelArchStable:         "amd64",
+		corev1.LabelInstanceType:       "liqo-virtual",
+		corev1.LabelInstanceTypeStable: "liqo-virtual",
+		LiqoNodeTypeLabel:              LiqoNodeTypeValue,
+	}
+	labels := mergeLabels(mergeLabels(defaults, group.Labels), topologyLabels(group))
+
+	// Capacity / Allocatable must contain at least cpu+memory+pods or
+	// CA's scheduler-simulator will refuse to fit anything onto the
+	// template. Backfill from a safe minimum when the broker hasn't
+	// surfaced ChunkResources.
+	resources := nonEmptyResources(cloneResourceList(group.ChunkResources))
 
 	return &corev1.Node{
 		ObjectMeta: metav1.ObjectMeta{
@@ -51,19 +101,59 @@ func buildNodeTemplate(group *brokerapi.NodeGroupView) *corev1.Node {
 			Labels: labels,
 		},
 		Spec: corev1.NodeSpec{
-			Taints:     append([]corev1.Taint(nil), group.Taints...),
+			Taints:     ensureLiqoTaint(append([]corev1.Taint(nil), group.Taints...)),
 			ProviderID: providerIDForTemplate(group),
 		},
 		Status: corev1.NodeStatus{
-			Capacity:    cloneResourceList(group.ChunkResources),
-			Allocatable: cloneResourceList(group.ChunkResources),
+			Capacity:    resources,
+			Allocatable: resources.DeepCopy(),
 			Conditions: []corev1.NodeCondition{{
-				Type:   corev1.NodeReady,
-				Status: corev1.ConditionTrue,
-				Reason: "FederationAutoscalerTemplate",
+				Type:               corev1.NodeReady,
+				Status:             corev1.ConditionTrue,
+				Reason:             "FederationAutoscalerTemplate",
+				LastHeartbeatTime:  metav1.Now(),
+				LastTransitionTime: metav1.Now(),
 			}},
+			NodeInfo: corev1.NodeSystemInfo{
+				OperatingSystem: "linux",
+				Architecture:    "amd64",
+			},
 		},
 	}
+}
+
+// ensureLiqoTaint appends the Liqo NoExecute taint to the template's
+// taint set if the broker advertisement didn't already include it.
+// Matching by (key, effect) so a broker-supplied value override wins.
+func ensureLiqoTaint(taints []corev1.Taint) []corev1.Taint {
+	for _, t := range taints {
+		if t.Key == LiqoNotAllowedTaintKey && t.Effect == LiqoNotAllowedTaintEffect {
+			return taints
+		}
+	}
+	return append(taints, corev1.Taint{
+		Key:    LiqoNotAllowedTaintKey,
+		Effect: LiqoNotAllowedTaintEffect,
+	})
+}
+
+// nonEmptyResources guarantees cpu / memory / pods are present on the
+// returned ResourceList. CA's scheduler simulator panics if any of the
+// three is unset on the template.
+func nonEmptyResources(rl corev1.ResourceList) corev1.ResourceList {
+	if rl == nil {
+		rl = corev1.ResourceList{}
+	}
+	if _, ok := rl[corev1.ResourceCPU]; !ok {
+		rl[corev1.ResourceCPU] = resource.MustParse("2")
+	}
+	if _, ok := rl[corev1.ResourceMemory]; !ok {
+		rl[corev1.ResourceMemory] = resource.MustParse("4Gi")
+	}
+	if _, ok := rl[corev1.ResourcePods]; !ok {
+		rl[corev1.ResourcePods] = resource.MustParse("110")
+	}
+	return rl
 }
 
 // topologyLabels translates a NodeGroupView's optional Topology into
@@ -106,12 +196,8 @@ func mergeLabels(a, b map[string]string) map[string]string {
 		return nil
 	}
 	out := make(map[string]string, len(a)+len(b))
-	for k, v := range a {
-		out[k] = v
-	}
-	for k, v := range b {
-		out[k] = v
-	}
+	maps.Copy(out, a)
+	maps.Copy(out, b)
 	return out
 }
 

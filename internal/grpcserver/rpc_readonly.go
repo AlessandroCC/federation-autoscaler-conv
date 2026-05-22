@@ -135,11 +135,18 @@ func (s *Server) NodeGroupTemplateNodeInfo(ctx context.Context, req *protos.Node
 			continue
 		}
 		node := buildNodeTemplate(ng)
-		bytes, err := node.Marshal()
-		if err != nil {
-			return nil, status.Errorf(codes.Internal, "marshal template node: %v", err)
+		if node == nil {
+			return nil, status.Errorf(codes.Internal,
+				"buildNodeTemplate returned nil for node group %q", ng.ID)
 		}
-		return &protos.NodeGroupTemplateNodeInfoResponse{NodeBytes: bytes}, nil
+		// CA's externalgrpc provider in cluster-autoscaler 1.32 / 1.33 /
+		// 1.34 expects the response to carry a structured Node (proto
+		// field 1, name `nodeInfo`), not a serialized-bytes blob.
+		// Returning a nil NodeInfo trips a known crash deep in CA's
+		// nodeinfosprovider (panics dereferencing the resulting nil
+		// framework.NodeInfo), so this code path must always set the
+		// field.
+		return &protos.NodeGroupTemplateNodeInfoResponse{NodeInfo: node}, nil
 	}
 	return nil, status.Errorf(codes.NotFound, "node group %q not found", req.Id)
 }

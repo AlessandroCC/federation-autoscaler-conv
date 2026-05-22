@@ -13,11 +13,25 @@
 #
 # Provider role uses:
 #   - core/nodes                               snapshot for advertisements
+#   - core/namespaces                          liqoctl creates a tenant ns
+#                                              (default name liqo-tenant-<id>)
+#                                              and listNamespaces filters by
+#                                              label, so list/get cluster-wide
 #   - core/{serviceaccounts,secrets}           created by `liqoctl generate
 #                                              peering-user`
 #   - rbac.authorization.k8s.io/{cluster}roles+{cluster}rolebindings
 #                                              created by liqoctl for the
 #                                              peering-user identity
+#   - certificates.k8s.io/certificatesigningrequests + /approval
+#                                              liqoctl mints a CSR for the
+#                                              peering user and approves it
+#                                              under the kube-apiserver-client
+#                                              signer so the apiserver issues
+#                                              the user cert
+#   - apps/deployments                         liqoctl reads the Liqo controller-
+#                                              manager Deployment to resolve
+#                                              the API-server address that goes
+#                                              into the returned kubeconfig
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
@@ -48,6 +62,30 @@ rules:
   - update
   - patch
   - delete
+# liqoctl's EnsureRoles creates a RoleBinding for the peering-user that
+# grants `configmaps get/list/watch`. Kubernetes RBAC escalation prevention
+# requires the agent SA to *hold* every permission it tries to grant, so
+# we need configmaps-read at the cluster scope even though we never read
+# configmaps ourselves.
+- apiGroups:
+  - ""
+  resources:
+  - configmaps
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - ""
+  resources:
+  - namespaces
+  verbs:
+  - get
+  - list
+  - watch
+  - create
+  - update
+  - delete
 - apiGroups:
   - ""
   resources:
@@ -55,6 +93,46 @@ rules:
   verbs:
   - create
   - patch
+# --- apps (provider peering-user) ---------------------------------------
+- apiGroups:
+  - apps
+  resources:
+  - deployments
+  verbs:
+  - get
+  - list
+# --- certificates.k8s.io (provider peering-user CSR + approval) ---------
+- apiGroups:
+  - certificates.k8s.io
+  resources:
+  - certificatesigningrequests
+  verbs:
+  - get
+  - list
+  - watch
+  - create
+  - update
+  - delete
+  # deletecollection is what `liqoctl delete peering-user` uses to clean
+  # up the CSR it created; without it the Cleanup instruction fails and
+  # the broker can't unwind a failed reservation.
+  - deletecollection
+- apiGroups:
+  - certificates.k8s.io
+  resources:
+  - certificatesigningrequests/approval
+  verbs:
+  - update
+# Approving a CSR additionally requires explicit permission to act on the
+# signer it targets — liqoctl uses kubernetes.io/kube-apiserver-client.
+- apiGroups:
+  - certificates.k8s.io
+  resources:
+  - signers
+  resourceNames:
+  - kubernetes.io/kube-apiserver-client
+  verbs:
+  - approve
 # --- rbac (provider peering-user) ---------------------------------------
 - apiGroups:
   - rbac.authorization.k8s.io
@@ -103,6 +181,23 @@ rules:
   - update
   - patch
   - delete
+# liqoctl peer creates an Identity CR on the consumer cluster as the last
+# step of the handshake (after Tenant + WireGuard are up). The CR lives
+# in the consumer-side tenant namespace liqo-tenant-<provider>; without
+# this rule the call fails with "identities... is forbidden" and the
+# whole peer command aborts with non-zero exit.
+- apiGroups:
+  - authentication.liqo.io
+  resources:
+  - identities
+  verbs:
+  - get
+  - list
+  - watch
+  - create
+  - update
+  - patch
+  - delete
 - apiGroups:
   - offloading.liqo.io
   resources:
@@ -116,3 +211,69 @@ rules:
   - update
   - patch
   - delete
+# RBAC escalation-prevention: liqoctl's EnsureRoles forges a RoleBinding
+# for the peering-user that grants the rules below. Even though the agent
+# itself never reads these CRs, the apiserver requires the agent SA to
+# *hold* the permissions it tries to grant.
+- apiGroups:
+  - ""
+  resources:
+  - services
+  verbs:
+  - get
+- apiGroups:
+  - ipam.liqo.io
+  resources:
+  - ips
+  verbs:
+  - get
+  - create
+  - update
+  - delete
+- apiGroups:
+  - ipam.liqo.io
+  resources:
+  - networks
+  verbs:
+  - get
+  - list
+- apiGroups:
+  - authentication.liqo.io
+  resources:
+  - tenants
+  verbs:
+  - get
+  - list
+  - create
+  - update
+  - delete
+- apiGroups:
+  - networking.liqo.io
+  resources:
+  - wggatewayclienttemplates
+  - wggatewayservertemplates
+  verbs:
+  - get
+  - list
+- apiGroups:
+  - networking.liqo.io
+  resources:
+  - configurations
+  - gatewayclients
+  - gatewayservers
+  - publickeies
+  verbs:
+  - get
+  - list
+  - create
+  - update
+  - delete
+- apiGroups:
+  - networking.liqo.io
+  resources:
+  - connections
+  - gatewayclients/status
+  - gatewayservers/status
+  verbs:
+  - get
+  - list

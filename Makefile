@@ -34,6 +34,17 @@ endif
 # tools. (i.e. podman)
 CONTAINER_TOOL ?= docker
 
+# liqoctl version + the host-cached binary path. The agent image bundles
+# liqoctl on $PATH; we fetch it on the host (where curl reaches GitHub
+# reliably) and COPY it in, rather than curling inside the Docker build
+# (the docker daemon's egress on some hosts — eg. CrownLabs — silently
+# blackholes github.com Releases).
+LIQOCTL_VERSION ?= v1.1.2
+LIQOCTL_OS      ?= linux
+LIQOCTL_ARCH    ?= amd64
+LIQOCTL_BIN_DIR := bin/liqoctl-$(LIQOCTL_VERSION)-$(LIQOCTL_OS)-$(LIQOCTL_ARCH)
+LIQOCTL_BIN     := $(LIQOCTL_BIN_DIR)/liqoctl
+
 # Setting SHELL to bash allows bash commands to be executed by recipes.
 # Options are set to exit when a recipe line exits non-zero or a piped command fails.
 SHELL = /usr/bin/env bash -o pipefail
@@ -100,7 +111,7 @@ setup-test-e2e: ## Verify the e2e prerequisites are on $PATH (clusters come up v
 
 .PHONY: test-e2e
 test-e2e: setup-test-e2e manifests generate fmt vet ## Run the multi-cluster e2e suite (provisions 4 Kind clusters inside the suite).
-	KIND=$(KIND) go test -tags=e2e ./test/e2e/ -v -ginkgo.v -timeout=45m
+	KIND=$(KIND) go test -tags=e2e ./test/e2e/ -v -ginkgo.v -timeout=90m
 
 .PHONY: cleanup-test-e2e
 cleanup-test-e2e: ## Force-delete every fa-* Kind cluster the e2e suite may have left behind.
@@ -145,14 +156,31 @@ run: manifests generate fmt vet ## Run one component from host. Requires COMPONE
 # docker-build: builds every component's image unless COMPONENT is set.
 # Image name is always $(IMG_PREFIX)/<component>:$(TAG).
 .PHONY: docker-build
-docker-build: ## Build container image(s). Set COMPONENT=<one> to build a single image.
+docker-build: $(LIQOCTL_BIN) ## Build container image(s). Set COMPONENT=<one> to build a single image.
 	$(if $(COMPONENT),$(call assert-known-component),)
 	@targets="$(if $(COMPONENT),$(COMPONENT),$(COMPONENTS))"; \
 	for c in $$targets; do \
 		img="$(IMG_PREFIX)/$$c:$(TAG)"; \
 		echo ">>> building image $$img"; \
-		$(CONTAINER_TOOL) build --build-arg COMPONENT=$$c -t $$img . || exit 1; \
+		$(CONTAINER_TOOL) build \
+			--build-arg COMPONENT=$$c \
+			--build-arg LIQOCTL_BIN=$(LIQOCTL_BIN) \
+			-t $$img . || exit 1; \
 	done
+
+# Host-side liqoctl prefetch. The download URL is well-known; we cache
+# under a version-stamped directory so bumping LIQOCTL_VERSION re-fetches.
+# Uses curl on the host (which has working internet) instead of curl from
+# inside the docker build (which on CrownLabs blackholes github.com).
+$(LIQOCTL_BIN):
+	@echo ">>> fetching liqoctl $(LIQOCTL_VERSION) for $(LIQOCTL_OS)/$(LIQOCTL_ARCH)"
+	@mkdir -p $(LIQOCTL_BIN_DIR)
+	@curl -fsSL --retry 3 --connect-timeout 30 \
+		-o $(LIQOCTL_BIN_DIR)/liqoctl.tar.gz \
+		"https://github.com/liqotech/liqo/releases/download/$(LIQOCTL_VERSION)/liqoctl-$(LIQOCTL_OS)-$(LIQOCTL_ARCH).tar.gz"
+	@tar -C $(LIQOCTL_BIN_DIR) -xzf $(LIQOCTL_BIN_DIR)/liqoctl.tar.gz liqoctl
+	@chmod +x $(LIQOCTL_BIN)
+	@rm -f $(LIQOCTL_BIN_DIR)/liqoctl.tar.gz
 
 .PHONY: docker-push
 docker-push: ## Push container image(s). Set COMPONENT=<one> to push a single image.

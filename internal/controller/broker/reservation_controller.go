@@ -233,6 +233,20 @@ func (r *ReservationReconciler) handleUnpeering(
 func (r *ReservationReconciler) handleTerminal(
 	ctx context.Context, log logr.Logger, resv *brokerv1alpha1.Reservation,
 ) (ctrl.Result, error) {
+	// Release the reservation's chunk count back to the provider's
+	// AvailableChunks budget if no prior path has already done so. The
+	// API DELETE handler stamps ChunksReleasedAnnotation when the
+	// normal consumer-initiated release decrements; here we cover the
+	// other terminal entry points (Failed / Expired from any
+	// non-Unpeering phase) where nothing else credited the chunks back.
+	if !brokerv1alpha1.IsChunksReleased(resv) {
+		if err := r.releaseChunks(ctx, resv); err != nil {
+			return ctrl.Result{}, fmt.Errorf("release chunks: %w", err)
+		}
+		log.Info("released reserved chunks", "provider", resv.Spec.ProviderClusterID,
+			"chunkCount", resv.Spec.ChunkCount, "phase", resv.Status.Phase)
+	}
+
 	var gk autoscalingv1alpha1.ProviderInstruction
 	err := r.Get(ctx, types.NamespacedName{
 		Name: providerInstructionGKName(resv.Name), Namespace: resv.Namespace,
@@ -249,6 +263,77 @@ func (r *ReservationReconciler) handleTerminal(
 	}
 	log.Info("queued provider Cleanup", "provider", resv.Spec.ProviderClusterID, "phase", resv.Status.Phase)
 	return ctrl.Result{}, nil
+}
+
+// releaseChunks decrements the provider's ReservedChunks by
+// resv.Spec.ChunkCount and stamps ChunksReleasedAnnotation on the
+// Reservation so subsequent reconciles know not to release again.
+// Conflict-retry up to 3 times on both the ClusterAdvertisement status
+// update and the Reservation annotation update. Idempotent: the
+// annotation gates a re-entry from the next reconcile.
+func (r *ReservationReconciler) releaseChunks(
+	ctx context.Context, resv *brokerv1alpha1.Reservation,
+) error {
+	for attempt := 0; attempt < 3; attempt++ {
+		cadv := &brokerv1alpha1.ClusterAdvertisement{}
+		if err := r.Get(ctx, types.NamespacedName{
+			Name: resv.Spec.ProviderClusterID, Namespace: resv.Namespace,
+		}, cadv); err != nil {
+			if apierrors.IsNotFound(err) {
+				// Provider gone — nothing to credit back. Still stamp
+				// the annotation so we don't try again on the next
+				// reconcile.
+				return r.stampChunksReleased(ctx, resv)
+			}
+			return fmt.Errorf("get ClusterAdvertisement: %w", err)
+		}
+		next := cadv.Status.ReservedChunks - resv.Spec.ChunkCount
+		if next < 0 {
+			next = 0
+		}
+		cadv.Status.ReservedChunks = next
+		avail := cadv.Status.TotalChunks - next
+		if avail < 0 {
+			avail = 0
+		}
+		cadv.Status.AvailableChunks = avail
+		if err := r.Status().Update(ctx, cadv); err != nil {
+			if apierrors.IsConflict(err) {
+				continue
+			}
+			return fmt.Errorf("update ClusterAdvertisement status: %w", err)
+		}
+		return r.stampChunksReleased(ctx, resv)
+	}
+	return fmt.Errorf("exhausted conflict retries updating ClusterAdvertisement %q",
+		resv.Spec.ProviderClusterID)
+}
+
+// stampChunksReleased sets the ChunksReleasedAnnotation on the
+// Reservation, re-fetching to avoid stale-conflict on update. Idempotent.
+func (r *ReservationReconciler) stampChunksReleased(
+	ctx context.Context, resv *brokerv1alpha1.Reservation,
+) error {
+	for attempt := 0; attempt < 3; attempt++ {
+		fresh := &brokerv1alpha1.Reservation{}
+		if err := r.Get(ctx, types.NamespacedName{
+			Name: resv.Name, Namespace: resv.Namespace,
+		}, fresh); err != nil {
+			return err
+		}
+		if brokerv1alpha1.IsChunksReleased(fresh) {
+			return nil
+		}
+		brokerv1alpha1.MarkChunksReleased(fresh)
+		if err := r.Update(ctx, fresh); err != nil {
+			if apierrors.IsConflict(err) {
+				continue
+			}
+			return err
+		}
+		return nil
+	}
+	return fmt.Errorf("exhausted conflict retries stamping chunks-released annotation")
 }
 
 // ensureProviderCleanupInstruction emits a ProviderInstruction{Cleanup}

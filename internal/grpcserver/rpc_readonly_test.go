@@ -343,13 +343,12 @@ func TestNodeGroupTemplateNodeInfo_BuildsAndSerializes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
-	if len(resp.NodeBytes) == 0 {
-		t.Fatal("NodeBytes is empty")
+	// v1.32 externalgrpc returns the template as a structured v1.Node
+	// in NodeInfo rather than a marshalled bytes blob.
+	if resp.NodeInfo == nil {
+		t.Fatal("NodeInfo is nil")
 	}
-	var node corev1.Node
-	if err := node.Unmarshal(resp.NodeBytes); err != nil {
-		t.Fatalf("unmarshal NodeBytes: %v", err)
-	}
+	node := *resp.NodeInfo
 	if node.Name != "template-p1/standard" {
 		t.Errorf("template name: want template-p1/standard, got %q", node.Name)
 	}
