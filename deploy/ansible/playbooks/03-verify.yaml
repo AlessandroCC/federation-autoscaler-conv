@@ -34,6 +34,10 @@
       changed_when: false
       failed_when: broker_avail.stdout != "True"
 
+    # Provider agents POST their first advertisement ~30 s after they start,
+    # and the broker then flips Status.Available=true. On a cold deploy this
+    # check can run before that lands, so retry for ~2 min instead of failing
+    # on the first (empty) read.
     - name: "[central] At least one provider has a fresh ClusterAdvertisement"
       delegate_to: localhost
       ansible.builtin.shell:
@@ -43,7 +47,9 @@
             -o jsonpath='{range .items[?(@.status.available==true)]}{.metadata.name} {end}'
       register: cadvs
       changed_when: false
-      failed_when: cadvs.stdout | trim == ""
+      retries: 12
+      delay: 10
+      until: (cadvs.stdout | trim) != ""
 
     - name: "[central] OK — broker ready, providers advertising: {{ cadvs.stdout | trim }}"
       ansible.builtin.debug:

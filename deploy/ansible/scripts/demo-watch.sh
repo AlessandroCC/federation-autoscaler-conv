@@ -6,12 +6,15 @@
 #   ./demo-watch.sh          # open the dashboard (attaches a tmux session)
 #   ./demo-watch.sh --kill   # tear the session down
 #
-# Layout (tiled, 2x2):
-#   ┌────────────────────┬────────────────────┐
-#   │ central (broker)   │ consumer-1 (CA)    │
-#   ├────────────────────┼────────────────────┤
-#   │ provider-1         │ provider-2         │
-#   └────────────────────┴────────────────────┘
+# Layout (2 panes on top, 3 on the bottom — the bottom row is the three
+# physical clusters seen through the SAME commands, so local vs offloaded
+# pods can be compared side by side):
+#   ┌─────────────────────────┬─────────────────────────┐
+#   │ central (broker)        │ consumer-1 (CA view)    │
+#   ├────────────────┬────────┴───────┬─────────────────┤
+#   │ consumer-1     │ provider-1     │ provider-2      │
+#   │ (local view)   │                │                 │
+#   └────────────────┴────────────────┴─────────────────┘
 #
 # Each pane re-invokes this script in `_pane` mode and refreshes on a timer.
 # Kubeconfigs are read from $KUBECONFIG_DIR/<cluster>.yaml (the location the
@@ -83,6 +86,20 @@ render_consumer() {
     || echo "  (no CA logs yet)"
 }
 
+# Same two commands as render_provider, run against the consumer: the bottom
+# row of the dashboard shows every physical cluster through an identical lens.
+# The difference is the meaning — here the Pods are LOCAL to the cluster, on
+# the providers they are offloaded copies reflected by Liqo.
+render_consumer_local() {
+  sec "Nodes — the consumer's own capacity" "kubectl get nodes -o custom-columns=NODE,CPU,MEM,PODS"
+  expect "the consumer's local allocatable; borrowed virtual nodes join this list on scale-up"
+  kubectl get nodes -o custom-columns='NODE:.metadata.name,CPU:.status.allocatable.cpu,MEM:.status.allocatable.memory,PODS:.status.allocatable.pods' 2>/dev/null || echo "  (none)"
+
+  sec "Workload pods on this cluster" "kubectl get pods -A -l $WORKLOAD_SELECTOR -o wide"
+  expect "same command as the provider panes — these Pods run LOCALLY (NODE=consumer), not offloaded"
+  kubectl get pods -A -l "$WORKLOAD_SELECTOR" -o wide 2>/dev/null || echo "  (none)"
+}
+
 render_provider() {
   sec "Nodes — allocatable headroom to lend" "kubectl get nodes -o custom-columns=NODE,CPU,MEM,PODS"
   expect "spare CPU/MEM this provider lends as 2 CPU / 4Gi chunks"
@@ -108,10 +125,11 @@ if [[ "${1:-}" == "_pane" ]]; then
     clear
     printf '== %s :: %s ==   (every %ss)\n\n' "$role" "$cluster" "$WATCH_INTERVAL"
     case "$role" in
-      central)  render_central ;;
-      consumer) render_consumer ;;
-      provider) render_provider "$cluster" ;;
-      *)        echo "unknown pane role: $role" ;;
+      central)        render_central ;;
+      consumer)       render_consumer ;;
+      consumer-local) render_consumer_local ;;
+      provider)       render_provider "$cluster" ;;
+      *)              echo "unknown pane role: $role" ;;
     esac
     sleep "$WATCH_INTERVAL"
   done
@@ -139,19 +157,28 @@ pane_cmd() { echo "exec bash '$SELF' _pane '$1' '$2' '$(kubeconfig_for "$2")'"; 
 
 tmux kill-session -t "$SESSION" 2>/dev/null || true
 
-# -P -F prints the initial pane's id directly, avoiding a `list-panes | head`
-# pipe that would trip `set -o pipefail` on SIGPIPE.
+# Build the layout with explicit splits (NOT `select-layout tiled`, which
+# re-orders panes by index and put provider-1 in the top row). -P -F prints
+# each new pane's id directly, avoiding a `list-panes | head` pipe that would
+# trip `set -o pipefail` on SIGPIPE.
+#
+# 1. split the window into top/bottom halves;
+# 2. split the top half  → central | consumer (CA view);
+# 3. split the bottom half into thirds → consumer (local) | provider-1 | provider-2.
 p_central=$(tmux new-session -d -s "$SESSION" -n demo -P -F '#{pane_id}')
 tmux send-keys -t "$p_central" "$(pane_cmd central "$CENTRAL")" C-m
+
+p_conlocal=$(tmux split-window -v -t "$p_central" -P -F '#{pane_id}')
+tmux send-keys -t "$p_conlocal" "$(pane_cmd consumer-local "$CONSUMER")" C-m
 
 p_consumer=$(tmux split-window -h -t "$p_central" -P -F '#{pane_id}')
 tmux send-keys -t "$p_consumer" "$(pane_cmd consumer "$CONSUMER")" C-m
 
-p_prov1=$(tmux split-window -v -t "$p_central" -P -F '#{pane_id}')
+p_prov1=$(tmux split-window -h -l '66%' -t "$p_conlocal" -P -F '#{pane_id}')
 tmux send-keys -t "$p_prov1" "$(pane_cmd provider "$PROVIDER_1")" C-m
 
-p_prov2=$(tmux split-window -v -t "$p_consumer" -P -F '#{pane_id}')
+p_prov2=$(tmux split-window -h -l '50%' -t "$p_prov1" -P -F '#{pane_id}')
 tmux send-keys -t "$p_prov2" "$(pane_cmd provider "$PROVIDER_2")" C-m
 
-tmux select-layout -t "$SESSION" tiled
+tmux select-pane -t "$p_central"
 tmux attach -t "$SESSION"
