@@ -17,6 +17,7 @@ limitations under the License.
 package api
 
 import (
+	"sort"
 	"sync"
 	"time"
 )
@@ -69,4 +70,20 @@ func (r *ConsumerRegistry) Lookup(clusterID string) (ConsumerEntry, bool) {
 	defer r.mu.RUnlock()
 	e, ok := r.entries[clusterID]
 	return e, ok
+}
+
+// Snapshot returns a copy of every ConsumerEntry recorded since this Broker
+// pod started, sorted by ClusterID for stable rendering (the read-only
+// dashboard polls this every couple of seconds). Safe for concurrent use:
+// it takes only the read lock and returns value copies, so callers cannot
+// mutate registry state — ConsumerEntry has no reference fields.
+func (r *ConsumerRegistry) Snapshot() []ConsumerEntry {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	out := make([]ConsumerEntry, 0, len(r.entries))
+	for _, e := range r.entries {
+		out = append(out, e)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ClusterID < out[j].ClusterID })
+	return out
 }

@@ -6,6 +6,12 @@
 #   ./demo-watch.sh          # open the dashboard (attaches a tmux session)
 #   ./demo-watch.sh --kill   # tear the session down
 #
+# Prefer a browser for the broker's view? The broker serves a read-only web
+# dashboard of its own state at http://<central-ip>:30444/ (advertisements,
+# reservations, instructions, chunk capacity, consumers). This tmux dashboard
+# is still the way to watch the consumer/provider clusters (virtual nodes,
+# offloaded pods, CA decisions) — the broker can't see those.
+#
 # Layout (2 panes on top, 3 on the bottom — the bottom row is the three
 # physical clusters seen through the SAME commands, so local vs offloaded
 # pods can be compared side by side):

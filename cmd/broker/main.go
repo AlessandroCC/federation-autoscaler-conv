@@ -65,13 +65,14 @@ func main() {
 
 	// Broker REST API flags (docs/design.md §7.3, §10.1).
 	var (
-		apiBindAddress     string
-		apiTLSCertFile     string
-		apiTLSKeyFile      string
-		apiTLSClientCAFile string
-		apiShutdownTimeout time.Duration
-		apiNamespace       string
-		reservationTimeout time.Duration
+		apiBindAddress       string
+		apiTLSCertFile       string
+		apiTLSKeyFile        string
+		apiTLSClientCAFile   string
+		apiShutdownTimeout   time.Duration
+		apiNamespace         string
+		reservationTimeout   time.Duration
+		dashboardBindAddress string
 	)
 	flag.StringVar(&apiBindAddress, "api-bind-address", ":8443",
 		"host:port for the Broker REST API HTTPS listener.")
@@ -89,6 +90,8 @@ func main() {
 		"Deadline stamped on a new Reservation's ExpiresAt. A non-renewed reservation past this "+
 			"is moved to Expired. v1 has no renewal, so keep this longer than any workload that "+
 			"holds borrowed capacity (the old 15m value force-expired active reservations).")
+	flag.StringVar(&dashboardBindAddress, "dashboard-bind-address", ":9444",
+		"host:port for the read-only, plain-HTTP broker dashboard listener (no mTLS). Empty disables it.")
 
 	flag.Parse()
 
@@ -151,6 +154,29 @@ func main() {
 	if err := mgr.Add(apiRunnable); err != nil {
 		setupLog.Error(err, "unable to register broker api server with manager")
 		os.Exit(1)
+	}
+
+	// Read-only web dashboard: a SECOND, plain-HTTP listener (no mTLS) serving
+	// a live view of broker state — advertisements, reservations, the
+	// instruction phase machine, chunk capacity, and registered consumers.
+	// It wraps the SAME *Server as the mTLS API so the Consumers panel reflects
+	// live heartbeats and both share the manager's cached client. Leader-gated
+	// like the API runnable. An empty bind address disables it entirely.
+	if dashboardBindAddress != "" {
+		dashboardRunnable, err := brokerapi.NewDashboardRunnableFromServer(
+			apiRunnable.Server(),
+			brokerapi.DashboardRunnableOptions{
+				BindAddress:     dashboardBindAddress,
+				ShutdownTimeout: apiShutdownTimeout,
+			})
+		if err != nil {
+			setupLog.Error(err, "unable to build broker dashboard server")
+			os.Exit(1)
+		}
+		if err := mgr.Add(dashboardRunnable); err != nil {
+			setupLog.Error(err, "unable to register broker dashboard with manager")
+			os.Exit(1)
+		}
 	}
 
 	setupLog.Info("starting broker manager")

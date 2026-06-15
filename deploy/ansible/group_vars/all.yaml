@@ -49,6 +49,11 @@ fa_namespace: federation-autoscaler-system
 # put that IP in the broker certificate's SAN list.
 broker_node_port: 30443
 
+# Read-only web dashboard NodePort (plain HTTP, no mTLS). Open
+# http://{{ broker_address }}:{{ dashboard_node_port }}/ in a browser for a
+# live view of broker state. Trusted-network only — it is unauthenticated.
+dashboard_node_port: 30444
+
 # Resolved from the inventory: the central host's ansible_host IP. Agents
 # dial https://{{ broker_address }}:{{ broker_node_port }}/.
 broker_address: "{{ hostvars[groups['central'][0]].ansible_host }}"

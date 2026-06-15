@@ -69,3 +69,46 @@ func TestConsumerRegistry(t *testing.T) {
 		t.Errorf("expected consumer-b to be present after concurrent Touch")
 	}
 }
+
+// TestConsumerRegistrySnapshot verifies the read-only accessor the dashboard
+// relies on: it returns every entry, sorted by ClusterID, as copies (so the
+// caller cannot mutate registry state), and is safe to call concurrently with
+// Touch.
+func TestConsumerRegistrySnapshot(t *testing.T) {
+	r := NewConsumerRegistry()
+
+	if got := r.Snapshot(); len(got) != 0 {
+		t.Fatalf("Snapshot on empty registry len = %d, want 0", len(got))
+	}
+
+	// Insert out of order; Snapshot must return them sorted.
+	r.Touch("consumer-c", "liqo-c")
+	r.Touch(consumerCluster, "liqo-a")
+	r.Touch("consumer-b", "liqo-b")
+
+	got := r.Snapshot()
+	if len(got) != 3 {
+		t.Fatalf("Snapshot len = %d, want 3", len(got))
+	}
+	if got[0].ClusterID != consumerCluster || got[1].ClusterID != "consumer-b" || got[2].ClusterID != "consumer-c" {
+		t.Errorf("Snapshot not sorted by ClusterID: %+v", got)
+	}
+
+	// Entries are copies: mutating the returned slice must not touch state.
+	got[0].LiqoClusterID = "mutated"
+	if e, _ := r.Lookup(consumerCluster); e.LiqoClusterID != "liqo-a" {
+		t.Errorf("Snapshot returned an aliased entry; registry mutated to %q", e.LiqoClusterID)
+	}
+
+	// Concurrent Snapshot alongside Touch must not race or panic.
+	var wg sync.WaitGroup
+	for i := 0; i < 16; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			r.Touch("consumer-x", "liqo-x")
+			_ = r.Snapshot()
+		}()
+	}
+	wg.Wait()
+}

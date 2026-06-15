@@ -85,13 +85,17 @@
         rollout status deploy/broker --timeout=3m
   changed_when: true
 
-- name: Pin broker Service to NodePort {{ broker_node_port }}
+# A strategic-merge of `ports` replaces entries by name, so BOTH ports must be
+# listed here or the unlisted one loses its pinned nodePort: api (mTLS, agents)
+# on {{ broker_node_port }} and dashboard (plain HTTP, browser) on
+# {{ dashboard_node_port }}.
+- name: Pin broker Service to NodePort {{ broker_node_port }} (api) + {{ dashboard_node_port }} (dashboard)
   delegate_to: localhost
   ansible.builtin.shell:
     cmd: |
       kubectl --kubeconfig {{ cluster_kubeconfig }} -n {{ fa_namespace }} \
         patch service broker --type strategic --patch \
-        '{"spec":{"type":"NodePort","ports":[{"name":"api","port":9443,"nodePort":{{ broker_node_port }}}]}}'
+        '{"spec":{"type":"NodePort","ports":[{"name":"api","port":9443,"nodePort":{{ broker_node_port }}},{"name":"dashboard","port":9444,"nodePort":{{ dashboard_node_port }}}]}}'
   changed_when: true
 
 - name: Wait for broker Deployment to become Available

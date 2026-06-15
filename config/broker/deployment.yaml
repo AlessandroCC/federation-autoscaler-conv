@@ -63,6 +63,10 @@ spec:
         # (e.g. 2m) to exercise the expiry → consumer-cleanup path during
         # testing; 24h is the production default.
         - --reservation-timeout=24h
+        # Read-only, plain-HTTP dashboard listener (no mTLS) — a browser-
+        # reachable live view of broker state. Exposed via NodePort in the
+        # Ansible deploy. Set to "" (empty) to disable it.
+        - --dashboard-bind-address=:9444
         env:
         - name: POD_NAMESPACE
           valueFrom:
@@ -71,6 +75,9 @@ spec:
         ports:
         - name: api
           containerPort: 9443
+          protocol: TCP
+        - name: dashboard
+          containerPort: 9444
           protocol: TCP
         - name: health
           containerPort: 8081

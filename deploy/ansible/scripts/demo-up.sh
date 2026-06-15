@@ -394,6 +394,10 @@ Next steps — drive the scale-up / scale-down demo:
      the consumer's Pods going Pending -> Running (local vs borrowed):
        $ANSIBLE_DIR/scripts/demo-watch.sh
 
+     Or, for the broker's own view in a browser (read-only; advertisements,
+     reservations, the instruction phase machine, chunk capacity, consumers):
+       http://${CENTRAL}:30444/
+
   2) Back HERE, scale UP — apply the workload on the consumer:
        kubectl --kubeconfig ~/.kube/consumer-1.yaml apply -f "$ANSIBLE_DIR/samples/burst-workload.yaml"
      On the dashboard: ~3 Pods Run locally, the overflow pends, then lands on a

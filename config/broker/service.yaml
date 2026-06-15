@@ -19,3 +19,10 @@ spec:
     port: 9443
     targetPort: api
     protocol: TCP
+  # Read-only web dashboard (plain HTTP, no mTLS). ClusterIP here; the Ansible
+  # fa_central role flips the Service to NodePort and pins this to 30444 so a
+  # browser on the operator's machine can reach it.
+  - name: dashboard
+    port: 9444
+    targetPort: dashboard
+    protocol: TCP

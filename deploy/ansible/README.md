@@ -49,6 +49,7 @@ all work). Open the following ports between them:
 | 22                  | TCP      | SSH from your laptop                  |
 | 6443                | TCP      | k3s apiserver (used by `kubectl`)     |
 | 30443               | TCP      | Broker NodePort (agents → broker)     |
+| 30444               | TCP      | Broker dashboard NodePort (browser)   |
 | 30000–32767         | UDP      | Liqo WireGuard gateway                |
 
 Outbound HTTPS from every VM is required during the bootstrap (k3s installer,
@@ -184,6 +185,12 @@ progresses:
 ```bash
 scripts/demo-watch.sh           # tear the session down later with --kill
 ```
+
+Prefer a browser? The broker also serves a read-only web dashboard of its own
+state (advertisements, reservations, the instruction phase machine, chunk
+capacity, registered consumers) at `http://<central-ip>:30444/`. It refreshes
+every couple of seconds and needs no login — keep it on a trusted network, as
+it is unauthenticated.
 
 Then drive the scale-up / scale-down with the burst workload — the sole
 manual action in the demo (the sizing rationale is in the file's header

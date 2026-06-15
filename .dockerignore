@@ -10,6 +10,11 @@
 !go.mod
 !go.sum
 
+# Re-include the embedded broker dashboard asset. dashboard.go has
+# //go:embed dashboard_assets/index.html, so the build context MUST carry it
+# or `go build` fails with "pattern ...: no matching files found".
+!internal/broker/api/dashboard_assets/index.html
+
 # Re-include the host-prefetched liqoctl binary the Makefile drops under
 # bin/liqoctl-<version>-<os>-<arch>/liqoctl. The agent runtime stage COPYs
 # from this path instead of curling github.com during the build.

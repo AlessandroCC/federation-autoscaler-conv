@@ -1,0 +1,394 @@
+<!DOCTYPE html>
+<!--
+ Federation-Autoscaler Broker — read-only live dashboard.
+
+ Single self-contained page (no build step, no external assets, no dependencies)
+ embedded into the broker binary via //go:embed. It polls GET /api/v1/overview
+ every couple of seconds and renders the Broker's own state — the same
+ information the demo-watch.sh "central" tmux pane shows, in a browser.
+
+ Security note: this page is served on a plain-HTTP, unauthenticated listener.
+ It is read-only and renders every cell via textContent (never innerHTML) so
+ CR-controlled strings (messages, IDs) cannot inject markup.
+-->
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Broker Dashboard — Federation Autoscaler</title>
+  <style>
+    :root {
+      --bg: #0f1419;
+      --panel: #1a212b;
+      --panel-2: #222b37;
+      --border: #2d3949;
+      --fg: #e6edf3;
+      --muted: #8b98a9;
+      --accent: #4aa8ff;
+      --green: #3fb950;
+      --amber: #d29922;
+      --red: #f85149;
+      --purple: #bc8cff;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--fg);
+      font: 14px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      padding: 0 0 48px;
+    }
+    header {
+      display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
+      padding: 14px 22px;
+      background: var(--panel);
+      border-bottom: 1px solid var(--border);
+      position: sticky; top: 0; z-index: 10;
+    }
+    header h1 { font-size: 16px; margin: 0; font-weight: 600; }
+    header .ns { color: var(--muted); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+    .badge {
+      font-size: 11px; font-weight: 700; letter-spacing: .5px;
+      padding: 3px 8px; border-radius: 4px; text-transform: uppercase;
+    }
+    .badge.ro { background: rgba(248,81,73,.15); color: var(--red); border: 1px solid rgba(248,81,73,.4); }
+    .spacer { flex: 1; }
+    .updated { color: var(--muted); font-size: 12px; }
+    .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; vertical-align: middle; }
+    .dot.ok { background: var(--green); }
+    .dot.stale { background: var(--amber); }
+    .dot.err { background: var(--red); }
+
+    #error {
+      display: none; margin: 12px 22px 0;
+      padding: 10px 14px; border-radius: 6px;
+      background: rgba(248,81,73,.12); border: 1px solid rgba(248,81,73,.4); color: #ffb3ae;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px;
+    }
+
+    .cards { display: flex; gap: 14px; flex-wrap: wrap; padding: 18px 22px 4px; }
+    .card {
+      background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
+      padding: 12px 16px; min-width: 120px;
+    }
+    .card .label { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .5px; }
+    .card .value { font-size: 26px; font-weight: 700; margin-top: 4px; }
+    .card .sub { color: var(--muted); font-size: 11px; margin-top: 2px; }
+    .value.reserved { color: var(--amber); }
+    .value.available { color: var(--green); }
+    .chunktypes { display: flex; gap: 14px; flex-wrap: wrap; }
+    .chunktypes .ct { font-size: 12px; color: var(--muted); }
+    .chunktypes .ct b { color: var(--fg); }
+
+    section { padding: 18px 22px 0; }
+    section h2 {
+      font-size: 13px; font-weight: 600; text-transform: uppercase; letter-spacing: .6px;
+      color: var(--muted); margin: 0 0 8px; display: flex; align-items: center; gap: 8px;
+    }
+    section h2 .count {
+      background: var(--panel-2); color: var(--fg); border: 1px solid var(--border);
+      border-radius: 10px; padding: 1px 8px; font-size: 11px; font-weight: 600;
+    }
+    .table-wrap { overflow-x: auto; border: 1px solid var(--border); border-radius: 8px; }
+    table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+    thead th {
+      text-align: left; padding: 8px 12px; background: var(--panel-2);
+      color: var(--muted); font-weight: 600; white-space: nowrap;
+      border-bottom: 1px solid var(--border);
+    }
+    tbody td { padding: 7px 12px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+    tbody tr:last-child td { border-bottom: none; }
+    tbody tr:hover { background: rgba(255,255,255,.025); }
+    td.mono, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+    .empty { padding: 14px 12px; color: var(--muted); font-style: italic; }
+
+    .pill {
+      display: inline-block; padding: 2px 8px; border-radius: 999px;
+      font-size: 11px; font-weight: 600; border: 1px solid transparent;
+    }
+    .pill.green  { background: rgba(63,185,80,.15);  color: var(--green);  border-color: rgba(63,185,80,.35); }
+    .pill.amber  { background: rgba(210,153,34,.15);  color: var(--amber);  border-color: rgba(210,153,34,.35); }
+    .pill.red    { background: rgba(248,81,73,.15);   color: var(--red);    border-color: rgba(248,81,73,.35); }
+    .pill.blue   { background: rgba(74,168,255,.15);  color: var(--accent); border-color: rgba(74,168,255,.35); }
+    .pill.purple { background: rgba(188,140,255,.15); color: var(--purple); border-color: rgba(188,140,255,.35); }
+    .pill.gray   { background: var(--panel-2); color: var(--muted); border-color: var(--border); }
+    .yes { color: var(--green); font-weight: 600; }
+    .no  { color: var(--muted); }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Broker Dashboard</h1>
+    <span class="ns" id="namespace"></span>
+    <span class="badge ro">read-only</span>
+    <span class="spacer"></span>
+    <span class="updated"><span class="dot" id="statusDot"></span><span id="updated">connecting…</span></span>
+  </header>
+
+  <div id="error"></div>
+
+  <div class="cards" id="capacityCards"></div>
+
+  <section>
+    <h2>Cluster Advertisements <span class="count" id="advCount">0</span></h2>
+    <div class="table-wrap"><table>
+      <thead><tr>
+        <th>Provider</th><th>Type</th><th>Total</th><th>Reserved</th><th>Available</th>
+        <th>Ready</th><th>Last seen</th><th>Price</th><th>Topology</th>
+      </tr></thead>
+      <tbody id="advBody"></tbody>
+    </table></div>
+  </section>
+
+  <section>
+    <h2>Reservations <span class="count" id="resvCount">0</span></h2>
+    <div class="table-wrap"><table>
+      <thead><tr>
+        <th>Reservation</th><th>Phase</th><th>Consumer</th><th>Provider</th>
+        <th>Chunks</th><th>Type</th><th>Virtual nodes</th>
+        <th>Created</th><th>Expires</th><th>Terminated</th><th>Message</th>
+      </tr></thead>
+      <tbody id="resvBody"></tbody>
+    </table></div>
+  </section>
+
+  <section>
+    <h2>Provider Instructions <span class="count" id="piCount">0</span></h2>
+    <div class="table-wrap"><table>
+      <thead><tr>
+        <th>ID</th><th>Kind</th><th>Provider</th><th>Reservation</th>
+        <th>Enforced</th><th>Attempts</th><th>Issued</th><th>Delivered</th><th>Expires</th><th>Message</th>
+      </tr></thead>
+      <tbody id="piBody"></tbody>
+    </table></div>
+  </section>
+
+  <section>
+    <h2>Reservation Instructions <span class="count" id="riCount">0</span></h2>
+    <div class="table-wrap"><table>
+      <thead><tr>
+        <th>ID</th><th>Kind</th><th>Consumer</th><th>Provider</th><th>Reservation</th>
+        <th>Enforced</th><th>Attempts</th><th>Issued</th><th>Delivered</th><th>Expires</th><th>Message</th>
+      </tr></thead>
+      <tbody id="riBody"></tbody>
+    </table></div>
+  </section>
+
+  <section>
+    <h2>Registered Consumers <span class="count" id="consCount">0</span></h2>
+    <div class="table-wrap"><table>
+      <thead><tr><th>Consumer cluster</th><th>Liqo cluster ID</th><th>Last heartbeat</th></tr></thead>
+      <tbody id="consBody"></tbody>
+    </table></div>
+  </section>
+
+  <script>
+    "use strict";
+    const REFRESH_MS = 2000;
+    const $ = (id) => document.getElementById(id);
+
+    // ---- small render helpers (all values via textContent) ----------------
+    function td(text, opts) {
+      const cell = document.createElement("td");
+      cell.textContent = (text === undefined || text === null || text === "") ? "—" : String(text);
+      if (opts && opts.mono) cell.classList.add("mono");
+      return cell;
+    }
+    function pill(text, kind) {
+      const cell = document.createElement("td");
+      const span = document.createElement("span");
+      span.className = "pill " + kind;
+      span.textContent = text;
+      cell.appendChild(span);
+      return cell;
+    }
+    function boolCell(v) {
+      const cell = document.createElement("td");
+      cell.textContent = v ? "yes" : "no";
+      cell.className = v ? "yes" : "no";
+      return cell;
+    }
+    function fmtTime(s) {
+      if (!s) return "—";
+      const d = new Date(s);
+      if (isNaN(d.getTime())) return "—";
+      return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+    }
+    function setEmpty(tbody, cols, text) {
+      const tr = document.createElement("tr");
+      const cell = document.createElement("td");
+      cell.colSpan = cols; cell.className = "empty"; cell.textContent = text;
+      tr.appendChild(cell); tbody.appendChild(tr);
+    }
+    function clusterShort(id) {
+      // CN-style IDs can be long; keep them readable but full on hover.
+      return id || "—";
+    }
+
+    const PHASE_KIND = {
+      Peered: "green", Released: "gray", Failed: "red", Expired: "red",
+      Pending: "blue", GeneratingKubeconfig: "amber", KubeconfigReady: "amber",
+      Peering: "amber", Unpeering: "amber",
+    };
+    const INSTR_KIND = {
+      GenerateKubeconfig: "blue", Peer: "green", Unpeer: "amber",
+      Cleanup: "red", Reconcile: "purple",
+    };
+
+    // ---- renderers ---------------------------------------------------------
+    function renderCapacity(c) {
+      const cards = $("capacityCards");
+      cards.replaceChildren();
+      const mk = (label, value, valueClass, sub) => {
+        const card = document.createElement("div"); card.className = "card";
+        const l = document.createElement("div"); l.className = "label"; l.textContent = label;
+        const v = document.createElement("div"); v.className = "value" + (valueClass ? " " + valueClass : ""); v.textContent = value;
+        card.append(l, v);
+        if (sub) { const s = document.createElement("div"); s.className = "sub"; s.textContent = sub; card.appendChild(s); }
+        return card;
+      };
+      cards.appendChild(mk("Total chunks", c.totalChunks ?? 0));
+      cards.appendChild(mk("Reserved", c.reservedChunks ?? 0, "reserved"));
+      cards.appendChild(mk("Available", c.availableChunks ?? 0, "available"));
+      cards.appendChild(mk("Providers", (c.availableProviderCount ?? 0) + " / " + (c.providerCount ?? 0), null, "available / total"));
+
+      const byType = c.byChunkType || {};
+      const keys = Object.keys(byType).sort();
+      if (keys.length) {
+        const card = document.createElement("div"); card.className = "card";
+        const l = document.createElement("div"); l.className = "label"; l.textContent = "By chunk type";
+        const row = document.createElement("div"); row.className = "chunktypes"; row.style.marginTop = "6px";
+        for (const k of keys) {
+          const t = byType[k];
+          const ct = document.createElement("div"); ct.className = "ct";
+          const b = document.createElement("b"); b.textContent = k + ": ";
+          ct.appendChild(b);
+          ct.appendChild(document.createTextNode((t.availableChunks ?? 0) + " free / " + (t.totalChunks ?? 0) + " total"));
+          row.appendChild(ct);
+        }
+        card.append(l, row);
+        cards.appendChild(card);
+      }
+    }
+
+    function renderAdvertisements(list) {
+      const tbody = $("advBody"); tbody.replaceChildren();
+      $("advCount").textContent = list.length;
+      if (!list.length) { setEmpty(tbody, 9, "No providers advertising."); return; }
+      for (const a of list) {
+        const tr = document.createElement("tr");
+        tr.appendChild(td(clusterShort(a.clusterId), { mono: true }));
+        // Chunk type is derived from the advertised resources the same way the
+        // broker classifies a provider: gpu when nvidia.com/gpu is present.
+        const isGpu = !!(a.resources && a.resources["nvidia.com/gpu"] !== undefined);
+        tr.appendChild(pill(isGpu ? "gpu" : "standard", isGpu ? "purple" : "gray"));
+        tr.appendChild(td(a.chunkCount ?? 0));
+        tr.appendChild(td(a.reservedChunks ?? 0));
+        tr.appendChild(td(a.availableChunks ?? 0));
+        tr.appendChild(a.available ? pill("ready", "green") : pill("stale", "amber"));
+        tr.appendChild(td(fmtTime(a.lastSeen)));
+        tr.appendChild(td(a.price));
+        const topo = a.topology ? [a.topology.region, a.topology.zone].filter(Boolean).join("/") : "";
+        tr.appendChild(td(topo));
+        tbody.appendChild(tr);
+      }
+    }
+
+    function renderReservations(list) {
+      const tbody = $("resvBody"); tbody.replaceChildren();
+      $("resvCount").textContent = list.length;
+      if (!list.length) { setEmpty(tbody, 11, "No reservations."); return; }
+      for (const r of list) {
+        const tr = document.createElement("tr");
+        tr.appendChild(td(r.reservationId, { mono: true }));
+        tr.appendChild(pill(r.status || "—", PHASE_KIND[r.status] || "gray"));
+        tr.appendChild(td(clusterShort(r.consumerClusterId), { mono: true }));
+        tr.appendChild(td(clusterShort(r.providerClusterId), { mono: true }));
+        tr.appendChild(td(r.chunkCount ?? 0));
+        tr.appendChild(td(r.chunkType));
+        tr.appendChild(td((r.virtualNodeNames || []).join(", "), { mono: true }));
+        tr.appendChild(td(fmtTime(r.createdAt)));
+        tr.appendChild(td(fmtTime(r.expiresAt)));
+        tr.appendChild(td(fmtTime(r.terminatedAt)));
+        tr.appendChild(td(r.message));
+        tbody.appendChild(tr);
+      }
+    }
+
+    function renderInstructions(tbodyId, countId, list, isReservation) {
+      const tbody = $(tbodyId); tbody.replaceChildren();
+      $(countId).textContent = list.length;
+      const cols = isReservation ? 11 : 10;
+      if (!list.length) { setEmpty(tbody, cols, "No instructions."); return; }
+      for (const it of list) {
+        const tr = document.createElement("tr");
+        tr.appendChild(td(it.id, { mono: true }));
+        tr.appendChild(pill(it.kind || "—", INSTR_KIND[it.kind] || "gray"));
+        if (isReservation) {
+          tr.appendChild(td(clusterShort(it.targetClusterId), { mono: true }));   // consumer
+          tr.appendChild(td(clusterShort(it.providerClusterId), { mono: true }));
+        } else {
+          tr.appendChild(td(clusterShort(it.targetClusterId), { mono: true }));   // provider
+        }
+        tr.appendChild(td(it.reservationId, { mono: true }));
+        tr.appendChild(boolCell(it.enforced));
+        tr.appendChild(td(it.attempts ?? 0));
+        tr.appendChild(td(fmtTime(it.issuedAt)));
+        tr.appendChild(td(fmtTime(it.lastDeliveredAt)));
+        tr.appendChild(td(fmtTime(it.expiresAt)));
+        tr.appendChild(td(it.message));
+        tbody.appendChild(tr);
+      }
+    }
+
+    function renderConsumers(list) {
+      const tbody = $("consBody"); tbody.replaceChildren();
+      $("consCount").textContent = list.length;
+      if (!list.length) { setEmpty(tbody, 3, "No consumers have heartbeated yet."); return; }
+      for (const c of list) {
+        const tr = document.createElement("tr");
+        tr.appendChild(td(clusterShort(c.clusterId), { mono: true }));
+        tr.appendChild(td(clusterShort(c.liqoClusterId), { mono: true }));
+        tr.appendChild(td(fmtTime(c.lastSeen)));
+        tbody.appendChild(tr);
+      }
+    }
+
+    // ---- poll loop ---------------------------------------------------------
+    function setStatus(kind, text) {
+      const dot = $("statusDot");
+      dot.className = "dot " + kind;
+      $("updated").textContent = text;
+    }
+    function showError(msg) {
+      const e = $("error");
+      e.style.display = "block";
+      e.textContent = "Failed to load /api/v1/overview: " + msg;
+      setStatus("err", "disconnected");
+    }
+    function clearError() { $("error").style.display = "none"; }
+
+    async function refresh() {
+      try {
+        const res = await fetch("/api/v1/overview", { cache: "no-store" });
+        if (!res.ok) throw new Error("HTTP " + res.status);
+        const ov = await res.json();
+        clearError();
+        $("namespace").textContent = ov.namespace ? "ns: " + ov.namespace : "";
+        renderCapacity(ov.capacity || {});
+        renderAdvertisements(ov.advertisements || []);
+        renderReservations(ov.reservations || []);
+        renderInstructions("piBody", "piCount", ov.providerInstructions || [], false);
+        renderInstructions("riBody", "riCount", ov.reservationInstructions || [], true);
+        renderConsumers(ov.consumers || []);
+        setStatus("ok", "updated " + fmtTime(ov.generatedAt || new Date().toISOString()));
+      } catch (err) {
+        showError(err.message || String(err));
+      }
+    }
+
+    refresh();
+    setInterval(refresh, REFRESH_MS);
+  </script>
+</body>
+</html>
