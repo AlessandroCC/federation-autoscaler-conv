@@ -69,6 +69,7 @@ You need four Ubuntu 22.04/24.04 VMs on the same network — 1 central, 1 consum
 curl -fsSL https://raw.githubusercontent.com/netgroup-polito/federation-autoscaler/main/deploy/ansible/scripts/demo-up.sh -o demo-up.sh
 chmod +x demo-up.sh
 ./demo-up.sh --central <ip> --consumers <ip> --providers <ip>,<ip>
+#   add --tag v0.X.Y to deploy a specific image tag (default: repo's fa_tag)
 
 # 2. Watch the broker's state live in a browser — its read-only web dashboard
 #    (advertisements, reservations, instructions, chunk capacity, consumers):

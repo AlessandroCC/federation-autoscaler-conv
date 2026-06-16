@@ -10,6 +10,9 @@
 #   docker.io/kazem26/federation-autoscaler-broker:v0.1.0
 # Push the images once with `make docker-push REGISTRY=docker.io/kazem26 TAG=…`
 # from the repo root; this playbook only references them.
+#
+# `fa_tag` is the default image tag. Override it per run without editing this
+# file: `demo-up.sh --tag <tag>` or `ansible-playbook … -e fa_tag=<tag>`.
 fa_registry: docker.io/kazem26
 fa_tag: v0.1
 

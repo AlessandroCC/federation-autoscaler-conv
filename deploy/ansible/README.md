@@ -160,12 +160,20 @@ Each should print one `Ready` node.
 
 ```bash
 ansible-playbook -i inventory.yaml playbooks/02-deploy.yaml
+
+# Deploy a specific image tag (broker/agent/grpc-server) without editing files:
+ansible-playbook -i inventory.yaml playbooks/02-deploy.yaml -e fa_tag=v0.X.Y
 ```
 
 Takes ~5–8 min. Brings up the broker on central, agents on consumers and
 providers, gRPC server on consumer, Cluster Autoscaler on consumer. Mirrors
 the broker's PKI to every agent cluster. Stamps each agent's TLS cert with
 its inventory cluster_id.
+
+The federation-autoscaler image tag comes from `fa_tag` in
+`group_vars/all.yaml`. Override it per run with `-e fa_tag=<tag>` (above), or —
+if you used the one-shot script — with `demo-up.sh --tag <tag>`. The override
+flips all three images (broker, agent, grpc-server) at once.
 
 ## Step 4 — Verify
 
@@ -241,8 +249,9 @@ cycle is:
 
 ## Where the variables live
 
-- `group_vars/all.yaml` — image registry/tag, software versions, broker
-  exposure (NodePort + central IP).
+- `group_vars/all.yaml` — image registry/tag (`fa_registry` / `fa_tag`),
+  software versions, broker exposure (NodePort + central IP). Override the
+  image tag per run with `-e fa_tag=<tag>` or `demo-up.sh --tag <tag>`.
 - `group_vars/central.yaml` — broker-specific knobs.
 - `group_vars/consumers.yaml` — consumer agent + Cluster Autoscaler
   tuning, including the **`scale_down_unneeded_time: 1m`** demo-fast
@@ -268,8 +277,10 @@ make docker-push REGISTRY=docker.io/kazem26 TAG=v0.X.Y
 # pull without authentication.
 ```
 
-Then bump `fa_tag` in `group_vars/all.yaml` so the playbook pulls the new
-version on the next `02-deploy.yaml` run.
+Then make the playbook pull the new version — either bump `fa_tag` in
+`group_vars/all.yaml` to make it the new default, or select it per run without
+editing anything via `demo-up.sh --tag v0.X.Y` (or `ansible-playbook …
+playbooks/02-deploy.yaml -e fa_tag=v0.X.Y`).
 
 ## Troubleshooting
 

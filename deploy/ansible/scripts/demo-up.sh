@@ -22,12 +22,16 @@
 #
 # Usage:
 #   demo-up.sh --central <ip> --consumers <ip[,ip...]> --providers <ip[,ip...]>
-#              [--user <ssh-user>] [--ssh-key <path>] [--skip-ssh-copy-id]
-#              [--repo <git-url>] [--dir <clone-dir>]
+#              [--tag <image-tag>] [--user <ssh-user>] [--ssh-key <path>]
+#              [--skip-ssh-copy-id] [--repo <git-url>] [--dir <clone-dir>]
+#
+#   --tag overrides the federation-autoscaler image tag the deploy pulls
+#   (broker/agent/grpc-server), e.g. --tag v0.2.7. Omit it to use the repo
+#   default (group_vars/all.yaml: fa_tag).
 #
 # Example (the verified 1+1+2 demo topology):
 #   demo-up.sh --central 172.23.6.90 --consumers 172.23.6.91 \
-#              --providers 172.23.6.92,172.23.6.93
+#              --providers 172.23.6.92,172.23.6.93 --tag v0.2.7
 #
 # Assumes: Ubuntu 22.04/24.04 control host with sudo + outbound HTTPS. SSH
 # key auth is set up for you via ssh-copy-id (step 3); passwordless sudo on
@@ -48,6 +52,7 @@ SKIP_SSH_COPY=""
 CENTRAL=""
 CONSUMERS=""
 PROVIDERS=""
+FA_TAG=""   # empty ⇒ use the repo default (group_vars/all.yaml: fa_tag)
 
 # Tool versions — keep in lock-step with deploy/ansible/README.md.
 KUBECTL_VERSION="v1.32.5"
@@ -72,6 +77,7 @@ while [[ $# -gt 0 ]]; do
     --central)   CENTRAL="$2"; shift 2 ;;
     --consumers) CONSUMERS="$2"; shift 2 ;;
     --providers) PROVIDERS="$2"; shift 2 ;;
+    --tag)       FA_TAG="$2"; shift 2 ;;
     --user)      SSH_USER="$2"; shift 2 ;;
     --ssh-key)   SSH_KEY="$2"; shift 2 ;;
     --skip-ssh-copy-id) SKIP_SSH_COPY=1; shift ;;
@@ -280,10 +286,19 @@ EOF
 fi
 ok "passwordless sudo confirmed on all hosts"
 
+# Extra Ansible vars common to every play. --tag overrides fa_tag (the image
+# tag for broker/agent/grpc-server); -e has the highest precedence, so it wins
+# over group_vars/all.yaml without editing any file.
+EXTRA_VARS=()
+if [[ -n "$FA_TAG" ]]; then
+  EXTRA_VARS+=(-e "fa_tag=${FA_TAG}")
+  log "Using federation-autoscaler image tag: ${FA_TAG}"
+fi
+
 run_play() {
   local pb="$1"
   log "Running playbooks/${pb}"
-  ansible-playbook -i "$INVENTORY" "playbooks/${pb}" \
+  ansible-playbook -i "$INVENTORY" "${EXTRA_VARS[@]}" "playbooks/${pb}" \
     || die "playbooks/${pb} failed — see the output above"
   ok "${pb} complete"
 }
