@@ -20,6 +20,26 @@ fa_tag: v0.1
 fa_image_broker:      "{{ fa_registry }}/federation-autoscaler-broker:{{ fa_tag }}"
 fa_image_agent:       "{{ fa_registry }}/federation-autoscaler-agent:{{ fa_tag }}"
 fa_image_grpc_server: "{{ fa_registry }}/federation-autoscaler-grpc-server:{{ fa_tag }}"
+fa_image_mock_eco:    "{{ fa_registry }}/federation-autoscaler-mock-eco:{{ fa_tag }}"
+fa_image_mock_geo:    "{{ fa_registry }}/federation-autoscaler-mock-geo:{{ fa_tag }}"
+
+# -----------------------------------------------------------------------------
+# Mock services (eco / latency placement strategies) — option A: a dedicated
+# mock "cluster", an OPTIONAL extra host in the `mocks` inventory group. When
+# that group is absent these resolve to empty strings and the agents advertise
+# no carbon / no coordinates, so the eco/latency strategies are simply inert
+# (Price and the default no-policy behaviour are completely unaffected).
+fa_mock_eco_node_port: 30081
+fa_mock_geo_node_port: 30080
+
+# The mock cluster's reachable address (first host in the `mocks` group), or ""
+# when no such group exists.
+fa_mock_address: "{{ hostvars[groups['mocks'][0]].ansible_host if (groups['mocks'] is defined and (groups['mocks'] | length) > 0) else '' }}"
+
+# Full URLs the agents are pointed at (patched into agent-config). Empty when
+# there is no mock cluster.
+fa_mock_eco_url: "{{ ('http://' + fa_mock_address + ':' + (fa_mock_eco_node_port | string)) if fa_mock_address else '' }}"
+fa_mock_geo_url: "{{ ('http://' + fa_mock_address + ':' + (fa_mock_geo_node_port | string)) if fa_mock_address else '' }}"
 
 # -----------------------------------------------------------------------------
 # Software versions

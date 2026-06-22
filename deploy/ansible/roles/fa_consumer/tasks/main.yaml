@@ -47,13 +47,29 @@
           kustomize edit set image federation-autoscaler/grpc-server=federation-autoscaler/grpc-server:latest
       changed_when: true
 
-- name: Patch agent-config ConfigMap with the resolved broker URL
+- name: Patch agent-config ConfigMap with the resolved broker URL + mock URLs
   delegate_to: localhost
   ansible.builtin.shell:
     cmd: |
       kubectl --kubeconfig {{ cluster_kubeconfig }} -n {{ fa_namespace }} \
         patch configmap agent-config --type merge -p \
-        '{"data":{"brokerUrl":"https://{{ broker_address }}:{{ broker_node_port }}","clusterId":"{{ cluster_id }}","liqoClusterId":"{{ cluster_id }}"}}'
+        '{"data":{"brokerUrl":"https://{{ broker_address }}:{{ broker_node_port }}","clusterId":"{{ cluster_id }}","liqoClusterId":"{{ cluster_id }}","mockEcoUrl":"{{ fa_mock_eco_url }}","mockGeoUrl":"{{ fa_mock_geo_url }}"}}'
+  changed_when: true
+
+# The consumer's region for the latency strategy (the origin point the Broker
+# measures provider distances from). Define `fa_cluster_region` in inventory; the
+# eco strategy ignores it (carbon is per-provider). Unset ⇒ no location ⇒ the
+# latency strategy applies no preference for this consumer (all providers exposed).
+- name: Set this consumer's region (latency placement origin)
+  delegate_to: localhost
+  when: fa_cluster_region is defined and (fa_cluster_region | length) > 0
+  ansible.builtin.shell:
+    cmd: |
+      kubectl --kubeconfig {{ cluster_kubeconfig }} -n {{ fa_namespace }} \
+        create configmap agent-location \
+        --from-literal=location.yaml='region: "{{ fa_cluster_region }}"' \
+        --dry-run=client -o yaml | \
+        kubectl --kubeconfig {{ cluster_kubeconfig }} apply -f -
   changed_when: true
 
 # Declare this consumer's placement policy. With type=Price the Broker, on each

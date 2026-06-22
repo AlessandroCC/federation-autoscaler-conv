@@ -30,14 +30,18 @@ package heartbeat
 import (
 	"context"
 	"errors"
+	"os"
+	"strings"
 	"time"
 
 	"github.com/go-logr/logr"
 	ctrlclient "sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/yaml"
 
 	autoscalingv1alpha1 "github.com/netgroup-polito/federation-autoscaler/api/autoscaling/v1alpha1"
 	agentclient "github.com/netgroup-polito/federation-autoscaler/internal/agent/client"
+	"github.com/netgroup-polito/federation-autoscaler/internal/agent/geo"
 	brokerapi "github.com/netgroup-polito/federation-autoscaler/internal/broker/api"
 )
 
@@ -66,6 +70,18 @@ type Options struct {
 	// LocalClient is set.
 	Namespace string
 
+	// RegionFile is an optional path to a YAML/JSON file holding this consumer's
+	// region (e.g. {"region":"QC"}). Re-read on every heartbeat. When set, the
+	// region is pushed on the heartbeat and (with MockGeoURL) resolved to
+	// coordinates so the Broker can rank providers by distance to this consumer
+	// under the latency strategy. Empty/missing/unparseable ⇒ no location.
+	RegionFile string
+
+	// MockGeoURL is the base URL of the geo-coordinates service (e.g.
+	// http://mock-geo:8080). Empty ⇒ the consumer pushes its region without
+	// coordinates, so the latency strategy has no effect for it.
+	MockGeoURL string
+
 	// Interval overrides DefaultInterval. Mainly useful in tests.
 	Interval time.Duration
 
@@ -90,6 +106,9 @@ type Heartbeater struct {
 	liqoClusterID string
 	localClient   ctrlclient.Client
 	namespace     string
+	regionFile    string
+	mockGeoURL    string
+	geoClient     *geo.Client
 	interval      time.Duration
 	log           logr.Logger
 	onResult      func(success bool)
@@ -120,6 +139,9 @@ func New(opts Options) (*Heartbeater, error) {
 		liqoClusterID: opts.LiqoClusterID,
 		localClient:   opts.LocalClient,
 		namespace:     opts.Namespace,
+		regionFile:    opts.RegionFile,
+		mockGeoURL:    opts.MockGeoURL,
+		geoClient:     geo.NewClient(),
 		interval:      interval,
 		log:           logger,
 		onResult:      opts.OnHeartbeatResult,
@@ -158,6 +180,16 @@ func (h *Heartbeater) beatOnce(ctx context.Context) {
 		ClusterID:     h.clusterID,
 		LiqoClusterID: h.liqoClusterID,
 		Placement:     h.currentPlacement(ctx),
+	}
+	if region := h.loadRegion(); region != "" {
+		req.Region = region
+		if latlon, ok, err := h.geoClient.Lookup(ctx, h.mockGeoURL, region); err != nil {
+			h.log.V(1).Info("geo lookup failed; heartbeating region without coordinates",
+				"region", region, "err", err.Error())
+		} else if ok {
+			lat, lon := latlon.Lat, latlon.Lon
+			req.Latitude, req.Longitude = &lat, &lon
+		}
 	}
 	if _, err := h.client.PostHeartbeat(ctx, req); err != nil {
 		if ctx.Err() == nil {
@@ -202,6 +234,35 @@ func (h *Heartbeater) currentPlacement(ctx context.Context) *autoscalingv1alpha1
 	}
 	placement := chosen.Spec.Placement
 	return &placement
+}
+
+// loadRegion reads and parses the optional region file (if configured).
+// Best-effort, mirroring the provider publisher's loadRegion: a missing, empty,
+// or unparseable file yields "" so the consumer simply heartbeats no location.
+// Reading here (not at construction) lets an operator relocate the consumer live
+// via the projected ConfigMap.
+func (h *Heartbeater) loadRegion() string {
+	if h.regionFile == "" {
+		return ""
+	}
+	data, err := os.ReadFile(h.regionFile)
+	if err != nil {
+		h.log.V(1).Info("region file unreadable; heartbeating no region",
+			"path", h.regionFile, "err", err.Error())
+		return ""
+	}
+	if strings.TrimSpace(string(data)) == "" {
+		return ""
+	}
+	var loc struct {
+		Region string `json:"region"`
+	}
+	if err := yaml.Unmarshal(data, &loc); err != nil {
+		h.log.V(1).Info("region file unparseable; heartbeating no region",
+			"path", h.regionFile, "err", err.Error())
+		return ""
+	}
+	return strings.TrimSpace(loc.Region)
 }
 
 func (h *Heartbeater) notifyResult(success bool) {

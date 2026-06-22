@@ -74,21 +74,27 @@ func (s *Server) handleNodeGroupsList(w http.ResponseWriter, r *http.Request) {
 	views := make([]NodeGroupView, len(avail))
 	costs := make([]float64, len(avail))
 	priced := make([]bool, len(avail))
+	carbons := make([]float64, len(avail))
+	hasCarbon := make([]bool, len(avail))
 	for i, cadv := range avail {
 		cost, ok := s.perChunkCost(cadv)
 		costs[i], priced[i] = cost, ok
+		if cadv.Spec.CarbonIntensity != nil {
+			carbons[i], hasCarbon[i] = *cadv.Spec.CarbonIntensity, true
+		}
 		views[i] = s.nodeGroupViewFromAdvertisement(cadv, cost, ok)
 	}
 
-	// Per-consumer price preference: narrow to the cheapest priced provider
-	// with capacity within each chunk type. No policy (or no priced provider
-	// with capacity) ⇒ no masking ⇒ today's behaviour.
+	// Per-consumer placement preference: narrow to the single best provider with
+	// capacity within each chunk type, where "best" is cheapest (Price), greenest
+	// (Eco), or closest (Latency). No policy (or no qualifying provider with
+	// capacity) ⇒ no masking ⇒ today's behaviour.
 	consumerID := ClusterIDFromContext(ctx)
-	if entry, ok := s.consumers.Lookup(consumerID); ok &&
-		entry.Placement.Type == autoscalingv1alpha1.PlacementStrategyPrice {
-		// In-flight reservations gate the "spill to the next-cheapest" step so we
-		// don't prematurely expose a dearer provider while the chosen one's chunk
-		// is still peering (CA would grab it and then have to unpeer it).
+	if entry, ok := s.consumers.Lookup(consumerID); ok && entry.Placement.Type != "" {
+		// In-flight reservations gate the "spill to the next-best" step so we
+		// don't prematurely expose a worse provider while the chosen one's chunk
+		// is still peering (CA would grab it and then have to unpeer it). The gate
+		// is policy-agnostic, so all three strategies share it.
 		inflight, err := s.inFlightByProvider(ctx, consumerID)
 		if err != nil {
 			s.log.Error(err, "list Reservations for placement gate failed", "requestId", requestID)
@@ -97,7 +103,19 @@ func (s *Server) handleNodeGroupsList(w http.ResponseWriter, r *http.Request) {
 			})
 			return
 		}
-		applyPricePreference(views, costs, priced, inflight)
+		switch entry.Placement.Type {
+		case autoscalingv1alpha1.PlacementStrategyPrice:
+			applyPricePreference(views, costs, priced, inflight)
+		case autoscalingv1alpha1.PlacementStrategyEco:
+			applyEcoPreference(views, carbons, hasCarbon, inflight)
+		case autoscalingv1alpha1.PlacementStrategyLatency:
+			// Latency is a consumer↔provider PAIR metric: distance depends on the
+			// calling consumer's own location (from its heartbeat). If the consumer
+			// has not advertised a location, distances carry no usable value and the
+			// masking is a no-op (all providers stay exposed).
+			distances, hasDist := consumerProviderDistances(entry, avail)
+			applyLatencyPreference(views, distances, hasDist, inflight)
+		}
 	}
 
 	sort.SliceStable(views, func(i, j int) bool {
@@ -141,22 +159,70 @@ func (s *Server) handleNodeGroupsList(w http.ResponseWriter, r *http.Request) {
 // views[i]/costs[i]/priced[i] describe the same advertisement; inflight[provider]
 // is true when this consumer has a not-yet-Peered reservation on that provider.
 func applyPricePreference(views []NodeGroupView, costs []float64, priced []bool, inflight map[string]bool) {
+	applyMetricPreference(views, costs, priced, inflight)
+}
+
+// applyEcoPreference masks the node-group view for a carbon-preferring consumer:
+// greenest-first greedy, exactly mirroring price. carbons[i]/hasCarbon[i] describe
+// the same advertisement as views[i]; a provider that advertises no carbon
+// intensity (hasCarbon[i] == false) is reached only once every carbon-bearing
+// provider of that chunk type is exhausted (mirrors the unpriced tail).
+func applyEcoPreference(views []NodeGroupView, carbons []float64, hasCarbon []bool, inflight map[string]bool) {
+	applyMetricPreference(views, carbons, hasCarbon, inflight)
+}
+
+// applyLatencyPreference masks the node-group view for a latency-preferring
+// consumer: closest-first greedy. distances[i]/hasDist[i] describe the same
+// advertisement as views[i]; hasDist[i] is false when either endpoint lacks a
+// location, so a consumer with no location (every hasDist false) yields no
+// masking at all (all providers stay exposed) — see consumerProviderDistances.
+func applyLatencyPreference(views []NodeGroupView, distances []float64, hasDist []bool, inflight map[string]bool) {
+	applyMetricPreference(views, distances, hasDist, inflight)
+}
+
+// applyMetricPreference is the strictly-additive greedy masking shared by all
+// placement strategies (Price/Eco/Latency). Within each chunk type it walks the
+// providers that HAVE a metric, best (lowest) first, and exposes exactly one —
+// the best that still has head-room — masking every other provider
+// (MaxSize = CurrentReserved) so the Cluster Autoscaler can only grow that one.
+//
+// The "spill to the next-best" only happens once the better provider is
+// genuinely exhausted: full AND fully settled. While the best provider is full
+// but a reservation of ours is still mid-peering (in flight), the masking holds
+// CA by exposing NOTHING growable in that type — CA waits for the chunk's
+// virtual node to materialise instead of prematurely peering a worse provider it
+// would then have to unpeer. The in-flight gate is policy-agnostic.
+//
+// The rules are strictly additive — the function only ever *removes* growable
+// options, never adds a choice the Broker didn't already expose:
+//   - A chunk type with no metric-bearing provider that has capacity or is
+//     settling is left untouched (today's behaviour: the "policy set but no
+//     metric" case and the metric-less tail of "metric partially set").
+//   - Metric-less providers are never the winner, so they are reachable only
+//     once every metric-bearing provider of that type is exhausted.
+//
+// "Lower wins" fits all current strategies: cheapest cost, lowest carbon, and
+// shortest distance.
+//
+// views[i]/metric[i]/has[i] describe the same advertisement; inflight[provider]
+// is true when this consumer has a not-yet-Peered reservation on that provider.
+func applyMetricPreference(views []NodeGroupView, metric []float64, has []bool, inflight map[string]bool) {
 	byType := map[brokerv1alpha1.ChunkType][]int{}
 	for i := range views {
 		byType[views[i].Type] = append(byType[views[i].Type], i)
 	}
 	for _, idxs := range byType {
-		// Priced providers in this type, cheapest first (name break ties).
+		// Metric-bearing providers in this type, best (lowest) first (name break ties).
 		order := make([]int, 0, len(idxs))
 		for _, i := range idxs {
-			if priced[i] {
+			if has[i] {
 				order = append(order, i)
 			}
 		}
 		sort.SliceStable(order, func(a, b int) bool {
 			ia, ib := order[a], order[b]
-			if costs[ia] != costs[ib] {
-				return costs[ia] < costs[ib]
+			if metric[ia] != metric[ib] {
+				return metric[ia] < metric[ib]
 			}
 			return views[ia].ProviderClusterID < views[ib].ProviderClusterID
 		})
@@ -164,14 +230,14 @@ func applyPricePreference(views []NodeGroupView, costs []float64, priced []bool,
 		chosen, blockAll := -1, false
 		for _, i := range order {
 			if views[i].MaxSize-views[i].CurrentReserved > 0 {
-				chosen = i // cheapest priced provider with head-room → grow this one
+				chosen = i // best provider with head-room → grow this one
 				break
 			}
 			if inflight[views[i].ProviderClusterID] {
 				blockAll = true // it's full but still peering → hold CA, don't spill yet
 				break
 			}
-			// exhausted (full AND settled) → try the next-cheapest priced provider
+			// exhausted (full AND settled) → try the next-best provider
 		}
 
 		switch {
@@ -186,10 +252,34 @@ func applyPricePreference(views []NodeGroupView, costs []float64, priced []bool,
 				}
 			}
 		default:
-			// No priced provider has capacity or is settling → leave the type
-			// as-is (unpriced providers remain reachable as a last resort).
+			// No metric-bearing provider has capacity or is settling → leave the
+			// type as-is (metric-less providers remain reachable as a last resort).
 		}
 	}
+}
+
+// consumerProviderDistances returns, per advertisement in avail, the great-circle
+// distance (km) from the consumer to that provider and whether it is usable.
+// hasDist[i] is false when the consumer has no location, or when the provider
+// advertised no coordinates (Topology nil or lat/lon both zero — the Provider
+// Agent leaves them zero when its geo lookup fails, and no real region sits at
+// 0,0). When the consumer has no location, every entry is unusable, so the
+// caller's masking becomes a no-op and all providers stay exposed.
+func consumerProviderDistances(entry ConsumerEntry, avail []*brokerv1alpha1.ClusterAdvertisement) ([]float64, []bool) {
+	distances := make([]float64, len(avail))
+	hasDist := make([]bool, len(avail))
+	if !entry.HasLocation {
+		return distances, hasDist
+	}
+	for i, cadv := range avail {
+		t := cadv.Spec.Topology
+		if t == nil || (t.Latitude == 0 && t.Longitude == 0) {
+			continue
+		}
+		distances[i] = haversineKm(entry.Latitude, entry.Longitude, t.Latitude, t.Longitude)
+		hasDist[i] = true
+	}
+	return distances, hasDist
 }
 
 // inFlightByProvider reports, per provider, whether THIS consumer has a

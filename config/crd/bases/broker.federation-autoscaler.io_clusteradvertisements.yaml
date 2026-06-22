@@ -75,6 +75,18 @@ spec:
                   so an empty map means "no customization". This field is informational
                   (surfaced on the dashboard); the Broker never re-derives Resources from it.
                 type: object
+              carbonIntensity:
+                description: |-
+                  CarbonIntensity is the provider's current grid carbon intensity in
+                  gCO2eq/kWh (optional). The Provider Agent fetches it from a carbon-data
+                  service (mock-eco in the demo) keyed by Topology.Region and advertises the
+                  single current-hour value. The Broker uses it for carbon-based placement
+                  when a consumer opts in via a ConsumerPolicy (Eco strategy, lowest wins).
+                  nil means the provider advertises no carbon intensity; eco-preferring
+                  consumers reach such providers only as a last resort (mirrors unpriced).
+                  The Broker never fetches this value itself — it only ranks what providers
+                  advertise.
+                type: number
               clusterId:
                 description: |-
                   ClusterID is the unique identifier of the provider cluster. It MUST match
@@ -119,6 +131,19 @@ spec:
                   Topology is optional and is used by the Broker's decision engine and by
                   the gRPC server when stamping Liqo virtual-node labels.
                 properties:
+                  latitude:
+                    description: |-
+                      Latitude is the provider's geographic latitude in decimal degrees. It is
+                      a decision-engine input only (used by the latency placement strategy to
+                      compute great-circle distance to the consumer) and is NOT surfaced as a
+                      node label, unlike Zone/Region.
+                    type: number
+                  longitude:
+                    description: |-
+                      Longitude is the provider's geographic longitude in decimal degrees.
+                      Like Latitude, it is a decision-engine input only and is not surfaced as
+                      a node label.
+                    type: number
                   region:
                     description: |-
                       Region is a region identifier.

@@ -1,0 +1,20 @@
+# Per-resource unit prices for PROVIDER-3 — the DEAREST provider (Latency-demo
+# winner; never the cheapest). Apply on provider-3's cluster:
+#
+#   kubectl --kubeconfig ~/.kube/provider-3.yaml apply -f samples/provider-3-prices.yaml
+#
+# Same mechanism as provider-1-prices.yaml (overwrites `agent-prices`; re-read
+# every 30 s). Per-chunk cost (chunk = 2 vCPU / 4 GiB):
+#   2 * 0.050 + 4 * 0.006 = 0.124 / chunk-hour   (dearest)
+# Paired with region IDF (provider-3-location.yaml / Paris): closest to the London
+# consumer, so it wins the Latency strategy — but its price (dearest) and carbon
+# (above Quebec) keep it from winning Price or Eco.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: agent-prices
+  namespace: federation-autoscaler-system
+data:
+  prices.yaml: |
+    cpu: "0.050"
+    memory: "0.006"

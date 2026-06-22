@@ -1,0 +1,7 @@
+---
+# Mock-cluster-only variables. The mocks host runs k3s + the mock-eco / mock-geo
+# Deployments for the eco/latency placement strategies (option A). It does NOT
+# peer, run an agent, or hold any federation-autoscaler CRDs — so it needs only
+# the kubeconfig path that the teardown / kubeconfig-refresh / fa_mocks tasks
+# reference (mirrors the other groups' cluster_kubeconfig).
+cluster_kubeconfig: "{{ kubeconfig_dir }}/{{ cluster_id }}.yaml"

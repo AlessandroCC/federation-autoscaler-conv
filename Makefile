@@ -1,18 +1,20 @@
 # -----------------------------------------------------------------------------
 # Component model
 # -----------------------------------------------------------------------------
-# federation-autoscaler ships as THREE independent binaries / container images:
-# broker, agent, and grpc-server. The build/run/docker-* targets are driven by
-# the COMPONENT variable:
+# federation-autoscaler ships as independent binaries / container images: the
+# three core components (broker, agent, grpc-server) plus two demo mock services
+# (mock-eco, mock-geo) that back the eco/latency placement strategies. The
+# build/run/docker-* targets are driven by the COMPONENT variable:
 #
-#   make build                              # builds all three into bin/
+#   make build                              # builds all of them into bin/
 #   make build COMPONENT=broker             # builds only bin/broker
 #   make docker-build COMPONENT=agent       # builds the agent image
 #   make run COMPONENT=grpc-server          # go run ./cmd/grpc-server
+#   make run COMPONENT=mock-eco             # go run ./cmd/mock-eco
 #
 # Container images follow the pattern $(IMG_PREFIX)/$(COMPONENT):$(TAG); set
 # IMG_PREFIX to your registry path and TAG to the desired version.
-COMPONENTS ?= broker agent grpc-server
+COMPONENTS ?= broker agent grpc-server mock-eco mock-geo
 IMG_PREFIX ?= federation-autoscaler
 TAG        ?= latest
 
@@ -86,7 +88,11 @@ help: ## Display this help.
 
 .PHONY: manifests
 manifests: controller-gen ## Generate WebhookConfiguration, ClusterRole and CustomResourceDefinition objects.
-	$(CONTROLLER_GEN) rbac:roleName=manager-role crd webhook paths="./..." output:crd:artifacts:config=config/crd/bases
+	# allowDangerousTypes=true permits the float64 decision-engine inputs on the
+	# advertisement (carbonIntensity, topology.latitude/longitude). They are
+	# JSON-native and only ever ranked on, so the "floats vary across languages"
+	# caveat does not bite our Go/kubectl consumers.
+	$(CONTROLLER_GEN) rbac:roleName=manager-role crd:allowDangerousTypes=true webhook paths="./..." output:crd:artifacts:config=config/crd/bases
 
 .PHONY: generate
 generate: controller-gen ## Generate code containing DeepCopy, DeepCopyInto, and DeepCopyObject method implementations.

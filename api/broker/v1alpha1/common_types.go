@@ -144,4 +144,17 @@ type Topology struct {
 	// Mirrors the value of the topology.kubernetes.io/region node label.
 	// +optional
 	Region string `json:"region,omitempty"`
+
+	// Latitude is the provider's geographic latitude in decimal degrees. It is
+	// a decision-engine input only (used by the latency placement strategy to
+	// compute great-circle distance to the consumer) and is NOT surfaced as a
+	// node label, unlike Zone/Region.
+	// +optional
+	Latitude float64 `json:"latitude,omitempty"`
+
+	// Longitude is the provider's geographic longitude in decimal degrees.
+	// Like Latitude, it is a decision-engine input only and is not surfaced as
+	// a node label.
+	// +optional
+	Longitude float64 `json:"longitude,omitempty"`
 }

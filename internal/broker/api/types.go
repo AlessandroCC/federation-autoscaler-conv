@@ -124,6 +124,13 @@ type AdvertisementRequest struct {
 	// treats unpriced providers as a last resort. Each value must be non-negative.
 	UnitPrices corev1.ResourceList `json:"unitPrices,omitempty"`
 
+	// CarbonIntensity is the provider's current grid carbon intensity in
+	// gCO2eq/kWh (optional). The agent fetches it from a carbon-data service
+	// (mock-eco in the demo) keyed by Topology.Region. Omitted means the provider
+	// advertises no carbon intensity; for eco-preferring consumers the Broker
+	// treats such providers as a last resort. Must be non-negative.
+	CarbonIntensity *float64 `json:"carbonIntensity,omitempty"`
+
 	// CapacityScalePercent records, per resource, the percentage of allocatable
 	// the provider's admin chose to advertise when it is less than 100% — i.e.
 	// the agent has already scaled Resources down accordingly. Keys are resource
@@ -185,6 +192,10 @@ type AdvertisementSnapshot struct {
 	// size). Populated only on the dashboard projection; nil when the provider
 	// is unpriced. Not set on the agent-facing GET /advertisements path.
 	CostPerChunk *float64 `json:"costPerChunk,omitempty"`
+	// CarbonIntensity is the provider's advertised current carbon intensity
+	// (gCO2eq/kWh); nil when the provider advertises none. Surfaced on the
+	// dashboard for the eco placement strategy.
+	CarbonIntensity *float64 `json:"carbonIntensity,omitempty"`
 	// CapacityScalePercent mirrors the provider's per-resource advertised-capacity
 	// customization (resource name → percentage in (0,100)); empty/absent means
 	// the provider advertises full allocatable. Surfaced so the dashboard can
@@ -209,9 +220,23 @@ type HeartbeatRequest struct {
 
 	// Placement is the consumer's current placement policy, read by the Consumer
 	// Agent from its ConsumerPolicy CRD and pushed every heartbeat so the Broker
-	// can apply per-consumer, price-based node-group masking. Nil means the
-	// Broker default (no price preference).
+	// can apply per-consumer node-group masking. Nil means the Broker default
+	// (no preference).
 	Placement *autoscalingv1alpha1.PlacementPolicy `json:"placement,omitempty"`
+
+	// Region is the consumer's region identifier (optional). Read from the
+	// agent-location ConfigMap and pushed every heartbeat; surfaced on the
+	// dashboard. Informational alongside the latency strategy.
+	Region string `json:"region,omitempty"`
+
+	// Latitude/Longitude are the consumer's geographic coordinates in decimal
+	// degrees (optional). The Consumer Agent fetches them from a geo service
+	// (mock-geo in the demo) keyed by Region. The Broker uses them for the
+	// latency placement strategy (great-circle distance to each provider). nil
+	// means the consumer advertised no location, in which case the latency
+	// strategy applies no preference.
+	Latitude  *float64 `json:"latitude,omitempty"`
+	Longitude *float64 `json:"longitude,omitempty"`
 }
 
 type HeartbeatResponse struct {

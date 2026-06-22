@@ -78,6 +78,18 @@ type ClusterAdvertisementSpec struct {
 	// +optional
 	UnitPrices corev1.ResourceList `json:"unitPrices,omitempty"`
 
+	// CarbonIntensity is the provider's current grid carbon intensity in
+	// gCO2eq/kWh (optional). The Provider Agent fetches it from a carbon-data
+	// service (mock-eco in the demo) keyed by Topology.Region and advertises the
+	// single current-hour value. The Broker uses it for carbon-based placement
+	// when a consumer opts in via a ConsumerPolicy (Eco strategy, lowest wins).
+	// nil means the provider advertises no carbon intensity; eco-preferring
+	// consumers reach such providers only as a last resort (mirrors unpriced).
+	// The Broker never fetches this value itself — it only ranks what providers
+	// advertise.
+	// +optional
+	CarbonIntensity *float64 `json:"carbonIntensity,omitempty"`
+
 	// CapacityScalePercent records, per resource, the percentage of allocatable
 	// the provider's admin chose to advertise when it is below 100% — the
 	// Provider Agent has already scaled Resources.Allocatable down accordingly.

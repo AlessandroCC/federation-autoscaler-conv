@@ -90,6 +90,9 @@ func main() {
 		namespace       string
 		priceFile       string
 		capacityFile    string
+		regionFile      string
+		mockEcoURL      string
+		mockGeoURL      string
 	)
 
 	flag.StringVar(&role, "role", "",
@@ -126,6 +129,19 @@ func main() {
 			"advertises that fraction of the resource's allocatable; 100, >100, ≤0, or "+
 			"unset advertise the full allocatable. Re-read every advertisement cycle so "+
 			"the cap can change without a restart. Empty ⇒ advertise full allocatable.")
+	flag.StringVar(&regionFile, "region-file", "",
+		"Path to a YAML/JSON file holding this cluster's region (e.g. {\"region\":\"QC\"}). "+
+			"Re-read every cycle so the region can change without a restart. Used by the "+
+			"eco strategy (providers advertise carbon for this region) and the latency "+
+			"strategy (providers and the consumer advertise this region's coordinates). "+
+			"Empty ⇒ no region, so this cluster opts out of the eco/latency strategies.")
+	flag.StringVar(&mockEcoURL, "mock-eco-url", "",
+		"(provider role only) Base URL of the carbon-intensity service, e.g. "+
+			"http://mock-eco:8081. Empty ⇒ advertise no carbon intensity.")
+	flag.StringVar(&mockGeoURL, "mock-geo-url", "",
+		"Base URL of the geo-coordinates service, e.g. http://mock-geo:8080. Used by "+
+			"both roles to resolve --region-file to coordinates. Empty ⇒ advertise a "+
+			"region without coordinates (the latency strategy then has no effect).")
 
 	opts := zap.Options{Development: true}
 	opts.BindFlags(flag.CommandLine)
@@ -218,6 +234,8 @@ func main() {
 			LiqoClusterID: liqoClusterID,
 			LocalAPIAddr:  localAPIAddr,
 			Namespace:     namespace,
+			RegionFile:    regionFile,
+			MockGeoURL:    mockGeoURL,
 			Logger:        ctrl.Log.WithName("consumer"),
 			Probe:         probe,
 		}); err != nil {
@@ -233,6 +251,9 @@ func main() {
 			LiqoClusterID: liqoClusterID,
 			PriceFile:     priceFile,
 			CapacityFile:  capacityFile,
+			RegionFile:    regionFile,
+			MockEcoURL:    mockEcoURL,
+			MockGeoURL:    mockGeoURL,
 			Logger:        ctrl.Log.WithName("provider"),
 			Probe:         probe,
 		}); err != nil {

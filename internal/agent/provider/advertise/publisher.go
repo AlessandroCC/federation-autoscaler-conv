@@ -43,7 +43,10 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/yaml"
 
+	brokerv1alpha1 "github.com/netgroup-polito/federation-autoscaler/api/broker/v1alpha1"
 	agentclient "github.com/netgroup-polito/federation-autoscaler/internal/agent/client"
+	"github.com/netgroup-polito/federation-autoscaler/internal/agent/eco"
+	"github.com/netgroup-polito/federation-autoscaler/internal/agent/geo"
 	"github.com/netgroup-polito/federation-autoscaler/internal/agent/provider/snapshot"
 	brokerapi "github.com/netgroup-polito/federation-autoscaler/internal/broker/api"
 )
@@ -83,6 +86,23 @@ type Options struct {
 	// Empty/missing/unparseable ⇒ the provider advertises full allocatable.
 	CapacityFile string
 
+	// RegionFile is an optional path to a YAML/JSON file holding this provider's
+	// region (e.g. {"region":"QC"}). Re-read on every publish cycle so an
+	// operator can relocate the provider without a restart. When set, the region
+	// is advertised on Topology and used to look up coordinates (MockGeoURL) and
+	// carbon intensity (MockEcoURL). Empty/missing/unparseable ⇒ no region, and
+	// the provider participates in neither the eco nor latency strategies.
+	RegionFile string
+
+	// MockEcoURL is the base URL of the carbon-intensity service (e.g.
+	// http://mock-eco:8081). Empty ⇒ the provider advertises no carbon intensity.
+	MockEcoURL string
+
+	// MockGeoURL is the base URL of the geo-coordinates service (e.g.
+	// http://mock-geo:8080). Empty ⇒ the provider advertises a region without
+	// coordinates (still usable for display, not for the latency strategy).
+	MockGeoURL string
+
 	// Interval overrides DefaultInterval. Mainly useful in tests.
 	Interval time.Duration
 
@@ -108,6 +128,11 @@ type Publisher struct {
 	liqoClusterID string
 	priceFile     string
 	capacityFile  string
+	regionFile    string
+	mockEcoURL    string
+	mockGeoURL    string
+	ecoClient     *eco.Client
+	geoClient     *geo.Client
 	interval      time.Duration
 	log           logr.Logger
 	onResult      func(success bool)
@@ -141,6 +166,11 @@ func New(opts Options) (*Publisher, error) {
 		liqoClusterID: opts.LiqoClusterID,
 		priceFile:     opts.PriceFile,
 		capacityFile:  opts.CapacityFile,
+		regionFile:    opts.RegionFile,
+		mockEcoURL:    opts.MockEcoURL,
+		mockGeoURL:    opts.MockGeoURL,
+		ecoClient:     eco.NewClient(),
+		geoClient:     geo.NewClient(),
 		interval:      interval,
 		log:           logger,
 		onResult:      opts.OnPublishResult,
@@ -184,12 +214,15 @@ func (p *Publisher) publishOnce(ctx context.Context) {
 	}
 
 	scaled, customized := p.applyCapacityScaling(snap.Allocatable)
+	topology, carbon := p.loadPlacementInputs(ctx)
 
 	req := &brokerapi.AdvertisementRequest{
 		ClusterID:            p.clusterID,
 		LiqoClusterID:        p.liqoClusterID,
 		Resources:            scaled,
+		Topology:             topology,
 		UnitPrices:           p.loadUnitPrices(),
+		CarbonIntensity:      carbon,
 		CapacityScalePercent: customized,
 	}
 
@@ -297,6 +330,62 @@ func (p *Publisher) loadUnitPrices() corev1.ResourceList {
 		return nil
 	}
 	return prices
+}
+
+// loadPlacementInputs reads the provider's region (best-effort, like
+// loadUnitPrices) and, when a region is configured, looks up its coordinates
+// (mock-geo) and current carbon intensity (mock-eco). It returns the Topology to
+// advertise (nil when no region) and the carbon intensity (nil when unavailable
+// or no mock-eco URL). Every lookup is best-effort: a failure logs at V(1) and
+// the corresponding field is omitted, never failing the publish cycle.
+func (p *Publisher) loadPlacementInputs(ctx context.Context) (*brokerv1alpha1.Topology, *float64) {
+	region := p.loadRegion()
+	if region == "" {
+		return nil, nil
+	}
+	topology := &brokerv1alpha1.Topology{Region: region}
+	if latlon, ok, err := p.geoClient.Lookup(ctx, p.mockGeoURL, region); err != nil {
+		p.log.V(1).Info("geo lookup failed; advertising region without coordinates",
+			"region", region, "err", err.Error())
+	} else if ok {
+		topology.Latitude = latlon.Lat
+		topology.Longitude = latlon.Lon
+	}
+	carbon, err := p.ecoClient.CurrentCarbon(ctx, p.mockEcoURL, region)
+	if err != nil {
+		p.log.V(1).Info("carbon fetch failed; advertising no carbon intensity",
+			"region", region, "err", err.Error())
+	}
+	return topology, carbon
+}
+
+// loadRegion reads and parses the optional region file (if configured). Like
+// loadUnitPrices it is best-effort: a missing, empty, or unparseable file yields
+// "" so the provider simply advertises no region. Re-reading here (not at
+// construction) is what lets an operator relocate the provider live via the
+// projected ConfigMap.
+func (p *Publisher) loadRegion() string {
+	if p.regionFile == "" {
+		return ""
+	}
+	data, err := os.ReadFile(p.regionFile)
+	if err != nil {
+		p.log.V(1).Info("region file unreadable; advertising no region",
+			"path", p.regionFile, "err", err.Error())
+		return ""
+	}
+	if strings.TrimSpace(string(data)) == "" {
+		return ""
+	}
+	var loc struct {
+		Region string `json:"region"`
+	}
+	if err := yaml.Unmarshal(data, &loc); err != nil {
+		p.log.V(1).Info("region file unparseable; advertising no region",
+			"path", p.regionFile, "err", err.Error())
+		return ""
+	}
+	return strings.TrimSpace(loc.Region)
 }
 
 // loadCapacityPercents reads and parses the per-resource advertised-capacity

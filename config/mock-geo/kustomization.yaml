@@ -1,0 +1,18 @@
+# mock-geo overlay — demo geo-coordinates service for the latency placement
+# strategy. Deployed standalone on the dedicated mock cluster (option A): no
+# CRDs, no RBAC, no TLS — just a Deployment + ClusterIP Service.
+#
+# The Ansible fa_mocks role flips the image to the published Docker Hub
+# coordinate via `kustomize edit set image` before `kubectl apply -k`.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+- namespace.yaml
+- service.yaml
+- deployment.yaml
+
+images:
+- name: federation-autoscaler/mock-geo
+  newName: federation-autoscaler/mock-geo
+  newTag: latest

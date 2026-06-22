@@ -24,9 +24,10 @@ import (
 // across the available provider clusters. An empty value (or a missing
 // ConsumerPolicy) means the Broker keeps its default behaviour: it exposes all
 // available providers and lets the Cluster Autoscaler pick — i.e. no
-// price-based preference. The Broker is the decision-maker only when a strategy
-// is set; the Cluster Autoscaler never sees price.
-// +kubebuilder:validation:Enum=Price
+// broker-driven preference. The Broker is the decision-maker only when a
+// strategy is set; the Cluster Autoscaler never sees the ranking metric
+// (price, carbon, or distance).
+// +kubebuilder:validation:Enum=Price;Eco;Latency
 type PlacementStrategy string
 
 const (
@@ -34,14 +35,29 @@ const (
 	// cheapest *priced* provider(s) that still have capacity (cheapest-first
 	// greedy). Providers without a price are reached only as a last resort.
 	PlacementStrategyPrice PlacementStrategy = "Price"
+
+	// PlacementStrategyEco makes the Broker prefer, for this consumer, the
+	// provider(s) with the lowest advertised carbon intensity that still have
+	// capacity (greenest-first greedy). Providers that advertise no carbon
+	// intensity are reached only as a last resort. Mirrors the Price greedy.
+	PlacementStrategyEco PlacementStrategy = "Eco"
+
+	// PlacementStrategyLatency makes the Broker prefer, for this consumer, the
+	// geographically closest provider(s) with capacity — ranked by the
+	// great-circle (Haversine) distance between the consumer's advertised
+	// location and each provider's advertised location (closest-first greedy).
+	// If the consumer has not advertised a location, the Broker applies no
+	// preference (all providers stay exposed). v1 is estimation-only; no
+	// measured RTT is used.
+	PlacementStrategyLatency PlacementStrategy = "Latency"
 )
 
-// PlacementPolicy is the (currently price-only, deliberately extensible)
-// placement policy a consumer declares for itself. It is carried on the
-// Consumer Agent's heartbeat to the Broker.
+// PlacementPolicy is the placement policy a consumer declares for itself. It is
+// carried on the Consumer Agent's heartbeat to the Broker.
 type PlacementPolicy struct {
 	// Type selects the placement strategy. Empty means the Broker default
-	// (no price preference). The only supported value today is "Price".
+	// (no preference; the Cluster Autoscaler picks). Supported values are
+	// "Price" (cheapest), "Eco" (lowest carbon), and "Latency" (closest).
 	// +optional
 	Type PlacementStrategy `json:"type,omitempty"`
 }

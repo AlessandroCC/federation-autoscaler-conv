@@ -138,6 +138,8 @@ func validateAdvertisementRequest(req *AdvertisementRequest) error {
 		return errors.New("liqoClusterId is required")
 	case len(req.Resources) == 0:
 		return errors.New("resources must not be empty")
+	case req.CarbonIntensity != nil && *req.CarbonIntensity < 0:
+		return errors.New("carbonIntensity must be non-negative")
 	}
 	return nil
 }
@@ -165,6 +167,7 @@ func (s *Server) upsertClusterAdvertisement(
 			},
 			Topology:             req.Topology,
 			UnitPrices:           req.UnitPrices,
+			CarbonIntensity:      req.CarbonIntensity,
 			CapacityScalePercent: req.CapacityScalePercent,
 		}
 		return nil
@@ -260,6 +263,7 @@ func advertisementSnapshotFromCR(cadv *brokerv1alpha1.ClusterAdvertisement) Adve
 		Resources:            cadv.Spec.Resources.Allocatable,
 		Topology:             cadv.Spec.Topology,
 		UnitPrices:           cadv.Spec.UnitPrices,
+		CarbonIntensity:      cadv.Spec.CarbonIntensity,
 		CapacityScalePercent: cadv.Spec.CapacityScalePercent,
 		ChunkCount:           cadv.Status.TotalChunks,
 		ReservedChunks:       cadv.Status.ReservedChunks,

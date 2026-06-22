@@ -54,6 +54,13 @@ spec:
         # rather than the binary default — keeps federation-autoscaler
         # CRs out of the liqo namespace.
         - --namespace=$(POD_NAMESPACE)
+        # Region + mock-service wiring for the eco/latency placement strategies.
+        # --region-file is re-read every cycle; --mock-geo-url is used by both
+        # roles to resolve the region to coordinates. (--mock-eco-url is
+        # provider-only and appended by the provider overlay.) All are no-ops when
+        # the region file is empty / the URL is empty.
+        - --region-file=/etc/federation-autoscaler/location/location.yaml
+        - --mock-geo-url=$(MOCK_GEO_URL)
         # --role and (for consumer) --local-api-bind-address are appended
         # by the per-role overlays.
         env:
@@ -76,6 +83,16 @@ spec:
             configMapKeyRef:
               name: agent-config
               key: brokerUrl
+        - name: MOCK_ECO_URL
+          valueFrom:
+            configMapKeyRef:
+              name: agent-config
+              key: mockEcoUrl
+        - name: MOCK_GEO_URL
+          valueFrom:
+            configMapKeyRef:
+              name: agent-config
+              key: mockGeoUrl
         ports:
         - name: health
           containerPort: 8081
@@ -113,12 +130,21 @@ spec:
           mountPath: /home/nonroot/.kube
         - name: tmp
           mountPath: /tmp
+        - name: location
+          mountPath: /etc/federation-autoscaler/location
+          readOnly: true
       volumes:
       - name: tls
         secret:
           secretName: agent-client-cert
           # 0444 — see config/broker/deployment.yaml for the rationale.
           defaultMode: 0444
+      # Per-cluster region (agent-location ConfigMap), read by both roles for the
+      # eco/latency strategies. Optional + ships empty, so absence is harmless.
+      - name: location
+        configMap:
+          name: agent-location
+          optional: true
       - name: liqoctl-cache
         emptyDir: {}
       # liqoctl writes the staged kubeconfig under /tmp on the consumer side,

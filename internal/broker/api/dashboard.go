@@ -138,10 +138,13 @@ type DashboardInstructionView struct {
 type ConsumerView struct {
 	ClusterID     string `json:"clusterId"`
 	LiqoClusterID string `json:"liqoClusterId"`
-	// Placement is the consumer's pushed placement-policy type (e.g. "Price").
-	// Empty means no preference (Broker default).
-	Placement string      `json:"placement,omitempty"`
-	LastSeen  metav1.Time `json:"lastSeen"`
+	// Placement is the consumer's pushed placement-policy type (e.g. "Price",
+	// "Eco", "Latency"). Empty means no preference (Broker default).
+	Placement string `json:"placement,omitempty"`
+	// Region is the consumer's pushed region (may be empty); the latency strategy
+	// measures provider distances from this consumer's coordinates.
+	Region   string      `json:"region,omitempty"`
+	LastSeen metav1.Time `json:"lastSeen"`
 }
 
 // -----------------------------------------------------------------------------
@@ -243,6 +246,7 @@ func (s *Server) buildOverview(ctx context.Context) (Overview, error) {
 			ClusterID:     e.ClusterID,
 			LiqoClusterID: e.LiqoClusterID,
 			Placement:     string(e.Placement.Type),
+			Region:        e.Region,
 			LastSeen:      metav1.NewTime(e.LastSeen),
 		})
 	}

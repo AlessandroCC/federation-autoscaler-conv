@@ -66,6 +66,14 @@ ARG LIQOCTL_BIN
 COPY --from=builder /workspace/app /app
 COPY --from=builder /workspace/${LIQOCTL_BIN} /usr/local/bin/liqoctl
 
+# mock-eco / mock-geo are demo-only HTTP stand-ins; like broker/grpc-server they
+# need only the Go binary (no liqoctl).
+FROM gcr.io/distroless/static:nonroot AS runtime-mock-eco
+COPY --from=builder /workspace/app /app
+
+FROM gcr.io/distroless/static:nonroot AS runtime-mock-geo
+COPY --from=builder /workspace/app /app
+
 # Pick the right runtime layer based on which component is being built.
 FROM runtime-${COMPONENT}
 WORKDIR /

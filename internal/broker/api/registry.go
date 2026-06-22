@@ -36,6 +36,19 @@ type ConsumerEntry struct {
 	// preference. Stored by value: PlacementPolicy has no reference fields, so
 	// Snapshot copies stay safe to hand to the read-only dashboard.
 	Placement autoscalingv1alpha1.PlacementPolicy
+
+	// Region is the consumer's most recently heartbeated region (may be empty);
+	// informational, surfaced on the dashboard.
+	Region string
+
+	// Latitude/Longitude are the consumer's coordinates (decimal degrees), valid
+	// only when HasLocation is true. Used by the latency placement strategy to
+	// rank providers by great-circle distance to this consumer. Stored as values
+	// (not pointers) so ConsumerEntry stays reference-free and Snapshot copies
+	// remain safe for the read-only dashboard.
+	Latitude    float64
+	Longitude   float64
+	HasLocation bool
 }
 
 // ConsumerRegistry holds the in-memory mapping ClusterID → LiqoClusterID
@@ -58,18 +71,27 @@ func NewConsumerRegistry() *ConsumerRegistry {
 	return &ConsumerRegistry{entries: make(map[string]ConsumerEntry)}
 }
 
-// Touch records (or refreshes) one consumer's identity and placement policy.
-// Safe for concurrent use; later calls overwrite earlier ones, which is fine
-// because the most recent heartbeat is by definition the most accurate.
-func (r *ConsumerRegistry) Touch(clusterID, liqoClusterID string, placement autoscalingv1alpha1.PlacementPolicy) {
+// Touch records (or refreshes) one consumer's identity, placement policy, and
+// (optionally) its geographic location. Safe for concurrent use; later calls
+// overwrite earlier ones, which is fine because the most recent heartbeat is by
+// definition the most accurate. lat/lon are accepted as pointers (the heartbeat
+// wire shape) and stored by value with HasLocation set only when both arrive.
+func (r *ConsumerRegistry) Touch(clusterID, liqoClusterID string, placement autoscalingv1alpha1.PlacementPolicy, region string, lat, lon *float64) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.entries[clusterID] = ConsumerEntry{
+	entry := ConsumerEntry{
 		ClusterID:     clusterID,
 		LiqoClusterID: liqoClusterID,
 		LastSeen:      time.Now(),
 		Placement:     placement,
+		Region:        region,
 	}
+	if lat != nil && lon != nil {
+		entry.Latitude = *lat
+		entry.Longitude = *lon
+		entry.HasLocation = true
+	}
+	r.entries[clusterID] = entry
 }
 
 // Lookup returns the entry for clusterID and true, or the zero value and

@@ -87,6 +87,17 @@ type Options struct {
 	// (see advertise.Options). Empty ⇒ the provider advertises full allocatable.
 	CapacityFile string
 
+	// RegionFile is an optional path to this provider's region file, re-read on
+	// every advertisement cycle (see advertise.Options). Empty ⇒ no region (the
+	// provider participates in neither the eco nor latency placement strategies).
+	RegionFile string
+
+	// MockEcoURL / MockGeoURL are the base URLs of the carbon-intensity and
+	// geo-coordinates services (see advertise.Options). Empty disables the
+	// respective lookup.
+	MockEcoURL string
+	MockGeoURL string
+
 	// Logger is the structured logger every provider goroutine logs
 	// through. Defaults to controller-runtime's logger named "provider".
 	Logger logr.Logger
@@ -145,6 +156,9 @@ func Run(ctx context.Context, opts Options) error {
 		LiqoClusterID: opts.LiqoClusterID,
 		PriceFile:     opts.PriceFile,
 		CapacityFile:  opts.CapacityFile,
+		RegionFile:    opts.RegionFile,
+		MockEcoURL:    opts.MockEcoURL,
+		MockGeoURL:    opts.MockGeoURL,
 		Logger:        logger.WithName("advertise"),
 		// The probe's poll-staleness gate is a "broker reachability"
 		// signal in practice, so a successful advertisement also

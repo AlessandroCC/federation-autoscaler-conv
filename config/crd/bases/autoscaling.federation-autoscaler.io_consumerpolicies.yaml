@@ -61,9 +61,12 @@ spec:
                   type:
                     description: |-
                       Type selects the placement strategy. Empty means the Broker default
-                      (no price preference). The only supported value today is "Price".
+                      (no preference; the Cluster Autoscaler picks). Supported values are
+                      "Price" (cheapest), "Eco" (lowest carbon), and "Latency" (closest).
                     enum:
                     - Price
+                    - Eco
+                    - Latency
                     type: string
                 type: object
             type: object

@@ -34,7 +34,7 @@ metadata:
   labels:
     app: federation-demo
 spec:
-  replicas: 7
+  replicas: 5
   selector:
     matchLabels:
       app: federation-demo

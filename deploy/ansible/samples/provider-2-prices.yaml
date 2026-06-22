@@ -1,14 +1,13 @@
-# Per-resource unit prices for PROVIDER-2 — the CHEAPER provider in the price
-# demo. Apply on provider-2's cluster:
+# Per-resource unit prices for PROVIDER-2 — the MID-priced provider (Eco-demo
+# winner; never the cheapest). Apply on provider-2's cluster:
 #
 #   kubectl --kubeconfig ~/.kube/provider-2.yaml apply -f samples/provider-2-prices.yaml
 #
-# Same mechanism as provider-1-prices.yaml (overwrites the `agent-prices`
-# ConfigMap; re-read every 30 s). Per-chunk cost (chunk = 2 vCPU / 4 GiB):
-#   2 * 0.031 + 4 * 0.004 = 0.078 / chunk-hour
-# Lower than provider-1's 0.116, so a price-preferring consumer (see
-# consumer-policy.yaml) is placed HERE first. Swap the two providers' numbers
-# and the next scale-up flips to provider-1 — no redeploy, CA untouched.
+# Same mechanism as provider-1-prices.yaml (overwrites `agent-prices`; re-read
+# every 30 s). Per-chunk cost (chunk = 2 vCPU / 4 GiB):
+#   2 * 0.040 + 4 * 0.005 = 0.100 / chunk-hour   (between 0.052 and 0.124)
+# Paired with region QC (provider-2-location.yaml): clean hydro power. It wins the
+# Eco strategy on carbon, but its mid price keeps it from winning Price.
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -16,5 +15,5 @@ metadata:
   namespace: federation-autoscaler-system
 data:
   prices.yaml: |
-    cpu: "0.031"
-    memory: "0.004"
+    cpu: "0.040"
+    memory: "0.005"

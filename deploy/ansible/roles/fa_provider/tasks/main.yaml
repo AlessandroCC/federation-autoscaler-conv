@@ -24,13 +24,31 @@
           kustomize edit set image federation-autoscaler/agent=federation-autoscaler/agent:latest
       changed_when: true
 
-- name: Patch agent-config ConfigMap with this cluster's identity + broker URL
+- name: Patch agent-config ConfigMap with this cluster's identity, broker URL, and mock URLs
   delegate_to: localhost
   ansible.builtin.shell:
     cmd: |
       kubectl --kubeconfig {{ cluster_kubeconfig }} -n {{ fa_namespace }} \
         patch configmap agent-config --type merge -p \
-        '{"data":{"brokerUrl":"https://{{ broker_address }}:{{ broker_node_port }}","clusterId":"{{ cluster_id }}","liqoClusterId":"{{ cluster_id }}"}}'
+        '{"data":{"brokerUrl":"https://{{ broker_address }}:{{ broker_node_port }}","clusterId":"{{ cluster_id }}","liqoClusterId":"{{ cluster_id }}","mockEcoUrl":"{{ fa_mock_eco_url }}","mockGeoUrl":"{{ fa_mock_geo_url }}"}}'
+  changed_when: true
+
+# Per-provider region for the eco/latency placement strategies. Define
+# `fa_cluster_region` in inventory (per host) as a region code the mocks know
+# (QC, LOM, CA, HE, 13, NSW, IDF, SP, SG, ENG); give the demo's providers
+# DISTINCT regions so the greenest/closest wins visibly. When unset the empty
+# agent-location ConfigMap stands and the provider advertises no region — fully
+# backwards-compatible. Re-read every advertisement so it can change live.
+- name: Set this provider's region (eco/latency placement)
+  delegate_to: localhost
+  when: fa_cluster_region is defined and (fa_cluster_region | length) > 0
+  ansible.builtin.shell:
+    cmd: |
+      kubectl --kubeconfig {{ cluster_kubeconfig }} -n {{ fa_namespace }} \
+        create configmap agent-location \
+        --from-literal=location.yaml='region: "{{ fa_cluster_region }}"' \
+        --dry-run=client -o yaml | \
+        kubectl --kubeconfig {{ cluster_kubeconfig }} apply -f -
   changed_when: true
 
 # Per-provider unit prices for price-based placement. Define `fa_provider_prices`

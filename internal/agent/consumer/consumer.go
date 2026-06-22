@@ -79,6 +79,16 @@ type Options struct {
 	// "liqoctl" (resolved via $PATH).
 	LiqoctlPath string
 
+	// RegionFile is an optional path to this consumer's region file, re-read on
+	// every heartbeat (see heartbeat.Options). Empty ⇒ the consumer pushes no
+	// location, so the latency strategy has no effect for it.
+	RegionFile string
+
+	// MockGeoURL is the base URL of the geo-coordinates service (see
+	// heartbeat.Options). Empty ⇒ the consumer pushes its region without
+	// coordinates.
+	MockGeoURL string
+
 	// LocalAPIAddr is the address the loopback REST server (substep
 	// 9c) binds to. The gRPC server in step 10 dials this directly;
 	// production wiring keeps it on 127.0.0.1 so the listener is
@@ -173,6 +183,8 @@ func Run(ctx context.Context, opts Options) error {
 		LiqoClusterID: opts.LiqoClusterID,
 		LocalClient:   opts.LocalClient,
 		Namespace:     namespace,
+		RegionFile:    opts.RegionFile,
+		MockGeoURL:    opts.MockGeoURL,
 		Logger:        logger.WithName("heartbeat"),
 		// Same semantics as the provider's advertisement publisher:
 		// any successful broker contact refreshes the readiness gate.

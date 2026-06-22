@@ -1,0 +1,64 @@
+# mock-geo Deployment — a demo-only HTTP stand-in for a region→coordinates geo
+# API, deployed on the dedicated mock cluster. Both agent roles fetch their own
+# region's coordinates from it (GET /latlon?region=<code>) and advertise them so
+# the Broker can rank providers by distance under the latency strategy.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mock-geo
+  namespace: federation-autoscaler-system
+  labels:
+    app.kubernetes.io/name: federation-autoscaler
+    app.kubernetes.io/component: mock-geo
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: federation-autoscaler
+      app.kubernetes.io/component: mock-geo
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: federation-autoscaler
+        app.kubernetes.io/component: mock-geo
+    spec:
+      terminationGracePeriodSeconds: 10
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+      - name: mock-geo
+        image: federation-autoscaler/mock-geo:latest
+        imagePullPolicy: IfNotPresent
+        args:
+        - --port=8080
+        ports:
+        - name: http
+          containerPort: 8080
+          protocol: TCP
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: http
+          initialDelaySeconds: 5
+          periodSeconds: 20
+        readinessProbe:
+          httpGet:
+            path: /healthz
+            port: http
+          initialDelaySeconds: 2
+          periodSeconds: 10
+        resources:
+          limits:
+            cpu: 100m
+            memory: 64Mi
+          requests:
+            cpu: 10m
+            memory: 16Mi
+        securityContext:
+          readOnlyRootFilesystem: true
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL

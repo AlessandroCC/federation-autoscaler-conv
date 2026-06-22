@@ -34,6 +34,15 @@
   roles:
     - fa_central
 
+- name: Deploy mock services on the mock cluster (eco/latency strategies)
+  # Optional: only runs when the inventory defines a `mocks` group. With no such
+  # group this play matches no hosts and is skipped, leaving eco/latency inert.
+  hosts: mocks
+  gather_facts: false
+  become: false
+  roles:
+    - fa_mocks
+
 - name: Mirror broker PKI to agent clusters
   hosts: consumers:providers
   gather_facts: false

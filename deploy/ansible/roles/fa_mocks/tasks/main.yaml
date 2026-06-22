@@ -1,0 +1,71 @@
+---
+# Deploys the demo mock services (mock-eco, mock-geo) on the dedicated mock
+# cluster (option A) and exposes each as a fixed NodePort so agents on the
+# consumer/provider clusters can reach them over the network. The Broker never
+# calls these — only the agents do (providers: carbon; both roles: coordinates).
+#
+# Runs on hosts in the `mocks` inventory group. If that group is empty the
+# 02-deploy play simply matches no hosts and this role never runs, leaving the
+# eco/latency strategies inert.
+
+- name: Render + apply mock-eco overlay (Docker Hub image), then reset
+  delegate_to: localhost
+  block:
+    - name: Set mock-eco image
+      ansible.builtin.shell:
+        cmd: |
+          cd {{ fa_repo_root }}/config/mock-eco
+          kustomize edit set image federation-autoscaler/mock-eco={{ fa_image_mock_eco }}
+      changed_when: true
+    - name: Apply mock-eco overlay
+      ansible.builtin.shell:
+        cmd: |
+          kubectl --kubeconfig {{ cluster_kubeconfig }} apply -k {{ fa_repo_root }}/config/mock-eco
+      changed_when: true
+  always:
+    - name: Reset mock-eco image override
+      ansible.builtin.shell:
+        cmd: |
+          cd {{ fa_repo_root }}/config/mock-eco
+          kustomize edit set image federation-autoscaler/mock-eco=federation-autoscaler/mock-eco:latest
+      changed_when: true
+
+- name: Render + apply mock-geo overlay (Docker Hub image), then reset
+  delegate_to: localhost
+  block:
+    - name: Set mock-geo image
+      ansible.builtin.shell:
+        cmd: |
+          cd {{ fa_repo_root }}/config/mock-geo
+          kustomize edit set image federation-autoscaler/mock-geo={{ fa_image_mock_geo }}
+      changed_when: true
+    - name: Apply mock-geo overlay
+      ansible.builtin.shell:
+        cmd: |
+          kubectl --kubeconfig {{ cluster_kubeconfig }} apply -k {{ fa_repo_root }}/config/mock-geo
+      changed_when: true
+  always:
+    - name: Reset mock-geo image override
+      ansible.builtin.shell:
+        cmd: |
+          cd {{ fa_repo_root }}/config/mock-geo
+          kustomize edit set image federation-autoscaler/mock-geo=federation-autoscaler/mock-geo:latest
+      changed_when: true
+
+- name: Expose mock-eco as NodePort {{ fa_mock_eco_node_port }}
+  delegate_to: localhost
+  ansible.builtin.shell:
+    cmd: |
+      kubectl --kubeconfig {{ cluster_kubeconfig }} -n {{ fa_namespace }} \
+        patch svc mock-eco --type merge -p \
+        '{"spec":{"type":"NodePort","ports":[{"name":"http","port":8081,"targetPort":"http","nodePort":{{ fa_mock_eco_node_port }}}]}}'
+  changed_when: true
+
+- name: Expose mock-geo as NodePort {{ fa_mock_geo_node_port }}
+  delegate_to: localhost
+  ansible.builtin.shell:
+    cmd: |
+      kubectl --kubeconfig {{ cluster_kubeconfig }} -n {{ fa_namespace }} \
+        patch svc mock-geo --type merge -p \
+        '{"spec":{"type":"NodePort","ports":[{"name":"http","port":8080,"targetPort":"http","nodePort":{{ fa_mock_geo_node_port }}}]}}'
+  changed_when: true

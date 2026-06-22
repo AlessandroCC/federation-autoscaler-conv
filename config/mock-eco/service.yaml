@@ -1,0 +1,21 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: mock-eco
+  namespace: federation-autoscaler-system
+  labels:
+    app.kubernetes.io/name: federation-autoscaler
+    app.kubernetes.io/component: mock-eco
+spec:
+  # ClusterIP within the mock cluster. The Ansible fa_mocks role exposes the
+  # mock cluster's address to the agents as --mock-eco-url; agents on the
+  # consumer/provider clusters reach it over the network.
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: federation-autoscaler
+    app.kubernetes.io/component: mock-eco
+  ports:
+  - name: http
+    port: 8081
+    targetPort: http
+    protocol: TCP

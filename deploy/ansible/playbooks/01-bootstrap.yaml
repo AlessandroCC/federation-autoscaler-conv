@@ -7,6 +7,10 @@
 #
 # Idempotent — re-running on a partially-installed host skips work
 # that's already done.
+#
+# The optional `mocks` host (eco/latency strategies, option A) gets ONLY k3s —
+# it serves two plain HTTP Deployments and never peers, so cert-manager, Liqo,
+# and the federation-autoscaler CRDs are intentionally skipped for it.
 
 - name: Install k3s on every host
   hosts: all
@@ -16,21 +20,21 @@
     - k3s_install
 
 - name: Install cert-manager on every cluster
-  hosts: all
+  hosts: central:consumers:providers
   gather_facts: false
   become: false
   roles:
     - cert_manager
 
 - name: Install Liqo on every cluster
-  hosts: all
+  hosts: central:consumers:providers
   gather_facts: false
   become: false
   roles:
     - liqo_install
 
 - name: Apply federation-autoscaler CRDs on every cluster
-  hosts: all
+  hosts: central:consumers:providers
   gather_facts: false
   become: false
   roles:

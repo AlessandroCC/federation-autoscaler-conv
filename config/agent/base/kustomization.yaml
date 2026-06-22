@@ -18,6 +18,7 @@ kind: Kustomization
 
 resources:
 - configmap.yaml
+- location-configmap.yaml
 - serviceaccount.yaml
 - clusterrole.yaml
 - clusterrolebinding.yaml

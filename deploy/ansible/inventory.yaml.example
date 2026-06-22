@@ -11,6 +11,18 @@
 #   pod_cidr      Pod CIDR for k3s. MUST NOT overlap with other clusters
 #                 in this inventory (the Liqo network plane requires it).
 #   service_cidr  Service CIDR for k3s. Same non-overlap rule.
+#
+# Regions for the eco/latency strategies are NOT set here — they are applied
+# MANUALLY, per cluster, via the sample ConfigMaps (like the Price demo's prices
+# and the consumer policy):
+#   kubectl --kubeconfig ~/.kube/provider-1.yaml apply -f samples/provider-1-location.yaml
+#   kubectl --kubeconfig ~/.kube/consumer-1.yaml apply -f samples/consumer-location.yaml
+# (A `fa_cluster_region` per-host var also exists as an optional Ansible auto-stamp,
+# mirroring `fa_provider_prices`, but the demo path is the manual apply above.)
+#
+# The `mocks` group below is a dedicated cluster hosting mock-eco + mock-geo
+# (option A). When present, its address is auto-wired into every agent as
+# --mock-*-url; omit the group to run without the eco/latency strategies.
 
 all:
   vars:
@@ -47,3 +59,14 @@ all:
           cluster_id: provider-2
           pod_cidr: 10.71.0.0/16
           service_cidr: 10.171.0.0/16
+
+    # Dedicated mock cluster for the eco/latency strategies (option A). Its
+    # address is auto-wired into every agent as --mock-*-url. Delete this group
+    # to run without the mocks (eco/latency then stay inert).
+    mocks:
+      hosts:
+        fa-mocks:
+          ansible_host: 10.0.0.14     # <-- replace
+          cluster_id: mocks
+          pod_cidr: 10.80.0.0/16
+          service_cidr: 10.180.0.0/16

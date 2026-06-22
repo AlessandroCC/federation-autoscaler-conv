@@ -163,7 +163,8 @@ func headroomByProvider(resp NodeGroupListResponse) map[string]int32 {
 // withPricePolicy records a Price-preferring heartbeat for consumerCluster.
 func withPricePolicy(s *Server) {
 	s.consumers.Touch(consumerCluster, "liqo-c",
-		autoscalingv1alpha1.PlacementPolicy{Type: autoscalingv1alpha1.PlacementStrategyPrice})
+		autoscalingv1alpha1.PlacementPolicy{Type: autoscalingv1alpha1.PlacementStrategyPrice},
+		"", nil, nil)
 }
 
 // TestNodeGroupsPricePreference asserts the strictly-additive 4-case matrix
