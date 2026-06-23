@@ -41,7 +41,7 @@ func (s *Server) NodeGroups(ctx context.Context, _ *protos.NodeGroupsRequest) (*
 	if s.agent == nil {
 		return nil, status.Error(codes.FailedPrecondition, "agent client not configured")
 	}
-	resp, err := s.agent.GetNodeGroups(ctx)
+	resp, err := s.cachedNodeGroups(ctx)
 	if err != nil {
 		return nil, mapAgentError(err, "GetNodeGroups")
 	}
@@ -108,7 +108,7 @@ func (s *Server) NodeGroupTargetSize(ctx context.Context, req *protos.NodeGroupT
 	if s.agent == nil {
 		return nil, status.Error(codes.FailedPrecondition, "agent client not configured")
 	}
-	resp, err := s.agent.GetNodeGroups(ctx)
+	resp, err := s.cachedNodeGroups(ctx)
 	if err != nil {
 		return nil, mapAgentError(err, "GetNodeGroups")
 	}
@@ -134,7 +134,7 @@ func (s *Server) NodeGroupTemplateNodeInfo(ctx context.Context, req *protos.Node
 	if s.agent == nil {
 		return nil, status.Error(codes.FailedPrecondition, "agent client not configured")
 	}
-	resp, err := s.agent.GetNodeGroups(ctx)
+	resp, err := s.cachedNodeGroups(ctx)
 	if err != nil {
 		return nil, mapAgentError(err, "GetNodeGroups")
 	}

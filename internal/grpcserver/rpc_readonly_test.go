@@ -53,6 +53,7 @@ type fakeLocalAPI struct {
 	mu                 sync.Mutex
 	postedReservations []capturedReservation
 	deletedReservation []string
+	nodeGroupsHits     int // number of GET /local/nodegroups the fake served
 }
 
 type capturedReservation struct {
@@ -64,6 +65,9 @@ func (f *fakeLocalAPI) start(t *testing.T) (*httptest.Server, *agentclient.Clien
 	t.Helper()
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /local/nodegroups", func(w http.ResponseWriter, _ *http.Request) {
+		f.mu.Lock()
+		f.nodeGroupsHits++
+		f.mu.Unlock()
 		w.Header().Set("Content-Type", brokerapi.ContentTypeJSON)
 		if f.nodeGroups == nil {
 			_ = json.NewEncoder(w).Encode(brokerapi.NodeGroupListResponse{})
@@ -315,6 +319,40 @@ func TestNodeGroupTargetSize_ReturnsReservedChunks(t *testing.T) {
 	}
 	if resp.TargetSize != 0 {
 		t.Errorf("want 0 for an unknown group, got %d", resp.TargetSize)
+	}
+}
+
+// TestNodeGroupsReadCacheCollapsesBurst asserts that the burst of read RPCs CA
+// issues each loop (NodeGroups + a NodeGroupTargetSize per group) costs at most
+// ONE broker /nodegroups round-trip, served from the short-TTL cache. Without
+// this, the burst blows the broker's per-cluster rate limit (10 burst / 5 rps)
+// and CA gets 429 → "No expansion options" → no scale-up.
+func TestNodeGroupsReadCacheCollapsesBurst(t *testing.T) {
+	fb := &fakeLocalAPI{
+		nodeGroups: &brokerapi.NodeGroupListResponse{
+			NodeGroups: []brokerapi.NodeGroupView{
+				{ID: "p1/standard", ProviderClusterID: "p1", Type: brokerv1alpha1.ChunkTypeStandard, MinSize: 0, MaxSize: 3, CurrentReserved: 1},
+				{ID: "p2/standard", ProviderClusterID: "p2", Type: brokerv1alpha1.ChunkTypeStandard, MinSize: 0, MaxSize: 3, CurrentReserved: 0},
+			},
+		},
+	}
+	client := newRunningServer(t, fb)
+
+	if _, err := client.NodeGroups(context.Background(), &protos.NodeGroupsRequest{}); err != nil {
+		t.Fatalf("NodeGroups: %v", err)
+	}
+	for _, id := range []string{"p1/standard", "p2/standard", "p1/standard", "p2/standard"} {
+		if _, err := client.NodeGroupTargetSize(context.Background(),
+			&protos.NodeGroupTargetSizeRequest{Id: id}); err != nil {
+			t.Fatalf("NodeGroupTargetSize(%s): %v", id, err)
+		}
+	}
+
+	fb.mu.Lock()
+	hits := fb.nodeGroupsHits
+	fb.mu.Unlock()
+	if hits != 1 {
+		t.Errorf("expected the broker /nodegroups to be fetched once (cached burst), got %d", hits)
 	}
 }
 

@@ -38,6 +38,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"sync"
 	"time"
 
 	"github.com/go-logr/logr"
@@ -45,6 +46,7 @@ import (
 	"google.golang.org/grpc/credentials"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
+	brokerapi "github.com/netgroup-polito/federation-autoscaler/internal/broker/api"
 	"github.com/netgroup-polito/federation-autoscaler/internal/grpcserver/agentclient"
 	"github.com/netgroup-polito/federation-autoscaler/internal/grpcserver/protos"
 )
@@ -91,6 +93,40 @@ type Server struct {
 	agent    *agentclient.Client
 	grpcSrv  *grpc.Server
 	listener net.Listener
+
+	// nodeGroups read-through cache. CA calls NodeGroups + NodeGroupTargetSize +
+	// NodeGroupTemplateNodeInfo for every group on every loop, all of which need
+	// the broker's /nodegroups. Caching the response for a short TTL collapses
+	// that per-loop burst into a single broker round-trip, keeping the consumer
+	// under the broker's per-cluster rate limit (10 burst / 5 rps).
+	ngMu      sync.Mutex
+	ngCache   *brokerapi.NodeGroupListResponse
+	ngCacheAt time.Time
+}
+
+// nodeGroupsCacheTTL bounds how long a GetNodeGroups result is reused across the
+// read RPCs. It must stay well under CA's scan interval (~10 s) so
+// NodeGroupTargetSize reflects a just-created reservation by the next loop, while
+// still collapsing the intra-loop burst to one broker call.
+const nodeGroupsCacheTTL = 2 * time.Second
+
+// cachedNodeGroups returns the broker's node-group list, served from a short-TTL
+// cache so CA's burst of read RPCs each loop costs at most one broker round-trip
+// (avoiding the per-cluster rate limit). Concurrent callers serialize on ngMu and
+// share the single fetch.
+func (s *Server) cachedNodeGroups(ctx context.Context) (*brokerapi.NodeGroupListResponse, error) {
+	s.ngMu.Lock()
+	defer s.ngMu.Unlock()
+	if s.ngCache != nil && time.Since(s.ngCacheAt) < nodeGroupsCacheTTL {
+		return s.ngCache, nil
+	}
+	resp, err := s.agent.GetNodeGroups(ctx)
+	if err != nil {
+		return nil, err
+	}
+	s.ngCache = resp
+	s.ngCacheAt = time.Now()
+	return resp, nil
 }
 
 // New validates opts, builds the *tls.Config, and returns a Server
