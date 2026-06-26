@@ -1,48 +1,79 @@
-%%{init: {'theme': 'neutral'}}%%
+%%{init: {'theme': 'base', 'layout': 'elk', 'themeVariables': {'fontSize': '13px', 'fontFamily': 'Helvetica, Arial, sans-serif'}, 'flowchart': {'curve': 'basis', 'nodeSpacing': 55, 'rankSpacing': 70}}}%%
 %% docs/design.md §3 — system overview (as-built).
-%% Captures the asymmetric communication model and the three-binary split.
-%% Regenerate the PNG with: mmdc -i architecture.mmd -o architecture-diagram.png
-flowchart TB
+%% Layout (flowchart LR, ELK engine): the consumer and provider clusters (left)
+%% initiate ALL traffic to the right — to the central broker and, for the
+%% eco/latency strategies, to the mock cluster. Arrows point in the direction
+%% each call is made; the broker never dials an agent, so no arrow points back
+%% (right-to-left) into a cluster. Each cluster owns its own liqoctl exec.
+%% LR keeps the diagram wide-and-short (the consumer's CA->gRPC->Agent chain runs
+%% horizontally) so it reads in one glance. Uses the ELK layout engine
+%% ('layout':'elk'), bundled in recent @mermaid-js/mermaid-cli.
+%% Regenerate the PNG with:
+%%   mmdc -i architecture.mmd -o architecture-diagram.png --backgroundColor white -s 3
+flowchart LR
+    %% ===== top row: central (centre) + mock (right) =====
     subgraph Central["central cluster"]
-        Bk["Broker<br/>(REST API +<br/>reconcilers)"]
-        BkCRD["CRDs:<br/>ClusterAdvertisement<br/>Reservation<br/>ProviderInstruction<br/>ReservationInstruction"]
+        Bk("Broker<br/>REST API + reconcilers")
+        BkCRD[("CRDs<br/>ClusterAdvertisement · Reservation<br/>ProviderInstruction · ReservationInstruction")]
         Bk --- BkCRD
     end
 
+    subgraph Mock["mock cluster · eco / latency"]
+        direction LR
+        MockEco("mock-eco<br/>carbon by region")
+        MockGeo("mock-geo<br/>coordinates by region")
+    end
+
+    %% ===== bottom row: consumer (left) + provider (right) =====
     subgraph Consumer["consumer-* cluster"]
-        CAg["Consumer<br/>Agent"]
-        GS["gRPC<br/>Server"]
-        CA["Cluster<br/>Autoscaler"]
-        VNS["CRD:<br/>VirtualNodeState"]
-        VN["Liqo VirtualNode<br/>(materialised on peer)"]
-        CA -- "externalgrpc<br/>(mTLS)" --> GS
+        CA("Cluster<br/>Autoscaler")
+        GS("gRPC Server")
+        CAg("Consumer Agent")
+        VNS[("CRD<br/>VirtualNodeState")]
+        VN("Liqo VirtualNode<br/>materialised on peer")
+        LqC[["liqoctl<br/>peer / unpeer"]]
+        CA -- "externalgrpc · mTLS<br/>(in-cluster)" --> GS
         GS -- "loopback REST<br/>/local/*" --> CAg
         GS --- VNS
-        VNS -. reconciler watches .-> VN
+        VNS -. reconciler<br/>watches .-> VN
+        CAg -- shell-out --> LqC
     end
 
     subgraph Provider["provider-* cluster"]
-        PAg["Provider<br/>Agent"]
-        Nodes["local nodes<br/>(allocatable)"]
+        PAg("Provider Agent")
+        Nodes("local nodes<br/>allocatable")
+        LqP[["liqoctl generate<br/>peering-user"]]
         PAg -- snapshot --> Nodes
+        PAg -- shell-out --> LqP
     end
 
-    Lq1["liqoctl peer / unpeer<br/>(exec)"]
-    Lq2["liqoctl generate<br/>peering-user (exec)"]
+    %% ===== cross-cluster: agent-initiated only (arrow = direction of the call) =====
+    CAg == "mTLS · agent-initiated<br/>POST heartbeat · reservations<br/>GET nodegroups · instructions<br/>POST instructions/{id}/result" ==> Bk
+    PAg == "mTLS · agent-initiated<br/>POST advertisements<br/>GET instructions<br/>POST instructions/{id}/result" ==> Bk
 
-    CAg -- "mTLS, agent-initiated<br/>POST /api/v1/{heartbeat,reservations}<br/>GET /api/v1/{nodegroups,instructions}<br/>POST /api/v1/instructions/{id}/result" --> Bk
-    PAg -- "mTLS, agent-initiated<br/>POST /api/v1/advertisements<br/>GET /api/v1/instructions<br/>POST /api/v1/instructions/{id}/result" --> Bk
+    %% region-keyed mock fetches — plain HTTP, agent-initiated, best-effort
+    PAg -. "GET /carbon?region=" .-> MockEco
+    PAg -. "GET /latlon?region=" .-> MockGeo
+    CAg -. "GET /latlon?region=" .-> MockGeo
 
-    CAg -- shell-out --> Lq1
-    PAg -- shell-out --> Lq2
-
-    %% Broker NEVER dials agents — emphasised by absent arrow in the
-    %% opposite direction.
-    classDef central fill:#ffd,stroke:#888,stroke-width:1px
-    classDef consumer fill:#dfe,stroke:#888,stroke-width:1px
-    classDef provider fill:#def,stroke:#888,stroke-width:1px
-    classDef exec fill:#fee,stroke:#a44,stroke-width:1px
-    class Bk,BkCRD central
-    class CAg,GS,CA,VNS,VN consumer
+    %% ===== styling =====
+    classDef central  fill:#fff3bf,stroke:#b8860b,stroke-width:1.5px,color:#212529
+    classDef consumer fill:#d3f9d8,stroke:#2f9e44,stroke-width:1.5px,color:#212529
+    classDef provider fill:#d0ebff,stroke:#1971c2,stroke-width:1.5px,color:#212529
+    classDef mock     fill:#e5dbff,stroke:#7048e8,stroke-width:1.5px,color:#212529
+    classDef crd      fill:#ffffff,stroke:#868e96,stroke-width:1.3px,color:#495057
+    classDef exec     fill:#ffe3e3,stroke:#e03131,stroke-width:1.5px,color:#212529
+    class Bk central
+    class CA,GS,CAg,VN consumer
     class PAg,Nodes provider
-    class Lq1,Lq2 exec
+    class MockEco,MockGeo mock
+    class BkCRD,VNS crd
+    class LqC,LqP exec
+
+    style Central  fill:#fffbea,stroke:#b8860b,stroke-width:2px
+    style Mock     fill:#f3f0ff,stroke:#7048e8,stroke-width:2px
+    style Consumer fill:#ebfbee,stroke:#2f9e44,stroke-width:2px
+    style Provider fill:#e7f5ff,stroke:#1971c2,stroke-width:2px
+
+    linkStyle 8,9 stroke:#1971c2,stroke-width:2.5px
+    linkStyle 10,11,12 stroke:#7048e8,stroke-width:1.5px,stroke-dasharray:5 4

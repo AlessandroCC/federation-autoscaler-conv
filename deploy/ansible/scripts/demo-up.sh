@@ -17,8 +17,9 @@
 #   4. Pings every host with Ansible and verifies passwordless sudo; only
 #      if all pass does it run the playbooks in order: 04-teardown ->
 #      01-bootstrap -> 02-deploy -> 03-verify.
-#   5. Prints how to reach the two dashboards (broker + Liqo) and the
-#      one-line scale-up / scale-down commands to drive the demo.
+#   5. Prints how to reach the dashboards (broker, Liqo, and the per-cluster
+#      provider/consumer config consoles) and how to drive the demo, in the
+#      order broker -> providers -> consumers.
 #
 # Usage:
 #   demo-up.sh --central <ip> --consumers <ip[,ip...]> --providers <ip[,ip...]>
@@ -341,21 +342,58 @@ echo
 ok "Federation is up. Per-cluster kubeconfigs are under ~/.kube/<cluster_id>.yaml"
 cat <<EOF
 
-Next steps:
+Next steps — drive the demo from the browser in this order
+(broker -> providers -> consumers, matching the demo flow):
 
-  Dashboards — open in a browser and leave running:
+──────────────────────────────────────────────────────────────────────────
+ 1) BROKER  (central) — watch the federation decide
+──────────────────────────────────────────────────────────────────────────
+  Read-only dashboard:  http://${CENTRAL}:30444/
+  Shows every provider advertisement (cost · carbon · region), live
+  reservations, the instruction phase machine, and chunk capacity. Keep it
+  open — it is where you SEE which provider the broker picks for each policy.
 
-    • Broker  (read-only; advertisements, reservations, instructions, capacity):
-        http://${CENTRAL}:30444/
+──────────────────────────────────────────────────────────────────────────
+ 2) PROVIDERS — advertise what each one offers
+──────────────────────────────────────────────────────────────────────────
+  Config console (set unit prices, region, advertised CPU/RAM %, then Submit;
+  changes reach the broker on the next advertisement ~30 s):
+EOF
+j=0
+for ip in "${PROVIDER_IPS[@]}"; do
+  j=$((j + 1))
+  echo "    • provider-${j}:  http://${ip}:30445/"
+done
+if [[ -z "$MOCKS" ]]; then
+  cat <<EOF
+  NOTE: eco/latency need the mock cluster — re-run with --mocks <ip>. Without
+  it, region/carbon are inert and only the Price policy is meaningful.
+EOF
+fi
 
-    • Liqo    (consumer peerings, virtual nodes, offloaded pods):
-        add this line to your machine's hosts file (e.g. /etc/hosts), then browse:
-          ${CONSUMER_IPS[0]} liqo-dashboard.local
-        http://liqo-dashboard.local
+cat <<EOF
 
-  Scale UP — apply the workload on the consumer:
-    kubectl --kubeconfig ~/.kube/consumer-1.yaml apply -f "$ANSIBLE_DIR/samples/burst-workload.yaml"
+──────────────────────────────────────────────────────────────────────────
+ 3) CONSUMERS — pick a policy and drive scale up / down
+──────────────────────────────────────────────────────────────────────────
+  Liqo dashboard (peerings, virtual nodes, offloaded pods):
+    add this line to your machine's hosts file (e.g. /etc/hosts):
+      ${CONSUMER_IPS[0]} liqo-dashboard.local
+    then browse:  http://liqo-dashboard.local
 
-  Scale DOWN — delete it; Cluster Autoscaler reclaims the borrowed nodes:
+  Config console (pick the placement policy — No policy / Price / Eco /
+  Latency — and a region, then flip the workload switch ON to scale up /
+  OFF to scale down; watch the broker dashboard react):
+EOF
+i=0
+for ip in "${CONSUMER_IPS[@]}"; do
+  i=$((i + 1))
+  echo "    • consumer-${i}:  http://${ip}:30445/"
+done
+
+cat <<EOF
+
+  CLI equivalent of the workload toggle (no console needed):
+    kubectl --kubeconfig ~/.kube/consumer-1.yaml apply  -f "$ANSIBLE_DIR/samples/burst-workload.yaml"
     kubectl --kubeconfig ~/.kube/consumer-1.yaml delete -f "$ANSIBLE_DIR/samples/burst-workload.yaml"
 EOF

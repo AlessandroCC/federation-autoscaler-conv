@@ -30,6 +30,7 @@ Works from NATed / firewalled clusters: only the Broker needs a public endpoint;
 | gRPC Server ↔ Consumer Agent | gRPC Server | HTTP, in-cluster |
 | Consumer Agent ↔ Broker | **Consumer Agent only** | HTTPS + mTLS — 5 s polling + synchronous POSTs (heartbeat, reservations) |
 | Provider Agent ↔ Broker | **Provider Agent only** | HTTPS + mTLS — 5 s polling + synchronous POSTs (advertisements every 30 s) |
+| Agent → Mock servers | **Agent only** | HTTP (plain), agent-initiated — region-keyed carbon (mock-eco) + coordinates (mock-geo) for the eco/latency strategies |
 | Broker → any Agent | *never happens* | — |
 
 Full design, CRDs, API contracts, and execution flows: **[docs/design.md](docs/design.md)** (as-built — every section has an `Implemented in:` footer pointing at the canonical Go package).
@@ -41,8 +42,8 @@ Full design, CRDs, API contracts, and execution flows: **[docs/design.md](docs/d
 ```
 federation-autoscaler/
 ├── api/            # CRD Go types (multi-group kubebuilder layout)
-├── cmd/            # broker, agent, grpc-server entrypoints
-├── config/         # kustomize overlays (broker, agent/{base,consumer,provider}, grpc-server, default meta)
+├── cmd/            # broker, agent, grpc-server, mock-eco, mock-geo entrypoints
+├── config/         # kustomize overlays (broker, agent/{base,consumer,provider}, grpc-server, mock-eco, mock-geo, default meta)
 ├── deploy/
 │   └── ansible/    # 4-host k3s demo install: playbooks, roles, demo-up.sh, burst-workload sample
 ├── docs/           # design.md (as-built), diagrams/
@@ -52,7 +53,7 @@ federation-autoscaler/
 │   ├── e2e/        # multi-cluster e2e suite (kind/, bootstrap/, scenario/) — build tag `e2e`
 │   └── utils/
 ├── Dockerfile      # multi-stage, parametrised by COMPONENT=; agent image bundles liqoctl
-├── Makefile        # component-driven (COMPONENT=broker|agent|grpc-server)
+├── Makefile        # component-driven (COMPONENT=broker|agent|grpc-server|mock-eco|mock-geo)
 └── PROJECT         # kubebuilder metadata
 ```
 
@@ -60,26 +61,45 @@ federation-autoscaler/
 
 ## Quick start
 
-You need four Ubuntu 22.04/24.04 VMs on the same network — 1 central, 1 consumer, 2 providers. Then, from a control host:
+You need four Ubuntu 22.04/24.04 VMs on the same network — 1 central, 1 consumer, 2 providers (add one more VM via `--mocks` for the eco/latency strategies). Then, from a control host:
 
 ```bash
-# 1. Bring up the whole demo in one command — installs tooling, then k3s,
-#    cert-manager, Liqo, broker, agents, grpc-server and Cluster Autoscaler
-#    on every VM:
+# Bring up the whole demo in one command — installs tooling, then k3s,
+# cert-manager, Liqo, broker, agents, grpc-server and Cluster Autoscaler
+# on every VM:
 curl -fsSL https://raw.githubusercontent.com/netgroup-polito/federation-autoscaler/main/deploy/ansible/scripts/demo-up.sh -o demo-up.sh
 chmod +x demo-up.sh
 ./demo-up.sh --central <ip> --consumers <ip> --providers <ip>,<ip>
 #   add --tag v0.X.Y to deploy a specific image tag (default: repo's fa_tag)
+#   add --mocks <ip>  to stand up the mock cluster the eco/latency strategies need
+```
 
-# 2. Watch the broker's state live in a browser — its read-only web dashboard
-#    (advertisements, reservations, instructions, chunk capacity, consumers):
-#    open http://<central-ip>:30444/
+### Dashboards
 
-# 3. Scale UP — apply the burst workload; the replicas that don't fit on the
-#    consumer's own node spill onto virtual nodes borrowed from the providers:
-kubectl --kubeconfig ~/.kube/consumer-1.yaml apply -f ~/federation-autoscaler/deploy/ansible/samples/burst-workload.yaml
+The demo ships four browser UIs — all plain HTTP:
 
-# 4. Scale DOWN — delete it; Cluster Autoscaler releases the borrowed nodes:
+| Dashboard | URL | What it shows / does |
+| --- | --- | --- |
+| **Broker dashboard** | `http://<central-ip>:30444/` | Read-only live federation state: provider advertisements (with cost, carbon, region), reservations, the instruction phase machine, chunk capacity, registered consumers. |
+| **Liqo dashboard** | `http://liqo-dashboard.local` | Liqo peerings, virtual nodes, offloaded pods (Traefik Ingress on the consumer — add `<consumer-ip> liqo-dashboard.local` to your hosts file). |
+| **Consumer console** | `http://<consumer-ip>:30445/` | Set the placement policy (No policy / Price / Eco / Latency) and region; apply/delete the demo workload. |
+| **Provider console** | `http://<provider-ip>:30445/` | Set this provider's unit prices, region, and advertised CPU/RAM %. |
+
+> The consumer/provider consoles are unauthenticated **and** write cluster state — keep them on a trusted network (demo-grade).
+
+**Drive the scenarios from the browser** (no `kubectl` needed):
+
+1. On each **provider console**, set its unit prices and region, then Apply (e.g. p1 cheapest + NSW, p2 greener + QC, p3 closest + IDF).
+2. On the **consumer console**, set the region (e.g. ENG) and pick a policy → Apply.
+3. Flip the **workload** switch **ON** and watch the **broker dashboard**: the chosen provider grows and a reservation appears — **Price → cheapest**, **Eco → greenest**, **Latency → closest**. Switch the policy and re-toggle the workload to compare.
+4. Flip the **workload** switch **OFF** to scale back down.
+
+The same scale up / down can be driven from the CLI instead:
+
+```bash
+# Scale UP — replicas that don't fit on the consumer's own node spill onto borrowed virtual nodes:
+kubectl --kubeconfig ~/.kube/consumer-1.yaml apply  -f ~/federation-autoscaler/deploy/ansible/samples/burst-workload.yaml
+# Scale DOWN — Cluster Autoscaler releases the borrowed nodes:
 kubectl --kubeconfig ~/.kube/consumer-1.yaml delete -f ~/federation-autoscaler/deploy/ansible/samples/burst-workload.yaml
 ```
 
@@ -90,7 +110,7 @@ For the detailed setup — hardware and network requirements, the playbook-by-pl
 ## Documentation
 
 - **[deploy/ansible/README.md](deploy/ansible/README.md)** — install + demo guide (hardware/network requirements, the four playbooks step by step, running the demo, troubleshooting).
-- **[docs/design.md](docs/design.md)** — full architectural proposal (v3.1, as-built) with `Implemented in:` footers.
+- **[docs/design.md](docs/design.md)** — full architectural proposal (v3.2, as-built) with `Implemented in:` footers.
 - **[docs/diagrams/](docs/diagrams/)** — Mermaid sources + PNG renderings of the architecture / registration / scale-up / scale-down flows.
 
 ---
