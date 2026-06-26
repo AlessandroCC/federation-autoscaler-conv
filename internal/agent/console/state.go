@@ -35,18 +35,22 @@ import (
 // consumerState is the GET /api/state body on a consumer; it lets the UI
 // pre-select the current policy/region and reflect the workload switch.
 type consumerState struct {
-	Role     string       `json:"role"`
-	Policy   string       `json:"policy"`
-	Region   string       `json:"region"`
-	Workload workloadInfo `json:"workload"`
+	Role          string       `json:"role"`
+	ClusterID     string       `json:"clusterId"`
+	LiqoClusterID string       `json:"liqoClusterId"`
+	Policy        string       `json:"policy"`
+	Region        string       `json:"region"`
+	Workload      workloadInfo `json:"workload"`
 }
 
 // providerState is the GET /api/state body on a provider.
 type providerState struct {
-	Role     string            `json:"role"`
-	Prices   map[string]string `json:"prices"`
-	Region   string            `json:"region"`
-	Capacity map[string]int32  `json:"capacity"`
+	Role          string            `json:"role"`
+	ClusterID     string            `json:"clusterId"`
+	LiqoClusterID string            `json:"liqoClusterId"`
+	Prices        map[string]string `json:"prices"`
+	Region        string            `json:"region"`
+	Capacity      map[string]int32  `json:"capacity"`
 }
 
 // handleState returns the current settings so the UI can pre-fill its controls.
@@ -61,18 +65,22 @@ func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
 		}
 		info.Present = s.workloadPresent(ctx)
 		s.writeJSON(w, http.StatusOK, consumerState{
-			Role:     RoleConsumer,
-			Policy:   s.readPolicy(ctx),
-			Region:   region,
-			Workload: info,
+			Role:          RoleConsumer,
+			ClusterID:     s.clusterID,
+			LiqoClusterID: s.liqoClusterID,
+			Policy:        s.readPolicy(ctx),
+			Region:        region,
+			Workload:      info,
 		})
 		return
 	}
 	s.writeJSON(w, http.StatusOK, providerState{
-		Role:     RoleProvider,
-		Prices:   s.readPrices(ctx),
-		Region:   region,
-		Capacity: s.readCapacity(ctx),
+		Role:          RoleProvider,
+		ClusterID:     s.clusterID,
+		LiqoClusterID: s.liqoClusterID,
+		Prices:        s.readPrices(ctx),
+		Region:        region,
+		Capacity:      s.readCapacity(ctx),
 	})
 }
 

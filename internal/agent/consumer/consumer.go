@@ -221,11 +221,13 @@ func Run(ctx context.Context, opts Options) error {
 	// Optional config console (plain HTTP, no auth). Empty addr ⇒ disabled.
 	if opts.ConsoleAddr != "" {
 		consoleSrv, err := console.New(console.Options{
-			Role:        console.RoleConsumer,
-			BindAddress: opts.ConsoleAddr,
-			LocalClient: opts.LocalClient,
-			Namespace:   namespace,
-			Logger:      logger.WithName("console"),
+			Role:          console.RoleConsumer,
+			BindAddress:   opts.ConsoleAddr,
+			LocalClient:   opts.LocalClient,
+			Namespace:     namespace,
+			ClusterID:     opts.ClusterID,
+			LiqoClusterID: opts.LiqoClusterID,
+			Logger:        logger.WithName("console"),
 		})
 		if err != nil {
 			return fmt.Errorf("consumer: build config console: %w", err)

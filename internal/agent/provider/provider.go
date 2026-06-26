@@ -183,10 +183,12 @@ func Run(ctx context.Context, opts Options) error {
 	// where the agent-prices / agent-capacity / agent-location ConfigMaps live.
 	if opts.ConsoleAddr != "" {
 		consoleSrv, err := console.New(console.Options{
-			Role:        console.RoleProvider,
-			BindAddress: opts.ConsoleAddr,
-			LocalClient: opts.LocalClient,
-			Logger:      logger.WithName("console"),
+			Role:          console.RoleProvider,
+			BindAddress:   opts.ConsoleAddr,
+			LocalClient:   opts.LocalClient,
+			ClusterID:     opts.ClusterID,
+			LiqoClusterID: opts.LiqoClusterID,
+			Logger:        logger.WithName("console"),
 		})
 		if err != nil {
 			return fmt.Errorf("provider: build config console: %w", err)

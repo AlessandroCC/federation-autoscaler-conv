@@ -121,6 +121,14 @@ type Options struct {
 	// `default`, independent of this. Defaults to federation-autoscaler-system.
 	Namespace string
 
+	// ClusterID and LiqoClusterID identify this cluster for display in the
+	// console header so an operator with several tabs open can tell them apart.
+	// ClusterID is the broker-facing federation ID (--cluster-id, e.g.
+	// "consumer-1"); LiqoClusterID is the Liqo UUID (--liqo-cluster-id) the
+	// broker keys advertisements by. Display-only; both optional.
+	ClusterID     string
+	LiqoClusterID string
+
 	// Logger is the structured logger every handler logs through. Defaults to
 	// controller-runtime's logger named "console".
 	Logger logr.Logger
@@ -132,12 +140,14 @@ type Options struct {
 
 // Server is the console HTTP listener.
 type Server struct {
-	role     string
-	bind     string
-	local    ctrlclient.Client
-	ns       string
-	log      logr.Logger
-	shutdown time.Duration
+	role          string
+	bind          string
+	local         ctrlclient.Client
+	ns            string
+	clusterID     string
+	liqoClusterID string
+	log           logr.Logger
+	shutdown      time.Duration
 
 	srv *http.Server
 }
@@ -167,12 +177,14 @@ func New(opts Options) (*Server, error) {
 		shutdown = 5 * time.Second
 	}
 	s := &Server{
-		role:     opts.Role,
-		bind:     opts.BindAddress,
-		local:    opts.LocalClient,
-		ns:       ns,
-		log:      logger,
-		shutdown: shutdown,
+		role:          opts.Role,
+		bind:          opts.BindAddress,
+		local:         opts.LocalClient,
+		ns:            ns,
+		clusterID:     opts.ClusterID,
+		liqoClusterID: opts.LiqoClusterID,
+		log:           logger,
+		shutdown:      shutdown,
 	}
 	s.srv = &http.Server{
 		Addr:              opts.BindAddress,

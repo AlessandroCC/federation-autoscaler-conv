@@ -38,7 +38,11 @@ import (
 	autoscalingv1alpha1 "github.com/netgroup-polito/federation-autoscaler/api/autoscaling/v1alpha1"
 )
 
-const testNS = "federation-autoscaler-system"
+const (
+	testNS        = "federation-autoscaler-system"
+	testClusterID = "consumer-1"
+	testLiqoID    = "7f3a9c2e-0000-0000-0000-0000000000b1"
+)
 
 func testScheme(t *testing.T) *runtime.Scheme {
 	t.Helper()
@@ -58,7 +62,10 @@ func newTestServer(t *testing.T, role string, objs ...ctrlclient.Object) (ctrlcl
 	t.Helper()
 	scheme := testScheme(t)
 	fc := clientfake.NewClientBuilder().WithScheme(scheme).WithObjects(objs...).Build()
-	s, err := New(Options{Role: role, BindAddress: ":0", LocalClient: fc, Namespace: testNS})
+	s, err := New(Options{
+		Role: role, BindAddress: ":0", LocalClient: fc, Namespace: testNS,
+		ClusterID: testClusterID, LiqoClusterID: testLiqoID,
+	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -249,6 +256,9 @@ func TestStateConsumer(t *testing.T) {
 	if st.Role != RoleConsumer || st.Policy != "Latency" || st.Region != "QC" {
 		t.Errorf("state = %+v", st)
 	}
+	if st.ClusterID != testClusterID || st.LiqoClusterID != testLiqoID {
+		t.Errorf("identity = %q / %q, want %q / %q", st.ClusterID, st.LiqoClusterID, testClusterID, testLiqoID)
+	}
 	if st.Workload.Present {
 		t.Errorf("workload should be absent")
 	}
@@ -275,6 +285,9 @@ func TestStateProvider(t *testing.T) {
 	getJSON(t, ts, "/api/state", &st)
 	if st.Role != RoleProvider {
 		t.Fatalf("role = %q", st.Role)
+	}
+	if st.ClusterID != testClusterID || st.LiqoClusterID != testLiqoID {
+		t.Errorf("identity = %q / %q, want %q / %q", st.ClusterID, st.LiqoClusterID, testClusterID, testLiqoID)
 	}
 	if st.Prices["cpu"] != "0.050" || st.Prices["memory"] != "0.006" {
 		t.Errorf("prices = %+v", st.Prices)

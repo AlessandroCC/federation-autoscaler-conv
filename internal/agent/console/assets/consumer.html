@@ -38,6 +38,9 @@
       border: 1px solid rgba(74,168,255,.4); }
     .spacer { flex: 1; }
     .ns { color: var(--muted); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+    .cluster { text-align: right; line-height: 1.25; }
+    .cluster .cid { font-size: 13px; font-weight: 600; color: var(--fg); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+    .cluster .lid { font-size: 11px; color: var(--muted); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
     main { max-width: 920px; margin: 0 auto; padding: 0 22px; }
     section {
       background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
@@ -101,7 +104,10 @@
     <span class="role">Consumer</span>
     <h1>Federation Autoscaler Console</h1>
     <span class="spacer"></span>
-    <span class="ns" id="ns"></span>
+    <span class="cluster">
+      <span class="cid" id="clusterId">—</span><br />
+      <span class="lid" id="liqoId"></span>
+    </span>
   </header>
 
   <main>
@@ -232,7 +238,8 @@
     async function loadState() {
       const res = await fetch("/api/state", { cache: "no-store" });
       const st = await res.json();
-      document.getElementById("ns").textContent = st.role;
+      document.getElementById("clusterId").textContent = "cluster: " + (st.clusterId || "—");
+      document.getElementById("liqoId").textContent = st.liqoClusterId ? "liqo: " + st.liqoClusterId : "";
       current.policy = st.policy || "";
       current.region = st.region || "";
       selectedPolicy = current.policy;
