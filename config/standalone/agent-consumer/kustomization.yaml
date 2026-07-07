@@ -1,0 +1,27 @@
+# Standalone consumer-agent overlay — used by deploy/standalone/consumer-up.sh.
+#
+# Reuses config/agent/consumer but deletes the cert-manager `agent-client`
+# Certificate: consumer-up.sh instead creates the `agent-client-cert` Secret
+# directly from the central-issued join bundle (client cert with CN=cluster-id,
+# signed by the federation CA). Everything else — the agent Deployment
+# (--role=consumer), agent-config, agent-location ConfigMap, the localapi
+# Service (:9090), the agent-console NodePort (30445), and the default-namespace
+# workload Role/RoleBinding — is inherited unchanged.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+- ../../agent/consumer
+
+patches:
+- target:
+    group: cert-manager.io
+    kind: Certificate
+    name: agent-client
+  patch: |
+    $patch: delete
+    apiVersion: cert-manager.io/v1
+    kind: Certificate
+    metadata:
+      name: agent-client
+      namespace: federation-autoscaler-system

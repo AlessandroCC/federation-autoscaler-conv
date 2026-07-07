@@ -1,0 +1,25 @@
+# Standalone gRPC-server overlay — used by deploy/standalone/consumer-up.sh.
+#
+# Reuses config/grpc-server but deletes the cert-manager `grpc-server`
+# Certificate: consumer-up.sh instead mints the `grpc-server-cert` Secret with a
+# consumer-LOCAL openssl CA (the gRPC<->Cluster-Autoscaler mTLS is entirely
+# in-cluster and unrelated to the federation CA). So this overlay applies cleanly
+# on a cluster with NO cert-manager CRDs.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+- ../../grpc-server
+
+patches:
+- target:
+    group: cert-manager.io
+    kind: Certificate
+    name: grpc-server
+  patch: |
+    $patch: delete
+    apiVersion: cert-manager.io/v1
+    kind: Certificate
+    metadata:
+      name: grpc-server
+      namespace: federation-autoscaler-system

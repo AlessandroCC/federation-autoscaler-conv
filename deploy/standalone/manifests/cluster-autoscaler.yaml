@@ -1,0 +1,102 @@
+# Cluster Autoscaler for the consumer cluster — standalone port of
+# deploy/ansible/roles/cluster_autoscaler/templates/cluster-autoscaler.yaml.j2.
+#
+# consumer-up.sh substitutes the __TOKENS__ (sed) and applies this. The
+# cert-manager `cluster-autoscaler-client` Certificate from the Ansible template
+# is intentionally DROPPED here: consumer-up.sh mints the
+# `cluster-autoscaler-client-cert` Secret with the consumer-LOCAL openssl CA (the
+# same CA that signs grpc-server-cert), so CA<->gRPC mTLS needs no cert-manager.
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: cluster-autoscaler
+  namespace: __NAMESPACE__
+  labels:
+    app.kubernetes.io/name: cluster-autoscaler
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: cluster-autoscaler
+  labels:
+    app.kubernetes.io/name: cluster-autoscaler
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cluster-admin
+subjects:
+- kind: ServiceAccount
+  name: cluster-autoscaler
+  namespace: __NAMESPACE__
+---
+# The gRPC endpoint + the mounted client cert paths CA presents for mTLS.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: cluster-autoscaler-cloud-config
+  namespace: __NAMESPACE__
+type: Opaque
+stringData:
+  cloud-config.yaml: |
+    address: __GRPC_ADDR__
+    key: /etc/cluster-autoscaler/cert/tls.key
+    cert: /etc/cluster-autoscaler/cert/tls.crt
+    cacert: /etc/cluster-autoscaler/cert/ca.crt
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cluster-autoscaler
+  namespace: __NAMESPACE__
+  labels:
+    app.kubernetes.io/name: cluster-autoscaler
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: cluster-autoscaler
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: cluster-autoscaler
+    spec:
+      serviceAccountName: cluster-autoscaler
+      containers:
+      - name: cluster-autoscaler
+        image: __CA_IMAGE__
+        imagePullPolicy: IfNotPresent
+        command:
+        - ./cluster-autoscaler
+        - --v=4
+        - --cloud-provider=externalgrpc
+        - --cloud-config=/etc/cluster-autoscaler/config/cloud-config.yaml
+        # least-waste = a neutral, NON-price expander. Price/Eco/Latency provider
+        # selection is the Broker's job (per-consumer node-group masking), so CA
+        # stays metric-agnostic — a `price` expander here would defeat the opt-in.
+        - --expander=least-waste
+        - --scale-down-enabled=true
+        - --scale-down-unneeded-time=__SCALE_DOWN_UNNEEDED_TIME__
+        # The delay-after-* knobs default to 10 min upstream — too long for a
+        # demo. Matched to scale-down-unneeded-time so scale-down fires shortly
+        # after the workload is deleted. For production, drop these three lines.
+        - --scale-down-delay-after-add=__SCALE_DOWN_UNNEEDED_TIME__
+        - --scale-down-delay-after-delete=10s
+        - --scale-down-delay-after-failure=__SCALE_DOWN_UNNEEDED_TIME__
+        - --skip-nodes-with-local-storage=false
+        - --skip-nodes-with-system-pods=false
+        - --scan-interval=10s
+        volumeMounts:
+        - name: cert
+          mountPath: /etc/cluster-autoscaler/cert
+          readOnly: true
+        - name: config
+          mountPath: /etc/cluster-autoscaler/config
+          readOnly: true
+      volumes:
+      - name: cert
+        secret:
+          secretName: cluster-autoscaler-client-cert
+      - name: config
+        secret:
+          secretName: cluster-autoscaler-cloud-config

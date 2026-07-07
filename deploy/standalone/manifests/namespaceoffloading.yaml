@@ -1,0 +1,26 @@
+# Liqo NamespaceOffloading for the `default` namespace — standalone port of the
+# fa_consumer role's inline stamp (deploy/ansible/roles/fa_consumer/tasks/main.yaml).
+#
+# Liqo's admission webhook hardcodes the name to "offloading" (one per K8s
+# namespace, shared by every Reservation that lands here). podOffloadingStrategy
+# LocalAndRemote lets Pods fill the consumer's OWN node first and only spill onto
+# borrowed provider (virtual) nodes when local capacity is exhausted — the
+# natural autoscaler story. The selector matches any Liqo virtual node.
+#
+# Applied verbatim (no substitution). Workloads outside `default` need their own
+# NamespaceOffloading in those namespaces.
+apiVersion: offloading.liqo.io/v1beta1
+kind: NamespaceOffloading
+metadata:
+  name: offloading
+  namespace: default
+spec:
+  namespaceMappingStrategy: DefaultName
+  podOffloadingStrategy: LocalAndRemote
+  clusterSelector:
+    nodeSelectorTerms:
+    - matchExpressions:
+      - key: liqo.io/type
+        operator: In
+        values:
+        - virtual-node

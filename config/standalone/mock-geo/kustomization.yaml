@@ -1,0 +1,25 @@
+# Standalone mock-geo overlay — used by deploy/standalone/mock-up.sh.
+#
+# Reuses config/mock-geo but exposes its Service as a NodePort (30080) so the
+# provider/consumer agents on other clusters can reach GET /latlon?region=<code>
+# at http://<mock-node-ip>:30080. (The mock has no cert-manager/CRDs/RBAC, so the
+# only change vs. the base overlay is the Service type + nodePort — which the
+# Ansible fa_mocks role did with a live patch.)
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+- ../../mock-geo
+
+patches:
+- target:
+    version: v1
+    kind: Service
+    name: mock-geo
+  patch: |
+    - op: replace
+      path: /spec/type
+      value: NodePort
+    - op: add
+      path: /spec/ports/0/nodePort
+      value: 30080

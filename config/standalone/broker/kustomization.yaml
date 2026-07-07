@@ -1,0 +1,82 @@
+# Standalone broker overlay — used by deploy/standalone/central-up.sh.
+#
+# Reuses the full broker overlay (config/broker) but adapts it for a
+# cert-manager-free, per-cluster deploy:
+#   - deletes the cert-manager PKI (self-signed root, CA cert + issuer, and the
+#     broker-server Certificate). central-up.sh instead generates the federation
+#     CA with openssl and creates the `broker-server-cert` Secret directly, so
+#     this overlay applies cleanly on a cluster with NO cert-manager CRDs.
+#   - exposes the broker Service as a NodePort (api 30443, dashboard 30444),
+#     which the Ansible fa_central role did with a live patch.
+#
+# Lives under config/standalone/ (a sibling of config/broker) rather than
+# config/broker/standalone so it can reference ../../broker without a kustomize
+# containment cycle (a kustomization may not reference an ancestor directory).
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+- ../../broker
+
+patches:
+# --- drop the cert-manager PKI (selfsigned root, CA cert+issuer, broker-server) ---
+- target:
+    group: cert-manager.io
+    kind: Issuer
+    name: selfsigned-root
+  patch: |
+    $patch: delete
+    apiVersion: cert-manager.io/v1
+    kind: Issuer
+    metadata:
+      name: selfsigned-root
+      namespace: federation-autoscaler-system
+- target:
+    group: cert-manager.io
+    kind: Certificate
+    name: federation-autoscaler-ca
+  patch: |
+    $patch: delete
+    apiVersion: cert-manager.io/v1
+    kind: Certificate
+    metadata:
+      name: federation-autoscaler-ca
+      namespace: federation-autoscaler-system
+- target:
+    group: cert-manager.io
+    kind: Issuer
+    name: federation-autoscaler-ca-issuer
+  patch: |
+    $patch: delete
+    apiVersion: cert-manager.io/v1
+    kind: Issuer
+    metadata:
+      name: federation-autoscaler-ca-issuer
+      namespace: federation-autoscaler-system
+- target:
+    group: cert-manager.io
+    kind: Certificate
+    name: broker-server
+  patch: |
+    $patch: delete
+    apiVersion: cert-manager.io/v1
+    kind: Certificate
+    metadata:
+      name: broker-server
+      namespace: federation-autoscaler-system
+# --- expose the broker Service as NodePort (api 30443, dashboard 30444) ---
+# ports[0]=api (9443), ports[1]=dashboard (9444) — order per config/broker/service.yaml.
+- target:
+    version: v1
+    kind: Service
+    name: broker
+  patch: |
+    - op: replace
+      path: /spec/type
+      value: NodePort
+    - op: add
+      path: /spec/ports/0/nodePort
+      value: 30443
+    - op: add
+      path: /spec/ports/1/nodePort
+      value: 30444
