@@ -123,14 +123,24 @@
     <!-- Capacity -->
     <section>
       <h2>Advertised capacity</h2>
-      <p class="hint">The percentage of allocatable CPU / RAM you donate to the federation. Takes effect on the next advertisement (~30&nbsp;s).</p>
+      <p class="hint">How much of each resource you donate — a percentage of allocatable, or a fixed amount (e.g. 8Gi). Takes effect on the next advertisement (~30&nbsp;s).</p>
       <div class="slider-field">
-        <div class="top"><span class="name">CPU</span><span class="pct" id="cpuPct">100%</span></div>
+        <div class="top">
+          <span class="name">CPU</span>
+          <span><select id="cpuMode"><option value="percent">%</option><option value="fixed">fixed</option></select>
+          <span class="pct" id="cpuPct">100%</span></span>
+        </div>
         <input type="range" id="cpuRange" min="0" max="100" value="100" />
+        <input type="text" id="cpuFixed" inputmode="text" placeholder="e.g. 4000m" style="display:none" />
       </div>
       <div class="slider-field">
-        <div class="top"><span class="name">RAM</span><span class="pct" id="memPct">100%</span></div>
+        <div class="top">
+          <span class="name">RAM</span>
+          <span><select id="memMode"><option value="percent">%</option><option value="fixed">fixed</option></select>
+          <span class="pct" id="memPct">100%</span></span>
+        </div>
         <input type="range" id="memRange" min="0" max="100" value="100" />
+        <input type="text" id="memFixed" inputmode="text" placeholder="e.g. 8Gi" style="display:none" />
       </div>
       <div class="submit-row"><button id="capacitySubmit">Apply capacity</button></div>
     </section>
@@ -184,9 +194,45 @@
       };
     }
 
-    function setPct(rangeId, pctId, v) {
-      document.getElementById(rangeId).value = v;
-      document.getElementById(pctId).textContent = v + "%";
+    // Capacity controls: each resource ("cpu" / "mem") has a mode select, a
+    // percentage slider, a fixed-quantity text input, and a "%" readout. The
+    // state key differs ("cpu" / "memory").
+    const CAP_KEY = { cpu: "cpu", mem: "memory" };
+    function capEls(res) {
+      return {
+        mode:  document.getElementById(res + "Mode"),
+        range: document.getElementById(res + "Range"),
+        fixed: document.getElementById(res + "Fixed"),
+        pct:   document.getElementById(res + "Pct"),
+      };
+    }
+    // syncCapMode shows the slider (percent) or the text input (fixed).
+    function syncCapMode(res) {
+      const e = capEls(res), isPct = e.mode.value === "percent";
+      e.range.style.display = isPct ? "" : "none";
+      e.pct.style.display   = isPct ? "" : "none";
+      e.fixed.style.display = isPct ? "none" : "";
+    }
+    // loadCap classifies the stored literal: a bare/"%"-suffixed integer is a
+    // percentage; anything else (e.g. "8Gi") is a fixed quantity.
+    function loadCap(res, st) {
+      const e = capEls(res);
+      const raw = (st.capacity || {})[CAP_KEY[res]];
+      if (raw == null || raw === "") {
+        e.mode.value = "percent"; e.range.value = 100; e.pct.textContent = "100%"; e.fixed.value = "";
+      } else if (/^\d+%?$/.test(String(raw).trim())) {
+        const n = parseInt(String(raw), 10);
+        e.mode.value = "percent"; e.range.value = n; e.pct.textContent = n + "%"; e.fixed.value = "";
+      } else {
+        e.mode.value = "fixed"; e.fixed.value = String(raw).trim(); e.range.value = 100; e.pct.textContent = "100%";
+      }
+      syncCapMode(res);
+    }
+    // capValue returns the string to POST for one resource (a bare percent or the
+    // fixed quantity); "" when the fixed field is left blank.
+    function capValue(res) {
+      const e = capEls(res);
+      return e.mode.value === "percent" ? String(e.range.value) : e.fixed.value.trim();
     }
 
     async function loadState() {
@@ -203,13 +249,15 @@
       document.getElementById("regionSelect").value = currentRegion;
       document.getElementById("regionSubmit").disabled = true;
 
-      const cap = st.capacity || {};
-      setPct("cpuRange", "cpuPct", cap.cpu != null ? cap.cpu : 100);
-      setPct("memRange", "memPct", cap.memory != null ? cap.memory : 100);
+      loadCap("cpu", st);
+      loadCap("mem", st);
     }
 
-    document.getElementById("cpuRange").oninput = (e) => { document.getElementById("cpuPct").textContent = e.target.value + "%"; };
-    document.getElementById("memRange").oninput = (e) => { document.getElementById("memPct").textContent = e.target.value + "%"; };
+    for (const res of ["cpu", "mem"]) {
+      const e = capEls(res);
+      e.mode.onchange = () => syncCapMode(res);
+      e.range.oninput = () => { e.pct.textContent = e.range.value + "%"; };
+    }
 
     document.getElementById("pricesSubmit").onclick = async () => {
       const cpu = document.getElementById("cpuPrice").value.trim();
@@ -229,8 +277,8 @@
       } catch (e) { toast(e.message, true); }
     };
     document.getElementById("capacitySubmit").onclick = async () => {
-      const cpu = parseInt(document.getElementById("cpuRange").value, 10);
-      const memory = parseInt(document.getElementById("memRange").value, 10);
+      const cpu = capValue("cpu");
+      const memory = capValue("mem");
       try {
         await postJSON("/api/capacity", { cpu, memory });
         toast("Capacity applied — advertised within ~30 s");

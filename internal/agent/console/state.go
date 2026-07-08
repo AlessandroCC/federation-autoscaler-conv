@@ -26,7 +26,6 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/apimachinery/pkg/util/intstr"
 	"sigs.k8s.io/yaml"
 
 	autoscalingv1alpha1 "github.com/netgroup-polito/federation-autoscaler/api/autoscaling/v1alpha1"
@@ -50,7 +49,7 @@ type providerState struct {
 	LiqoClusterID string            `json:"liqoClusterId"`
 	Prices        map[string]string `json:"prices"`
 	Region        string            `json:"region"`
-	Capacity      map[string]int32  `json:"capacity"`
+	Capacity      map[string]string `json:"capacity"`
 }
 
 // handleState returns the current settings so the UI can pre-fill its controls.
@@ -135,24 +134,26 @@ func (s *Server) readPrices(ctx context.Context) map[string]string {
 	return out
 }
 
-// readCapacity returns the cpu/memory advertised-capacity percentages in the
-// agent-capacity ConfigMap, or an empty map when unset/absent.
-func (s *Server) readCapacity(ctx context.Context) map[string]int32 {
-	out := map[string]int32{}
+// readCapacity returns the cpu/memory advertised-capacity caps in the
+// agent-capacity ConfigMap as their raw literal form — a percentage ("80" or
+// "80%") or a fixed quantity ("8Gi") — or an empty map when unset/absent. The
+// UI classifies percent-vs-fixed the same way the provider agent does.
+func (s *Server) readCapacity(ctx context.Context) map[string]string {
+	out := map[string]string{}
 	raw := s.readConfigMapKey(ctx, capacityConfigMap, capacityKey)
 	if raw == "" {
 		return out
 	}
-	// Parse leniently via IntOrString so values may be bare ints (cpu: 80) or
-	// quoted ints (cpu: "80"), matching the agent's own loadCapacityPercents.
-	var caps map[string]intstr.IntOrString
+	// Parse generically so a value written bare (cpu: 80), quoted (cpu: "80%"),
+	// or as a quantity (memory: 8Gi) round-trips as the literal the operator set.
+	var caps map[string]any
 	if err := yaml.Unmarshal([]byte(raw), &caps); err != nil {
 		s.log.V(1).Info("agent-capacity unparseable", "err", err.Error())
 		return out
 	}
 	for _, k := range []string{"cpu", "memory"} {
-		if v, ok := caps[k]; ok {
-			out[k] = int32(clampPercent(v.IntValue()))
+		if v, ok := caps[k]; ok && v != nil {
+			out[k] = strings.TrimSpace(fmt.Sprintf("%v", v))
 		}
 	}
 	return out

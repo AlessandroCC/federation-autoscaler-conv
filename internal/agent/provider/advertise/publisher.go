@@ -32,6 +32,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -77,13 +78,16 @@ type Options struct {
 	PriceFile string
 
 	// CapacityFile is an optional path to a YAML/JSON file holding this
-	// provider's per-resource advertised-capacity percentages (e.g.
-	// {"cpu":100,"memory":50}; keys are resource names, values are integer
-	// percentages of allocatable). It is re-read on every publish cycle so an
-	// operator can re-cap without a restart. A resource set to a value in
-	// (0,100) is advertised at that fraction of its allocatable; 100, >100, ≤0,
-	// or unset ⇒ the full allocatable is advertised for that resource.
-	// Empty/missing/unparseable ⇒ the provider advertises full allocatable.
+	// provider's per-resource advertised-capacity caps (e.g.
+	// {"cpu":"80%","memory":"8Gi"}; keys are resource names). It is re-read on
+	// every publish cycle so an operator can re-cap without a restart. Each
+	// value is EITHER a percentage of allocatable — a trailing '%' or a bare
+	// integer (e.g. 80 or "80%") — OR a fixed Kubernetes quantity with a unit
+	// (e.g. "8Gi", "4000m"), which caps the resource at min(fixed, allocatable).
+	// A percentage in (0,100) advertises that fraction, 0 advertises none, and
+	// 100 / >100 / unset ⇒ the full allocatable. A cap only ever LOWERS what is
+	// advertised. Empty/missing/unparseable ⇒ the provider advertises full
+	// allocatable.
 	CapacityFile string
 
 	// RegionFile is an optional path to a YAML/JSON file holding this provider's
@@ -213,7 +217,7 @@ func (p *Publisher) publishOnce(ctx context.Context) {
 		return
 	}
 
-	scaled, customized := p.applyCapacityScaling(snap.Allocatable)
+	scaled, pctCustom, fixedCustom := p.applyCapacityScaling(snap.Allocatable)
 	topology, carbon := p.loadPlacementInputs(ctx)
 
 	req := &brokerapi.AdvertisementRequest{
@@ -223,7 +227,8 @@ func (p *Publisher) publishOnce(ctx context.Context) {
 		Topology:             topology,
 		UnitPrices:           p.loadUnitPrices(),
 		CarbonIntensity:      carbon,
-		CapacityScalePercent: customized,
+		CapacityScalePercent: pctCustom,
+		CapacityFixed:        fixedCustom,
 	}
 
 	resp, err := p.client.PostAdvertisement(ctx, req)
@@ -240,56 +245,74 @@ func (p *Publisher) publishOnce(ctx context.Context) {
 		"chunkCount", resp.ChunkCount,
 		"countedNodes", snap.CountedNodes,
 		"pricedResources", len(req.UnitPrices),
-		"customizedResources", len(customized),
+		"percentCappedResources", len(pctCustom),
+		"fixedCappedResources", len(fixedCustom),
 		"piggybackedInstructions", len(resp.Instructions))
 }
 
-// applyCapacityScaling reduces each allocatable resource to the operator's
-// configured percentage and returns (scaledResources, customizedPercents).
-// customizedPercents holds only the resources actually scaled down (so the
-// dashboard can flag them); it is nil when nothing was customized. The
-// normalization rules, per resource percent P (docs: --capacity-file):
+// applyCapacityScaling caps each allocatable resource to the operator's
+// configured percentage or fixed amount and returns
+// (scaledResources, percentCaps, fixedCaps). percentCaps / fixedCaps hold only
+// the resources actually lowered (so the dashboard can flag them); each is nil
+// when nothing of that kind was customized. A cap only ever LOWERS what is
+// advertised. The rules, per resource:
 //
-//	0 < P < 100  → advertise P% of allocatable, recorded as customized
-//	P == 100     → advertise full allocatable (not customized)
-//	P  > 100     → clamped to 100 ⇒ full allocatable (not customized)
-//	P <= 0       → bad value ⇒ full allocatable, logged (not customized)
-//	unset        → full allocatable (not customized)
+//	percent P: 0 ≤ P < 100 → advertise P% of allocatable (recorded; 0 = none)
+//	           P == 100 / P > 100 → full allocatable (not recorded)
+//	           P < 0 → bad value ⇒ full allocatable, logged (not recorded)
+//	fixed F:   advertise min(F, allocatable); recorded only when F < allocatable
+//	unset:     full allocatable (not recorded)
 //
 // A configured key absent from allocatable is ignored (logged at V(1)).
-func (p *Publisher) applyCapacityScaling(alloc corev1.ResourceList) (corev1.ResourceList, map[corev1.ResourceName]int32) {
-	percents := p.loadCapacityPercents()
-	if len(percents) == 0 {
-		return alloc, nil
+func (p *Publisher) applyCapacityScaling(alloc corev1.ResourceList) (corev1.ResourceList, map[corev1.ResourceName]int32, corev1.ResourceList) {
+	caps := p.loadCapacityCaps()
+	if len(caps) == 0 {
+		return alloc, nil, nil
 	}
 
 	scaled := make(corev1.ResourceList, len(alloc))
-	var customized map[corev1.ResourceName]int32
+	var pctCaps map[corev1.ResourceName]int32
+	var fixedCaps corev1.ResourceList
 	for name, qty := range alloc {
-		pct, ok := percents[name]
+		rule, ok := caps[name]
 		switch {
-		case !ok || pct >= 100:
+		case !ok:
 			scaled[name] = qty.DeepCopy()
-		case pct <= 0:
-			p.log.Info("invalid capacity percent (<= 0); advertising full allocatable for this resource",
-				"resource", name, "percent", pct)
-			scaled[name] = qty.DeepCopy()
-		default:
-			scaled[name] = scaleQuantity(qty, int64(pct))
-			if customized == nil {
-				customized = make(map[corev1.ResourceName]int32)
+		case rule.isPercent:
+			switch {
+			case rule.percent < 0:
+				p.log.Info("invalid capacity percent (< 0); advertising full allocatable for this resource",
+					"resource", name, "percent", rule.percent)
+				scaled[name] = qty.DeepCopy()
+			case rule.percent >= 100:
+				scaled[name] = qty.DeepCopy()
+			default: // 0..99 — an explicit 0 advertises none
+				scaled[name] = scaleQuantity(qty, int64(rule.percent))
+				if pctCaps == nil {
+					pctCaps = make(map[corev1.ResourceName]int32)
+				}
+				pctCaps[name] = rule.percent
 			}
-			customized[name] = pct
+		default: // fixed absolute cap — only ever lowers
+			if rule.fixed.Cmp(qty) < 0 {
+				scaled[name] = rule.fixed.DeepCopy()
+				if fixedCaps == nil {
+					fixedCaps = corev1.ResourceList{}
+				}
+				fixedCaps[name] = rule.fixed.DeepCopy()
+			} else {
+				scaled[name] = qty.DeepCopy()
+			}
 		}
 	}
 
-	for name := range percents {
+	for name := range caps {
 		if _, ok := alloc[name]; !ok {
-			p.log.V(1).Info("capacity percent set for a resource the provider does not advertise; ignored",
+			p.log.V(1).Info("capacity cap set for a resource the provider does not advertise; ignored",
 				"resource", name)
 		}
 	}
-	return scaled, customized
+	return scaled, pctCaps, fixedCaps
 }
 
 // scaleQuantity returns q scaled to percent% of its value, preserving q's
@@ -388,15 +411,30 @@ func (p *Publisher) loadRegion() string {
 	return strings.TrimSpace(loc.Region)
 }
 
-// loadCapacityPercents reads and parses the per-resource advertised-capacity
-// percentage file (if configured). Like loadUnitPrices it is best-effort: a
-// missing, empty, or unparseable file yields nil so the provider simply
-// advertises its full allocatable rather than failing the publish cycle.
-// Re-reading here (not at construction) is what lets an operator re-cap live —
-// kubelet refreshes the projected ConfigMap file and the next cycle picks it up.
-// Values are parsed leniently (an integer or a quoted integer) via IntOrString;
-// the (0,100) clamp/normalization happens in applyCapacityScaling.
-func (p *Publisher) loadCapacityPercents() map[corev1.ResourceName]int32 {
+// capRule is one resource's advertised-capacity cap parsed from the capacity
+// file. Exactly one form applies, distinguished by the value's syntax:
+//
+//	"60%" or bare 60  → percentage of allocatable  (isPercent, percent∈[0,100])
+//	"8Gi", "4000m"    → fixed absolute quantity     (fixed; only ever lowers)
+//
+// Rule: a trailing '%' or a plain integer (no unit) is a percentage — keeping
+// today's bare-integer files working — while any other Kubernetes quantity
+// (i.e. one carrying a unit/suffix) is a fixed cap.
+type capRule struct {
+	isPercent bool
+	percent   int32
+	fixed     resource.Quantity
+}
+
+// loadCapacityCaps reads and parses the per-resource advertised-capacity cap
+// file (if configured). Like loadUnitPrices it is best-effort: a missing,
+// empty, or unparseable file yields nil so the provider simply advertises its
+// full allocatable rather than failing the publish cycle. Re-reading here (not
+// at construction) is what lets an operator re-cap live — kubelet refreshes the
+// projected ConfigMap file and the next cycle picks it up. Values are read
+// leniently via IntOrString (so a bare int, a quoted int, or a quantity string
+// all parse); percent-vs-fixed classification happens per value.
+func (p *Publisher) loadCapacityCaps() map[corev1.ResourceName]capRule {
 	if p.capacityFile == "" {
 		return nil
 	}
@@ -418,11 +456,45 @@ func (p *Publisher) loadCapacityPercents() map[corev1.ResourceName]int32 {
 	if len(raw) == 0 {
 		return nil
 	}
-	out := make(map[corev1.ResourceName]int32, len(raw))
-	for k, v := range raw {
-		out[k] = int32(v.IntValue())
+	out := make(map[corev1.ResourceName]capRule, len(raw))
+	for name, v := range raw {
+		s := strings.TrimSpace(v.String())
+		if s == "" {
+			continue
+		}
+		if pct, ok := parsePercent(s); ok {
+			out[name] = capRule{isPercent: true, percent: pct}
+			continue
+		}
+		q, err := resource.ParseQuantity(s)
+		if err != nil {
+			p.log.V(1).Info("capacity value is neither a percentage nor a valid quantity; ignored",
+				"resource", name, "value", s, "err", err.Error())
+			continue
+		}
+		out[name] = capRule{fixed: q}
+	}
+	if len(out) == 0 {
+		return nil
 	}
 	return out
+}
+
+// parsePercent recognises a percentage cap: an explicit "N%" or a bare integer
+// with no unit (the historical form). Returns the integer percent and true on a
+// match; false means the value should be treated as a fixed quantity instead.
+func parsePercent(s string) (int32, bool) {
+	if t, ok := strings.CutSuffix(s, "%"); ok {
+		n, err := strconv.Atoi(strings.TrimSpace(t))
+		if err != nil {
+			return 0, false
+		}
+		return int32(n), true
+	}
+	if n, err := strconv.Atoi(s); err == nil {
+		return int32(n), true
+	}
+	return 0, false
 }
 
 func (p *Publisher) notifyResult(success bool) {

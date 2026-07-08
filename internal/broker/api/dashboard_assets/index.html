@@ -305,15 +305,20 @@
       }
     }
 
-    // Compact per-resource advertised-capacity customization, e.g. "mem 50%" or
-    // "cpu 80% · mem 50%". The provider agent only sends entries it scaled below
-    // 100%, so an empty/absent map renders as "—" (full allocatable advertised).
+    // Compact per-resource advertised-capacity customization, e.g. "mem 50%",
+    // "cpu 80% · mem 8Gi". The provider agent only sends resources it actually
+    // capped below allocatable, split across a percentage map and a fixed map,
+    // so an empty/absent pair renders as "—" (full allocatable advertised).
     const RES_ABBR = { cpu: "cpu", memory: "mem", "nvidia.com/gpu": "gpu" };
-    function fmtCapacityCustom(m) {
-      if (!m) return "—";
-      const keys = Object.keys(m).sort();
-      if (!keys.length) return "—";
-      return keys.map(k => `${RES_ABBR[k] || k} ${m[k]}%`).join(" · ");
+    function fmtCapacityCustom(pct, fixed) {
+      const parts = [];
+      for (const k of Object.keys(pct || {}).sort()) {
+        parts.push(`${RES_ABBR[k] || k} ${pct[k]}%`);
+      }
+      for (const k of Object.keys(fixed || {}).sort()) {
+        parts.push(`${RES_ABBR[k] || k} ${fixed[k]}`);
+      }
+      return parts.length ? parts.join(" · ") : "—";
     }
 
     function renderAdvertisements(list) {
@@ -339,9 +344,9 @@
         // Advertised region (topology.region); "—" when unset. Drives the eco
         // (carbon) + latency (distance) strategies.
         tr.appendChild(td(a.topology && a.topology.region ? a.topology.region : "—", { mono: true }));
-        // Per-resource advertised-capacity customization (e.g. "mem 50%"); "—"
-        // when the provider advertises its full allocatable.
-        tr.appendChild(td(fmtCapacityCustom(a.capacityScalePercent), { mono: true }));
+        // Per-resource advertised-capacity customization (e.g. "mem 50%" or
+        // "mem 8Gi"); "—" when the provider advertises its full allocatable.
+        tr.appendChild(td(fmtCapacityCustom(a.capacityScalePercent, a.capacityFixed), { mono: true }));
         tr.appendChild(a.available ? pill("ready", "green") : pill("stale", "amber"));
         tr.appendChild(td(fmtTime(a.lastSeen)));
         // Allocatable CPU / memory the provider advertised (.spec.resources.allocatable).

@@ -99,6 +99,16 @@ type ClusterAdvertisementSpec struct {
 	// (surfaced on the dashboard); the Broker never re-derives Resources from it.
 	// +optional
 	CapacityScalePercent map[corev1.ResourceName]int32 `json:"capacityScalePercent,omitempty"`
+
+	// CapacityFixed records, per resource, the fixed absolute amount the provider's
+	// admin chose to advertise when it is below allocatable — the Provider Agent
+	// has already capped Resources.Allocatable at min(fixed, allocatable). Keys are
+	// Kubernetes resource names; values are quantities (e.g. memory: "8Gi").
+	// Resources advertised at full allocatable are omitted. Like
+	// CapacityScalePercent this is informational (surfaced on the dashboard); the
+	// Broker never re-derives Resources from it.
+	// +optional
+	CapacityFixed corev1.ResourceList `json:"capacityFixed,omitempty"`
 }
 
 // ClusterAdvertisementStatus is the Broker's observed view of the advertisement.

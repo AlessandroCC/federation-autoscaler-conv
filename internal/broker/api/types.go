@@ -140,6 +140,15 @@ type AdvertisementRequest struct {
 	// it never re-derives Resources from it (Resources is authoritative).
 	CapacityScalePercent map[corev1.ResourceName]int32 `json:"capacityScalePercent,omitempty"`
 
+	// CapacityFixed records, per resource, the fixed absolute amount the
+	// provider's admin chose to advertise when it is below allocatable — i.e.
+	// the agent has already capped Resources at min(fixed, allocatable). Keys are
+	// resource names; values are Kubernetes quantities (e.g. memory: "8Gi").
+	// Resources advertised at full allocatable are omitted. Like
+	// CapacityScalePercent this is informational (dashboard only); the Broker
+	// never re-derives Resources from it.
+	CapacityFixed corev1.ResourceList `json:"capacityFixed,omitempty"`
+
 	// LiqoLabels are stamped on the virtual nodes Liqo creates on each
 	// peering consumer, e.g. liqo.io/type=virtual-node.
 	LiqoLabels map[string]string `json:"liqoLabels,omitempty"`
@@ -201,13 +210,17 @@ type AdvertisementSnapshot struct {
 	// the provider advertises full allocatable. Surfaced so the dashboard can
 	// flag a customized provider.
 	CapacityScalePercent map[corev1.ResourceName]int32 `json:"capacityScalePercent,omitempty"`
-	LiqoLabels           map[string]string             `json:"liqoLabels,omitempty"`
-	LiqoTaints           []corev1.Taint                `json:"liqoTaints,omitempty"`
-	ChunkCount           int32                         `json:"chunkCount"`
-	ReservedChunks       int32                         `json:"reservedChunks"`
-	AvailableChunks      int32                         `json:"availableChunks"`
-	LastSeen             metav1.Time                   `json:"lastSeen"`
-	Available            bool                          `json:"available"`
+	// CapacityFixed mirrors the provider's per-resource fixed advertised-capacity
+	// cap (resource name → quantity, e.g. memory: "8Gi"); empty/absent means no
+	// fixed cap lowered allocatable. Surfaced alongside CapacityScalePercent.
+	CapacityFixed   corev1.ResourceList `json:"capacityFixed,omitempty"`
+	LiqoLabels      map[string]string   `json:"liqoLabels,omitempty"`
+	LiqoTaints      []corev1.Taint      `json:"liqoTaints,omitempty"`
+	ChunkCount      int32               `json:"chunkCount"`
+	ReservedChunks  int32               `json:"reservedChunks"`
+	AvailableChunks int32               `json:"availableChunks"`
+	LastSeen        metav1.Time         `json:"lastSeen"`
+	Available       bool                `json:"available"`
 }
 
 // -----------------------------------------------------------------------------

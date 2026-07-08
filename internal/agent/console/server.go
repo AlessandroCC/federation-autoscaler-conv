@@ -51,6 +51,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -396,39 +397,77 @@ func (s *Server) handlePrices(w http.ResponseWriter, r *http.Request) {
 	s.ok(w)
 }
 
-// handleCapacity upserts the agent-capacity ConfigMap. Values are integer
-// percentages of allocatable, clamped to [0,100].
+// handleCapacity upserts the agent-capacity ConfigMap. Each resource's value is
+// EITHER a percentage of allocatable (a bare integer or "N%", clamped to
+// [0,100]) OR a fixed absolute Kubernetes quantity (e.g. "8Gi", "4000m"), so an
+// operator can cap by fraction or by absolute amount, per resource.
 func (s *Server) handleCapacity(w http.ResponseWriter, r *http.Request) {
 	if s.role != RoleProvider {
 		s.writeError(w, http.StatusMethodNotAllowed, "capacity is a provider-only setting")
 		return
 	}
 	var body struct {
-		CPU    *int `json:"cpu"`
-		Memory *int `json:"memory"`
+		CPU    string `json:"cpu"`
+		Memory string `json:"memory"`
 	}
 	if !s.decode(w, r, &body) {
 		return
 	}
-	if body.CPU == nil && body.Memory == nil {
+	body.CPU = strings.TrimSpace(body.CPU)
+	body.Memory = strings.TrimSpace(body.Memory)
+	if body.CPU == "" && body.Memory == "" {
 		s.writeError(w, http.StatusBadRequest, "at least one of cpu/memory is required")
 		return
 	}
 	lines := make([]string, 0, 2)
-	for _, kv := range []struct {
-		name string
-		val  *int
-	}{{"cpu", body.CPU}, {"memory", body.Memory}} {
-		if kv.val == nil {
+	for _, kv := range []struct{ name, val string }{{"cpu", body.CPU}, {"memory", body.Memory}} {
+		if kv.val == "" {
 			continue
 		}
-		lines = append(lines, fmt.Sprintf("%s: %d", kv.name, clampPercent(*kv.val)))
+		line, err := capacityLine(kv.name, kv.val)
+		if err != nil {
+			s.writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		lines = append(lines, line)
 	}
 	if err := s.upsertConfigMap(r.Context(), capacityConfigMap, capacityKey, joinLines(lines)); err != nil {
 		s.writeError(w, http.StatusInternalServerError, "write agent-capacity: "+err.Error())
 		return
 	}
 	s.ok(w)
+}
+
+// capacityLine validates one capacity value and renders its agent-capacity line.
+// A bare integer or "N%" is a percentage, clamped to [0,100] and written bare;
+// any other value must be a valid Kubernetes quantity, written quoted so YAML
+// preserves it as the string the provider agent reads as a fixed cap.
+func capacityLine(name, val string) (string, error) {
+	if pct, ok, err := parseCapacityPercent(val); ok {
+		if err != nil {
+			return "", fmt.Errorf("invalid %s percentage %q: %v", name, val, err)
+		}
+		return fmt.Sprintf("%s: %d", name, clampPercent(pct)), nil
+	}
+	if _, err := resource.ParseQuantity(val); err != nil {
+		return "", fmt.Errorf("invalid %s capacity %q: not a percentage (e.g. 80 or \"80%%\") or a Kubernetes quantity (e.g. \"8Gi\")", name, val)
+	}
+	return fmt.Sprintf("%s: %q", name, val), nil
+}
+
+// parseCapacityPercent reports whether val is a percentage form ("N" or "N%")
+// and, if so, its integer value. ok=false means val is not a percentage and
+// should be treated as a fixed quantity. It mirrors the provider agent's own
+// percent-vs-fixed rule so the console and the agent agree.
+func parseCapacityPercent(val string) (pct int, ok bool, err error) {
+	if t, has := strings.CutSuffix(val, "%"); has {
+		n, e := strconv.Atoi(strings.TrimSpace(t))
+		return n, true, e
+	}
+	if n, e := strconv.Atoi(val); e == nil {
+		return n, true, nil
+	}
+	return 0, false, nil
 }
 
 // -----------------------------------------------------------------------------

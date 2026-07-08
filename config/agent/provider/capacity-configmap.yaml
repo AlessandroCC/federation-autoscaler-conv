@@ -1,15 +1,17 @@
-# Per-provider advertised-capacity percentages, mounted into the provider agent
-# and re-read on every advertisement cycle (so the cap can change without a pod
+# Per-provider advertised-capacity caps, mounted into the provider agent and
+# re-read on every advertisement cycle (so the cap can change without a pod
 # restart).
 #
-# `capacity.yaml` is a YAML/JSON map of resource-name → integer percentage of
-# that resource's allocatable to advertise:
-#   cpu            → percent of allocatable CPU to advertise
-#   memory         → percent of allocatable memory to advertise
-#   nvidia.com/gpu → percent of allocatable GPUs to advertise
-# A value in the open range (0,100) advertises that fraction; 100, any value
-# >100, any value ≤0, or an unlisted resource advertises the full allocatable.
-# The Broker derives chunk counts from the (already-scaled) advertised capacity,
+# `capacity.yaml` is a YAML/JSON map of resource-name → cap, one entry per
+# resource (cpu / memory / nvidia.com/gpu). Each value is EITHER:
+#   • a PERCENTAGE of allocatable — a bare integer (cpu: 80) or a "N%" string
+#     (cpu: "80%"). A value in (0,100) advertises that fraction; 0 advertises
+#     none; 100 or any value >100 advertises the full allocatable.
+#   • a FIXED absolute amount — a Kubernetes quantity WITH a unit, quoted
+#     (memory: "8Gi", cpu: "4000m"). The resource is capped at
+#     min(fixed, allocatable), so it only ever lowers what is advertised.
+# An unlisted resource, or a negative percent, advertises the full allocatable.
+# The Broker derives chunk counts from the (already-capped) advertised capacity,
 # so capping here naturally lowers the chunks this provider offers.
 #
 # Ships EMPTY by default so the base behaviour is unchanged: an empty file ⇒ the

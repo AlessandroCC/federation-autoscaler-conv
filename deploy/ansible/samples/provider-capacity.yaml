@@ -5,17 +5,22 @@
 #
 # This overwrites the `agent-capacity` ConfigMap that the provider overlay ships
 # empty. The provider agent re-reads it on every 30 s advertisement, so the cap
-# changes live with no restart. Values are integer percentages of each
-# resource's allocatable:
-#   cpu    -> percent of allocatable CPU to advertise
-#   memory -> percent of allocatable memory to advertise
-# Rules (per resource): a value in (0,100) advertises that fraction; 100, any
-# value >100, any value <=0, or an unlisted resource advertises the FULL
-# allocatable. Because the Broker derives chunks from the (already-scaled)
-# advertised capacity, capping a resource lowers the chunks this provider offers
-# (here memory is halved, so a memory-bound provider offers ~half its chunks).
-# The broker dashboard's "Custom" column shows the customized resources (e.g.
-# "mem 50%"); resources left at 100% are not flagged.
+# changes live with no restart. Each resource's value is EITHER a percentage of
+# allocatable OR a fixed absolute amount:
+#   cpu    -> "80%" / 80  (percent) OR "4000m" (fixed CPU, quoted, with a unit)
+#   memory -> "50%" / 50  (percent) OR "8Gi"   (fixed memory, quoted, with a unit)
+# Rules (per resource): a percent in (0,100) advertises that fraction, 0 shares
+# none, 100/>100 advertises FULL allocatable; a fixed quantity caps at
+# min(fixed, allocatable). An unlisted resource advertises the FULL allocatable.
+# Because the Broker derives chunks from the (already-capped) advertised
+# capacity, capping a resource lowers the chunks this provider offers (here
+# memory is halved, so a memory-bound provider offers ~half its chunks).
+# The broker dashboard's "Custom" column shows the capped resources (e.g.
+# "mem 50%" or "mem 8Gi"); resources left at full allocatable are not flagged.
+#
+# Example alternatives (uncomment one):
+#   memory: "8Gi"   # fixed: never advertise more than 8 GiB of memory
+#   nvidia.com/gpu: 0   # share none of this resource
 apiVersion: v1
 kind: ConfigMap
 metadata:

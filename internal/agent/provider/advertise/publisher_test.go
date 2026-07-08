@@ -379,66 +379,104 @@ func TestApplyCapacityScaling(t *testing.T) {
 		corev1.ResourceMemory: resource.MustParse("16Gi"),
 	}
 	cases := []struct {
-		name           string
-		file           string
-		wantCPU        string
-		wantMem        string
-		wantCustomized map[corev1.ResourceName]int32
+		name      string
+		file      string
+		wantCPU   string
+		wantMem   string
+		wantPct   map[corev1.ResourceName]int32
+		wantFixed corev1.ResourceList
 	}{
 		{
-			name:           "memory halved, cpu left at 100",
-			file:           "cpu: 100\nmemory: 50\n",
-			wantCPU:        "8",
-			wantMem:        "8Gi",
-			wantCustomized: map[corev1.ResourceName]int32{corev1.ResourceMemory: 50},
+			name:    "memory halved (percent), cpu left at 100",
+			file:    "cpu: 100\nmemory: 50\n",
+			wantCPU: "8",
+			wantMem: "8Gi",
+			wantPct: map[corev1.ResourceName]int32{corev1.ResourceMemory: 50},
 		},
 		{
-			name:           "over 100 clamps to full",
-			file:           "cpu: 150\n",
-			wantCPU:        "8",
-			wantMem:        "16Gi",
-			wantCustomized: nil,
+			name:    "explicit percent suffix",
+			file:    "memory: 25%\n",
+			wantCPU: "8",
+			wantMem: "4Gi",
+			wantPct: map[corev1.ResourceName]int32{corev1.ResourceMemory: 25},
 		},
 		{
-			name:           "zero and negative fall back to full",
-			file:           "cpu: 0\nmemory: -5\n",
-			wantCPU:        "8",
-			wantMem:        "16Gi",
-			wantCustomized: nil,
+			name:    "over 100 clamps to full",
+			file:    "cpu: 150\n",
+			wantCPU: "8",
+			wantMem: "16Gi",
 		},
 		{
-			name:           "quoted percent is parsed leniently",
-			file:           "memory: \"25\"\n",
-			wantCPU:        "8",
-			wantMem:        "4Gi",
-			wantCustomized: map[corev1.ResourceName]int32{corev1.ResourceMemory: 25},
+			name:    "explicit zero percent shares none",
+			file:    "cpu: 0\n",
+			wantCPU: "0",
+			wantMem: "16Gi",
+			wantPct: map[corev1.ResourceName]int32{corev1.ResourceCPU: 0},
 		},
 		{
-			name:           "percent for an unadvertised resource is ignored",
-			file:           "nvidia.com/gpu: 50\n",
-			wantCPU:        "8",
-			wantMem:        "16Gi",
-			wantCustomized: nil,
+			name:    "negative percent falls back to full",
+			file:    "memory: -5%\n",
+			wantCPU: "8",
+			wantMem: "16Gi",
 		},
 		{
-			name:           "empty file advertises full allocatable",
-			file:           "",
-			wantCPU:        "8",
-			wantMem:        "16Gi",
-			wantCustomized: nil,
+			name:      "fixed absolute cap below allocatable",
+			file:      "memory: 8Gi\n",
+			wantCPU:   "8",
+			wantMem:   "8Gi",
+			wantFixed: corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("8Gi")},
 		},
 		{
-			name:           "unparseable file advertises full allocatable",
-			file:           "cpu: [1, 2]\n",
-			wantCPU:        "8",
-			wantMem:        "16Gi",
-			wantCustomized: nil,
+			name:      "fixed cpu in milli units",
+			file:      "cpu: 4000m\n",
+			wantCPU:   "4000m",
+			wantMem:   "16Gi",
+			wantFixed: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("4000m")},
+		},
+		{
+			name:    "fixed cap above allocatable has no effect",
+			file:    "memory: 64Gi\n",
+			wantCPU: "8",
+			wantMem: "16Gi",
+		},
+		{
+			name:      "percent and fixed mixed across resources",
+			file:      "cpu: 50%\nmemory: 4Gi\n",
+			wantCPU:   "4",
+			wantMem:   "4Gi",
+			wantPct:   map[corev1.ResourceName]int32{corev1.ResourceCPU: 50},
+			wantFixed: corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("4Gi")},
+		},
+		{
+			name:    "quoted percent is parsed leniently",
+			file:    "memory: \"25\"\n",
+			wantCPU: "8",
+			wantMem: "4Gi",
+			wantPct: map[corev1.ResourceName]int32{corev1.ResourceMemory: 25},
+		},
+		{
+			name:    "cap for an unadvertised resource is ignored",
+			file:    "nvidia.com/gpu: 50\n",
+			wantCPU: "8",
+			wantMem: "16Gi",
+		},
+		{
+			name:    "empty file advertises full allocatable",
+			file:    "",
+			wantCPU: "8",
+			wantMem: "16Gi",
+		},
+		{
+			name:    "unparseable file advertises full allocatable",
+			file:    "cpu: [1, 2]\n",
+			wantCPU: "8",
+			wantMem: "16Gi",
 		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			p := capacityPublisher(t, tc.file)
-			scaled, customized := p.applyCapacityScaling(alloc.DeepCopy())
+			scaled, pct, fixed := p.applyCapacityScaling(alloc.DeepCopy())
 
 			if got := scaled[corev1.ResourceCPU]; got.Cmp(resource.MustParse(tc.wantCPU)) != 0 {
 				t.Errorf("cpu: want %s, got %s", tc.wantCPU, got.String())
@@ -446,11 +484,30 @@ func TestApplyCapacityScaling(t *testing.T) {
 			if got := scaled[corev1.ResourceMemory]; got.Cmp(resource.MustParse(tc.wantMem)) != 0 {
 				t.Errorf("memory: want %s, got %s", tc.wantMem, got.String())
 			}
-			if !reflect.DeepEqual(customized, tc.wantCustomized) {
-				t.Errorf("customized: want %v, got %v", tc.wantCustomized, customized)
+			if !reflect.DeepEqual(pct, tc.wantPct) {
+				t.Errorf("percent caps: want %v, got %v", tc.wantPct, pct)
+			}
+			if !equalResourceList(fixed, tc.wantFixed) {
+				t.Errorf("fixed caps: want %v, got %v", tc.wantFixed, fixed)
 			}
 		})
 	}
+}
+
+// equalResourceList compares two ResourceLists by quantity value (Cmp), treating
+// nil and empty as equal — reflect.DeepEqual is unreliable across equal
+// quantities with different internal formats.
+func equalResourceList(a, b corev1.ResourceList) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for name, qa := range a {
+		qb, ok := b[name]
+		if !ok || qa.Cmp(qb) != 0 {
+			return false
+		}
+	}
+	return true
 }
 
 // -----------------------------------------------------------------------------

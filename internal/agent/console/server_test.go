@@ -196,7 +196,9 @@ func TestPricesUpsertAndValidation(t *testing.T) {
 
 func TestCapacityUpsertClamps(t *testing.T) {
 	fc, ts := newTestServer(t, RoleProvider)
-	wantStatus(t, post(t, ts, "/api/capacity", `{"cpu":150,"memory":50}`), http.StatusOK)
+	// Percentages: "150" clamps to 100, "50" passes through. Values arrive as
+	// strings (the UI sends the slider value or a fixed quantity).
+	wantStatus(t, post(t, ts, "/api/capacity", `{"cpu":"150","memory":"50"}`), http.StatusOK)
 	var cm corev1.ConfigMap
 	if err := fc.Get(context.Background(), types.NamespacedName{Namespace: testNS, Name: capacityConfigMap}, &cm); err != nil {
 		t.Fatalf("get agent-capacity: %v", err)
@@ -208,6 +210,26 @@ func TestCapacityUpsertClamps(t *testing.T) {
 	if !strings.Contains(got, "memory: 50") {
 		t.Errorf("memory missing: %q", got)
 	}
+}
+
+func TestCapacityUpsertFixed(t *testing.T) {
+	fc, ts := newTestServer(t, RoleProvider)
+	// A CPU percentage plus a fixed memory quantity, mixed in one request.
+	wantStatus(t, post(t, ts, "/api/capacity", `{"cpu":"80%","memory":"8Gi"}`), http.StatusOK)
+	var cm corev1.ConfigMap
+	if err := fc.Get(context.Background(), types.NamespacedName{Namespace: testNS, Name: capacityConfigMap}, &cm); err != nil {
+		t.Fatalf("get agent-capacity: %v", err)
+	}
+	got := cm.Data[capacityKey]
+	if !strings.Contains(got, "cpu: 80") {
+		t.Errorf("cpu percent missing: %q", got)
+	}
+	// Fixed quantities are written quoted so YAML keeps them as strings.
+	if !strings.Contains(got, `memory: "8Gi"`) {
+		t.Errorf("fixed memory not written as a quoted quantity: %q", got)
+	}
+	// A value that is neither a percentage nor a quantity is rejected.
+	wantStatus(t, post(t, ts, "/api/capacity", `{"memory":"notaqty!"}`), http.StatusBadRequest)
 }
 
 // --- Workload (apply / delete, idempotent) -----------------------------------
@@ -277,7 +299,7 @@ func TestStateProvider(t *testing.T) {
 	}
 	capacity := &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{Name: capacityConfigMap, Namespace: testNS},
-		Data:       map[string]string{capacityKey: "cpu: 80\nmemory: 50\n"}, // bare ints
+		Data:       map[string]string{capacityKey: "cpu: 80\nmemory: 8Gi\n"}, // bare-int percent + fixed quantity
 	}
 	_, ts := newTestServer(t, RoleProvider, prices, capacity)
 
@@ -292,8 +314,8 @@ func TestStateProvider(t *testing.T) {
 	if st.Prices["cpu"] != "0.050" || st.Prices["memory"] != "0.006" {
 		t.Errorf("prices = %+v", st.Prices)
 	}
-	if st.Capacity["cpu"] != 80 || st.Capacity["memory"] != 50 {
-		t.Errorf("capacity = %+v (bare ints must parse)", st.Capacity)
+	if st.Capacity["cpu"] != "80" || st.Capacity["memory"] != "8Gi" {
+		t.Errorf("capacity = %+v (want raw literals: percent \"80\", fixed \"8Gi\")", st.Capacity)
 	}
 }
 
