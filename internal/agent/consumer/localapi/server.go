@@ -51,6 +51,7 @@ import (
 
 	autoscalingv1alpha1 "github.com/netgroup-polito/federation-autoscaler/api/autoscaling/v1alpha1"
 	agentclient "github.com/netgroup-polito/federation-autoscaler/internal/agent/client"
+	"github.com/netgroup-polito/federation-autoscaler/internal/agent/ollama"
 	brokerapi "github.com/netgroup-polito/federation-autoscaler/internal/broker/api"
 )
 
@@ -80,6 +81,12 @@ type Options struct {
 	// Defaults to controller-runtime's logger named "consumer-localapi".
 	Logger logr.Logger
 
+	// OllamaClient is the optional AI client for the ConsumerChoice strategy.
+	// When non-nil AND the current ConsumerPolicy is ConsumerChoice, the
+	// handleNodeGroups handler delegates provider selection to the LLM.
+	// Nil disables AI-driven selection.
+	OllamaClient *ollama.Client
+
 	// ShutdownTimeout caps how long Run waits for in-flight requests
 	// to drain when ctx is cancelled. Defaults to 5 s.
 	ShutdownTimeout time.Duration
@@ -93,6 +100,7 @@ type Server struct {
 	ns       string
 	log      logr.Logger
 	shutdown time.Duration
+	ollama   *ollama.Client
 
 	srv *http.Server
 }
@@ -123,6 +131,7 @@ func New(opts Options) (*Server, error) {
 		ns:       opts.Namespace,
 		log:      logger,
 		shutdown: shutdown,
+		ollama:   opts.OllamaClient,
 	}
 	s.srv = &http.Server{
 		Addr:              opts.BindAddress,
@@ -182,7 +191,57 @@ func (s *Server) handleNodeGroups(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, err)
 		return
 	}
+
+	// ConsumerChoice interception: when the active policy is ConsumerChoice and
+	// an Ollama client is configured, delegate provider selection to the local
+	// LLM. This mirrors the Broker's masking (MaxSize = CurrentReserved for all
+	// but the chosen provider) but runs client-side so the Broker stays unaware.
+	if s.ollama != nil {
+		if policy, prompt := s.currentConsumerChoice(r.Context()); policy {
+			chosen, aiErr := s.ollama.Select(r.Context(), prompt, resp.NodeGroups)
+			if aiErr != nil || chosen == "" {
+				if aiErr != nil {
+					s.log.V(1).Info("AI selection failed, using deterministic fallback",
+						"err", aiErr.Error())
+				}
+				chosen, _ = ollama.DeterministicFallback(resp.NodeGroups)
+			}
+			if chosen != "" {
+				for i := range resp.NodeGroups {
+					if resp.NodeGroups[i].ProviderClusterID != chosen {
+						resp.NodeGroups[i].MaxSize = resp.NodeGroups[i].CurrentReserved
+					}
+				}
+			}
+		}
+	}
+
 	s.writeJSON(w, http.StatusOK, resp)
+}
+
+// currentConsumerChoice reads the ConsumerPolicy CRD and returns (true, userPrompt)
+// when the active placement strategy is ConsumerChoice, or (false, "") otherwise.
+// Best-effort: a read error returns (false, "").
+func (s *Server) currentConsumerChoice(ctx context.Context) (bool, string) {
+	var list autoscalingv1alpha1.ConsumerPolicyList
+	if err := s.local.List(ctx, &list, ctrlclient.InNamespace(s.ns)); err != nil {
+		s.log.V(1).Info("read ConsumerPolicy for ConsumerChoice check failed", "err", err.Error())
+		return false, ""
+	}
+	if len(list.Items) == 0 {
+		return false, ""
+	}
+	// Pick the lowest-named policy (same rule as heartbeat.go).
+	chosen := &list.Items[0]
+	for i := range list.Items {
+		if list.Items[i].Name < chosen.Name {
+			chosen = &list.Items[i]
+		}
+	}
+	if chosen.Spec.Placement.Type != autoscalingv1alpha1.PlacementStrategyConsumerChoice {
+		return false, ""
+	}
+	return true, chosen.Spec.UserPrompt
 }
 
 func (s *Server) handleReservationCreate(w http.ResponseWriter, r *http.Request) {

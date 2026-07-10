@@ -94,6 +94,8 @@ func main() {
 		regionFile      string
 		mockEcoURL      string
 		mockGeoURL      string
+		ollamaURL       string
+		ollamaModel     string
 	)
 
 	flag.StringVar(&role, "role", "",
@@ -148,6 +150,14 @@ func main() {
 		"Base URL of the geo-coordinates service, e.g. http://mock-geo:8080. Used by "+
 			"both roles to resolve --region-file to coordinates. Empty ⇒ advertise a "+
 			"region without coordinates (the latency strategy then has no effect).")
+	flag.StringVar(&ollamaURL, "ollama-url", "",
+		"(consumer role only) Base URL of a local Ollama instance, e.g. "+
+			"http://localhost:11434. When set alongside a ConsumerPolicy with placement "+
+			"type ConsumerChoice, provider selection is delegated to the LLM. "+
+			"Empty ⇒ ConsumerChoice falls back to a deterministic strategy.")
+	flag.StringVar(&ollamaModel, "ollama-model", "llama3.2",
+		"(consumer role only) Ollama model name for ConsumerChoice selection. "+
+			"Ignored when --ollama-url is empty.")
 
 	opts := zap.Options{Development: true}
 	opts.BindFlags(flag.CommandLine)
@@ -240,6 +250,8 @@ func main() {
 			LiqoClusterID: liqoClusterID,
 			LocalAPIAddr:  localAPIAddr,
 			ConsoleAddr:   consoleAddr,
+			OllamaURL:     ollamaURL,
+			OllamaModel:   ollamaModel,
 			Namespace:     namespace,
 			RegionFile:    regionFile,
 			MockGeoURL:    mockGeoURL,

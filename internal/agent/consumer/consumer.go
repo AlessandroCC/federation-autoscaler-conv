@@ -43,6 +43,7 @@ import (
 	"github.com/netgroup-polito/federation-autoscaler/internal/agent/consumer/instructions"
 	"github.com/netgroup-polito/federation-autoscaler/internal/agent/consumer/localapi"
 	"github.com/netgroup-polito/federation-autoscaler/internal/agent/health"
+	"github.com/netgroup-polito/federation-autoscaler/internal/agent/ollama"
 	"github.com/netgroup-polito/federation-autoscaler/internal/agent/poller"
 )
 
@@ -101,6 +102,17 @@ type Options struct {
 	// loopback API this is meant to be node-reachable (NodePort) so an operator
 	// can drive the consumer's policy / region / workload from a browser.
 	ConsoleAddr string
+
+	// OllamaURL is the base URL of a local Ollama instance (e.g.
+	// "http://localhost:11434"). When set alongside a ConsumerPolicy with
+	// placement type ConsumerChoice, the Consumer Agent delegates provider
+	// selection to the LLM instead of letting the Broker mask. Empty disables
+	// AI-driven selection; ConsumerChoice then falls back deterministically.
+	OllamaURL string
+
+	// OllamaModel is the Ollama model name (e.g. "llama3.2"). Required when
+	// OllamaURL is set; ignored otherwise.
+	OllamaModel string
 
 	// Namespace is where the consumer agent creates the kubeconfig
 	// Secret, the Liqo ResourceSlice, and the VirtualNodeState CR, and
@@ -202,12 +214,21 @@ func Run(ctx context.Context, opts Options) error {
 	}
 	go beater.Run(ctx)
 
+	// Build the optional Ollama client for the ConsumerChoice strategy.
+	var ollamaClient *ollama.Client
+	if opts.OllamaURL != "" {
+		ollamaClient = ollama.New(opts.OllamaURL, opts.OllamaModel)
+		logger.Info("ConsumerChoice AI client configured",
+			"ollamaURL", opts.OllamaURL, "model", opts.OllamaModel)
+	}
+
 	localServer, err := localapi.New(localapi.Options{
-		BindAddress: opts.LocalAPIAddr,
-		Client:      opts.Client,
-		LocalClient: opts.LocalClient,
-		Namespace:   namespace,
-		Logger:      logger.WithName("localapi"),
+		BindAddress:   opts.LocalAPIAddr,
+		Client:        opts.Client,
+		LocalClient:   opts.LocalClient,
+		Namespace:     namespace,
+		OllamaClient:  ollamaClient,
+		Logger:        logger.WithName("localapi"),
 	})
 	if err != nil {
 		return fmt.Errorf("consumer: build loopback REST server: %w", err)

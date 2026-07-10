@@ -314,7 +314,8 @@ func (s *Server) handlePolicy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
-		Type string `json:"type"`
+		Type       string `json:"type"`
+		UserPrompt string `json:"userPrompt"`
 	}
 	if !s.decode(w, r, &body) {
 		return
@@ -327,8 +328,9 @@ func (s *Server) handlePolicy(w http.ResponseWriter, r *http.Request) {
 		}
 	case string(autoscalingv1alpha1.PlacementStrategyPrice),
 		string(autoscalingv1alpha1.PlacementStrategyEco),
-		string(autoscalingv1alpha1.PlacementStrategyLatency):
-		if err := s.upsertConsumerPolicy(r.Context(), autoscalingv1alpha1.PlacementStrategy(t)); err != nil {
+		string(autoscalingv1alpha1.PlacementStrategyLatency),
+		string(autoscalingv1alpha1.PlacementStrategyConsumerChoice):
+		if err := s.upsertConsumerPolicy(r.Context(), autoscalingv1alpha1.PlacementStrategy(t), body.UserPrompt); err != nil {
 			s.writeError(w, http.StatusInternalServerError, "write ConsumerPolicy: "+err.Error())
 			return
 		}
@@ -607,13 +609,16 @@ func (s *Server) upsertConfigMap(ctx context.Context, name, key, value string) e
 	return s.local.Update(ctx, &cm)
 }
 
-func (s *Server) upsertConsumerPolicy(ctx context.Context, t autoscalingv1alpha1.PlacementStrategy) error {
+func (s *Server) upsertConsumerPolicy(ctx context.Context, t autoscalingv1alpha1.PlacementStrategy, userPrompt string) error {
 	var cp autoscalingv1alpha1.ConsumerPolicy
 	err := s.local.Get(ctx, types.NamespacedName{Namespace: s.ns, Name: consumerPolicyName}, &cp)
 	if apierrors.IsNotFound(err) {
 		cp = autoscalingv1alpha1.ConsumerPolicy{
 			ObjectMeta: metav1.ObjectMeta{Name: consumerPolicyName, Namespace: s.ns},
-			Spec:       autoscalingv1alpha1.ConsumerPolicySpec{Placement: autoscalingv1alpha1.PlacementPolicy{Type: t}},
+			Spec:       autoscalingv1alpha1.ConsumerPolicySpec{
+				Placement:  autoscalingv1alpha1.PlacementPolicy{Type: t},
+				UserPrompt: userPrompt,
+			},
 		}
 		return s.local.Create(ctx, &cp)
 	}
@@ -621,6 +626,7 @@ func (s *Server) upsertConsumerPolicy(ctx context.Context, t autoscalingv1alpha1
 		return err
 	}
 	cp.Spec.Placement.Type = t
+	cp.Spec.UserPrompt = userPrompt
 	return s.local.Update(ctx, &cp)
 }
 

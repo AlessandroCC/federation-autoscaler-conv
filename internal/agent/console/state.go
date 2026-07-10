@@ -40,6 +40,7 @@ type consumerState struct {
 	ClusterID          string                  `json:"clusterId"`
 	LiqoClusterID      string                  `json:"liqoClusterId"`
 	Policy             string                  `json:"policy"`
+	UserPrompt         string                  `json:"userPrompt,omitempty"`
 	Region             string                  `json:"region"`
 	Workload           workloadInfo            `json:"workload"`
 	ManualReservations []manualReservationInfo `json:"manualReservations"`
@@ -80,11 +81,13 @@ func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		info.Present = s.workloadPresent(ctx)
+		policy, userPrompt := s.readPolicyAndPrompt(ctx)
 		s.writeJSON(w, http.StatusOK, consumerState{
 			Role:               RoleConsumer,
 			ClusterID:          s.clusterID,
 			LiqoClusterID:      s.liqoClusterID,
-			Policy:             s.readPolicy(ctx),
+			Policy:             policy,
+			UserPrompt:         userPrompt,
 			Region:             region,
 			Workload:           info,
 			ManualReservations: s.listManualReservations(ctx),
@@ -138,14 +141,14 @@ func (s *Server) listManualReservations(ctx context.Context) []manualReservation
 	return out
 }
 
-// readPolicy returns the current `default` ConsumerPolicy type, or "" when the
-// CR is absent (= no preference).
-func (s *Server) readPolicy(ctx context.Context) string {
+// readPolicyAndPrompt returns the current `default` ConsumerPolicy type and
+// userPrompt, or ("", "") when the CR is absent (= no preference).
+func (s *Server) readPolicyAndPrompt(ctx context.Context) (string, string) {
 	var cp autoscalingv1alpha1.ConsumerPolicy
 	if err := s.local.Get(ctx, types.NamespacedName{Namespace: s.ns, Name: consumerPolicyName}, &cp); err != nil {
-		return ""
+		return "", ""
 	}
-	return string(cp.Spec.Placement.Type)
+	return string(cp.Spec.Placement.Type), cp.Spec.UserPrompt
 }
 
 // readRegion returns the region currently in the agent-location ConfigMap, or

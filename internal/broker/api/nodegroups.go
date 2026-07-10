@@ -346,6 +346,8 @@ func (s *Server) nodeGroupViewFromAdvertisement(
 		ChunkResources:        s.perChunkResources(cadv),
 		Cost:                  costQuantity(cost, priced),
 		Topology:              cadv.Spec.Topology,
+		CarbonIntensity:       cadv.Spec.CarbonIntensity,
+		UnitPrices:            cadv.Spec.UnitPrices,
 		// LiqoLabels / LiqoTaints aren't on ClusterAdvertisementSpec yet
 		// (designed but pending). When they land, populate Labels /
 		// Taints straight from the spec; for now, leave them nil.
