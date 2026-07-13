@@ -104,6 +104,7 @@ func TestSelect_InvalidProviderID(t *testing.T) {
 	c := New(srv.URL, "test-model")
 	groups := []brokerapi.NodeGroupView{
 		makeNodeGroup("provider-1", 5, 2, nil, nil, ""),
+		makeNodeGroup("provider-2", 5, 0, nil, nil, ""),
 	}
 
 	_, err := c.Select(context.Background(), "any", groups)
@@ -126,6 +127,7 @@ func TestSelect_InvalidJSON(t *testing.T) {
 	c := New(srv.URL, "test-model")
 	groups := []brokerapi.NodeGroupView{
 		makeNodeGroup("provider-1", 5, 0, nil, nil, ""),
+		makeNodeGroup("provider-2", 5, 0, nil, nil, ""),
 	}
 
 	_, err := c.Select(context.Background(), "any", groups)
@@ -148,6 +150,7 @@ func TestSelect_EmptyProviderID(t *testing.T) {
 	c := New(srv.URL, "test-model")
 	groups := []brokerapi.NodeGroupView{
 		makeNodeGroup("provider-1", 5, 0, nil, nil, ""),
+		makeNodeGroup("provider-2", 5, 0, nil, nil, ""),
 	}
 
 	_, err := c.Select(context.Background(), "any", groups)

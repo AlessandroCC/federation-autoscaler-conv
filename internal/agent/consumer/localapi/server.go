@@ -42,6 +42,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/go-logr/logr"
@@ -100,9 +101,14 @@ type Server struct {
 	ns       string
 	log      logr.Logger
 	shutdown time.Duration
-	ollama   *ollama.Client
+	srv      *http.Server
 
-	srv *http.Server
+	aiMutex     sync.Mutex
+	aiRunning   bool
+	aiResult    string
+	aiTimestamp time.Time
+	aiPrompt    string
+	ollama      *ollama.Client
 }
 
 // New validates opts and returns a Server ready to Run. It performs no
@@ -198,21 +204,68 @@ func (s *Server) handleNodeGroups(w http.ResponseWriter, r *http.Request) {
 	// but the chosen provider) but runs client-side so the Broker stays unaware.
 	if s.ollama != nil {
 		if policy, prompt := s.currentConsumerChoice(r.Context()); policy {
-			chosen, aiErr := s.ollama.Select(r.Context(), prompt, resp.NodeGroups)
-			if aiErr != nil || chosen == "" {
-				if aiErr != nil {
-					s.log.V(1).Info("AI selection failed, using deterministic fallback",
-						"err", aiErr.Error())
-				}
-				chosen, _ = ollama.DeterministicFallback(resp.NodeGroups)
+			s.aiMutex.Lock()
+			
+			// If the prompt changed, clear cache
+			if s.aiPrompt != prompt {
+				s.aiResult = ""
+				s.aiPrompt = prompt
+				s.aiTimestamp = time.Time{}
 			}
-			if chosen != "" {
+
+			// If cache is fresh (< 60s), use it
+			if s.aiResult != "" && time.Since(s.aiTimestamp) < 60*time.Second {
+				chosen := s.aiResult
+				s.aiMutex.Unlock()
+				
 				for i := range resp.NodeGroups {
 					if resp.NodeGroups[i].ProviderClusterID != chosen {
 						resp.NodeGroups[i].MaxSize = resp.NodeGroups[i].CurrentReserved
 					}
 				}
+				s.writeJSON(w, http.StatusOK, resp)
+				return
 			}
+			
+			// If not running, start it
+			if !s.aiRunning {
+				s.aiRunning = true
+				
+				nodeGroupsCopy := make([]brokerapi.NodeGroupView, len(resp.NodeGroups))
+				copy(nodeGroupsCopy, resp.NodeGroups)
+				
+				go func(prompt string, groups []brokerapi.NodeGroupView) {
+					ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+					defer cancel()
+					
+					s.log.V(1).Info("AI selection background task started", "prompt", prompt)
+					chosen, aiErr := s.ollama.Select(ctx, prompt, groups)
+					
+					s.aiMutex.Lock()
+					defer s.aiMutex.Unlock()
+					s.aiRunning = false
+					
+					if aiErr != nil || chosen == "" {
+						if aiErr != nil {
+							s.log.V(1).Info("AI selection failed, using deterministic fallback", "err", aiErr.Error())
+						}
+						chosen, _ = ollama.DeterministicFallback(groups)
+					}
+					
+					s.aiResult = chosen
+					s.aiTimestamp = time.Now()
+					s.log.V(1).Info("AI selection background task finished", "chosen", chosen)
+				}(prompt, nodeGroupsCopy)
+			}
+			s.aiMutex.Unlock()
+			
+			// While AI is running, we return no available capacity
+			// so the Autoscaler waits for the next poll.
+			for i := range resp.NodeGroups {
+				resp.NodeGroups[i].MaxSize = resp.NodeGroups[i].CurrentReserved
+			}
+			s.writeJSON(w, http.StatusOK, resp)
+			return
 		}
 	}
 
