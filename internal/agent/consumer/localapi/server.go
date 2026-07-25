@@ -52,9 +52,17 @@ import (
 
 	autoscalingv1alpha1 "github.com/netgroup-polito/federation-autoscaler/api/autoscaling/v1alpha1"
 	agentclient "github.com/netgroup-polito/federation-autoscaler/internal/agent/client"
+	"github.com/netgroup-polito/federation-autoscaler/internal/agent/consumer/latency"
 	"github.com/netgroup-polito/federation-autoscaler/internal/agent/ollama"
 	brokerapi "github.com/netgroup-polito/federation-autoscaler/internal/broker/api"
 )
+
+// Prober measures round-trip time to provider UDP echo endpoints for the
+// measured-latency strategy. Satisfied by *latency.Prober; an interface so tests
+// can inject a deterministic fake.
+type Prober interface {
+	MeasureAndPick(ctx context.Context, cands []latency.Candidate) latency.Result
+}
 
 // Options bundles the construction-time settings of the loopback REST
 // server.
@@ -78,6 +86,12 @@ type Options struct {
 	// so the loopback view stays consistent with the agent's own writes.
 	Namespace string
 
+	// Prober measures RTT to provider echo endpoints for the measured-latency
+	// strategy. When set, GET /local/nodegroups re-masks a latency shortlist to
+	// the lowest-RTT provider before returning it to CA. Nil disables probing
+	// (the broker's shortlist is passed through unchanged).
+	Prober Prober
+
 	// Logger is the structured logger every handler logs through.
 	// Defaults to controller-runtime's logger named "consumer-localapi".
 	Logger logr.Logger
@@ -99,6 +113,7 @@ type Server struct {
 	client   *agentclient.Client
 	local    ctrlclient.Client
 	ns       string
+	prober   Prober
 	log      logr.Logger
 	shutdown time.Duration
 	srv      *http.Server
@@ -135,6 +150,7 @@ func New(opts Options) (*Server, error) {
 		client:   opts.Client,
 		local:    opts.LocalClient,
 		ns:       opts.Namespace,
+		prober:   opts.Prober,
 		log:      logger,
 		shutdown: shutdown,
 		ollama:   opts.OllamaClient,
@@ -197,6 +213,13 @@ func (s *Server) handleNodeGroups(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, err)
 		return
 	}
+	// Measured-latency strategy: the Broker exposed the nearest-by-distance
+	// shortlist; probe them and narrow to the lowest-RTT provider so CA grows
+	// exactly it. Covers both CA's read and NodeGroupIncreaseSize's re-fetch
+	// (both hit this handler). No prober / not a shortlist ⇒ pass through.
+	if resp.LatencyShortlist && s.prober != nil {
+		s.maskToMeasuredWinner(r.Context(), resp)
+	}
 
 	// ConsumerChoice interception: when the active policy is ConsumerChoice and
 	// an Ollama client is configured, delegate provider selection to the local
@@ -205,7 +228,7 @@ func (s *Server) handleNodeGroups(w http.ResponseWriter, r *http.Request) {
 	if s.ollama != nil {
 		if policy, prompt := s.currentConsumerChoice(r.Context()); policy {
 			s.aiMutex.Lock()
-			
+
 			// If the prompt changed, clear cache
 			if s.aiPrompt != prompt {
 				s.aiResult = ""
@@ -217,7 +240,7 @@ func (s *Server) handleNodeGroups(w http.ResponseWriter, r *http.Request) {
 			if s.aiResult != "" && time.Since(s.aiTimestamp) < 60*time.Second {
 				chosen := s.aiResult
 				s.aiMutex.Unlock()
-				
+
 				for i := range resp.NodeGroups {
 					if resp.NodeGroups[i].ProviderClusterID != chosen {
 						resp.NodeGroups[i].MaxSize = resp.NodeGroups[i].CurrentReserved
@@ -226,39 +249,39 @@ func (s *Server) handleNodeGroups(w http.ResponseWriter, r *http.Request) {
 				s.writeJSON(w, http.StatusOK, resp)
 				return
 			}
-			
+
 			// If not running, start it
 			if !s.aiRunning {
 				s.aiRunning = true
-				
+
 				nodeGroupsCopy := make([]brokerapi.NodeGroupView, len(resp.NodeGroups))
 				copy(nodeGroupsCopy, resp.NodeGroups)
-				
+
 				go func(prompt string, groups []brokerapi.NodeGroupView) {
 					ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 					defer cancel()
-					
+
 					s.log.V(1).Info("AI selection background task started", "prompt", prompt)
 					chosen, aiErr := s.ollama.Select(ctx, prompt, groups)
-					
+
 					s.aiMutex.Lock()
 					defer s.aiMutex.Unlock()
 					s.aiRunning = false
-					
+
 					if aiErr != nil || chosen == "" {
 						if aiErr != nil {
 							s.log.V(1).Info("AI selection failed, using deterministic fallback", "err", aiErr.Error())
 						}
 						chosen, _ = ollama.DeterministicFallback(groups)
 					}
-					
+
 					s.aiResult = chosen
 					s.aiTimestamp = time.Now()
 					s.log.V(1).Info("AI selection background task finished", "chosen", chosen)
 				}(prompt, nodeGroupsCopy)
 			}
 			s.aiMutex.Unlock()
-			
+
 			// While AI is running, we return no available capacity
 			// so the Autoscaler waits for the next poll.
 			for i := range resp.NodeGroups {
@@ -270,6 +293,41 @@ func (s *Server) handleNodeGroups(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.writeJSON(w, http.StatusOK, resp)
+}
+
+// maskToMeasuredWinner probes the growable, probeable providers in a latency
+// shortlist and masks every other growable entry (MaxSize = CurrentReserved) so
+// only the lowest-RTT provider stays growable. It mutates resp in place. If no
+// candidate is probeable, or none answers, it leaves the Broker's shortlist as-is
+// (safe degrade to distance-based selection).
+func (s *Server) maskToMeasuredWinner(ctx context.Context, resp *brokerapi.NodeGroupListResponse) {
+	seen := map[string]bool{}
+	var cands []latency.Candidate
+	for i := range resp.NodeGroups {
+		ng := &resp.NodeGroups[i]
+		if ng.MaxSize-ng.CurrentReserved > 0 && ng.ProbeEndpoint != "" && !seen[ng.ProviderClusterID] {
+			seen[ng.ProviderClusterID] = true
+			cands = append(cands, latency.Candidate{
+				ProviderClusterID: ng.ProviderClusterID,
+				Endpoint:          ng.ProbeEndpoint,
+			})
+		}
+	}
+	if len(cands) == 0 {
+		return // nothing measurable → keep the Broker's distance shortlist
+	}
+	res := s.prober.MeasureAndPick(ctx, cands)
+	if res.Chosen == "" {
+		return // every candidate unreachable → don't interfere
+	}
+	for i := range resp.NodeGroups {
+		ng := &resp.NodeGroups[i]
+		if ng.MaxSize-ng.CurrentReserved > 0 && ng.ProviderClusterID != res.Chosen {
+			ng.MaxSize = ng.CurrentReserved
+		}
+	}
+	s.log.V(1).Info("measured-latency: masked shortlist to lowest-RTT provider",
+		"chosen", res.Chosen, "rtts", res.RTTs)
 }
 
 // currentConsumerChoice reads the ConsumerPolicy CRD and returns (true, userPrompt)

@@ -42,9 +42,11 @@ import (
 	autoscalingv1alpha1 "github.com/netgroup-polito/federation-autoscaler/api/autoscaling/v1alpha1"
 	agentclient "github.com/netgroup-polito/federation-autoscaler/internal/agent/client"
 	"github.com/netgroup-polito/federation-autoscaler/internal/agent/consumer"
+	"github.com/netgroup-polito/federation-autoscaler/internal/agent/consumer/heartbeat"
 	"github.com/netgroup-polito/federation-autoscaler/internal/agent/health"
 	"github.com/netgroup-polito/federation-autoscaler/internal/agent/poller"
 	"github.com/netgroup-polito/federation-autoscaler/internal/agent/provider"
+	"github.com/netgroup-polito/federation-autoscaler/internal/agent/provider/advertise"
 )
 
 const (
@@ -91,9 +93,11 @@ func main() {
 		namespace       string
 		priceFile       string
 		capacityFile    string
-		regionFile      string
+		renewableFile   string
+		advertisedIP    string
 		mockEcoURL      string
 		mockGeoURL      string
+		probeUDPPort    int
 		ollamaURL       string
 		ollamaModel     string
 	)
@@ -137,19 +141,30 @@ func main() {
 			"advertises that fraction of the resource's allocatable; 100, >100, ≤0, or "+
 			"unset advertise the full allocatable. Re-read every advertisement cycle so "+
 			"the cap can change without a restart. Empty ⇒ advertise full allocatable.")
-	flag.StringVar(&regionFile, "region-file", "",
-		"Path to a YAML/JSON file holding this cluster's region (e.g. {\"region\":\"QC\"}). "+
-			"Re-read every cycle so the region can change without a restart. Used by the "+
-			"eco strategy (providers advertise carbon for this region) and the latency "+
-			"strategy (providers and the consumer advertise this region's coordinates). "+
-			"Empty ⇒ no region, so this cluster opts out of the eco/latency strategies.")
+	flag.StringVar(&renewableFile, "renewable-file", "",
+		"(provider role only) Path to a YAML/JSON file with this cluster's self-"+
+			"declared renewable-energy flag (e.g. {\"renewable\":true}). Re-read every "+
+			"cycle so it can toggle without a restart. The standard composite default "+
+			"policy gives renewable providers a placement bonus. Empty/false ⇒ no bonus.")
+	flag.StringVar(&advertisedIP, "advertised-ip", "",
+		"Optional IP override for automatic location discovery (the demo/steering "+
+			"lever). When set, this IP is geolocated instead of the agent's own node "+
+			"IP. Empty ⇒ discover the node IP from v1.Node (ExternalIP, then "+
+			"InternalIP) using the NODE_NAME env.")
 	flag.StringVar(&mockEcoURL, "mock-eco-url", "",
 		"(provider role only) Base URL of the carbon-intensity service, e.g. "+
-			"http://mock-eco:8081. Empty ⇒ advertise no carbon intensity.")
+			"http://mock-eco:8081. Keyed by the discovered region code. Empty ⇒ "+
+			"advertise no carbon intensity.")
 	flag.StringVar(&mockGeoURL, "mock-geo-url", "",
-		"Base URL of the geo-coordinates service, e.g. http://mock-geo:8080. Used by "+
-			"both roles to resolve --region-file to coordinates. Empty ⇒ advertise a "+
-			"region without coordinates (the latency strategy then has no effect).")
+		"Base URL of the geo-IP service, e.g. http://mock-geo:8080. Used by both "+
+			"roles to resolve this cluster's node IP to a region + coordinates. "+
+			"Empty ⇒ advertise no location (the eco/latency strategies then have no "+
+			"effect for this cluster).")
+	flag.IntVar(&probeUDPPort, "probe-udp-port", 0,
+		"(provider role only) The always-on UDP NodePort the udpecho responder is "+
+			"exposed on; the provider advertises <nodeIP>:<port> as its measured-"+
+			"latency probe endpoint. Must match the agent-probe Service's nodePort. "+
+			"0 ⇒ advertise no probe endpoint (latency falls back to distance).")
 	flag.StringVar(&ollamaURL, "ollama-url", "",
 		"(consumer role only) Base URL of a local Ollama instance, e.g. "+
 			"http://localhost:11434. When set alongside a ConsumerPolicy with placement "+
@@ -171,12 +186,19 @@ func main() {
 		os.Exit(1)
 	}
 
+	// The node this pod runs on, injected via the NODE_NAME downward-API env
+	// (spec.nodeName). Its IP is auto-discovered and geolocated for the eco/
+	// latency placement strategies; --advertised-ip overrides it.
+	nodeName := os.Getenv("NODE_NAME")
+
 	setupLog.Info("starting agent",
 		"role", role,
 		"clusterID", clusterID,
 		"liqoClusterID", liqoClusterID,
 		"brokerURL", brokerURL,
-		"pollInterval", pollInterval)
+		"pollInterval", pollInterval,
+		"nodeName", nodeName,
+		"advertisedIP", advertisedIP)
 
 	// Local-cluster client is used by the poll loop and the local REST API to
 	// interact with the Kubernetes API of this cluster (create ResourceSlices
@@ -206,9 +228,20 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Liveness/readiness probe. The poller's OnPollResult callback flips
-	// /readyz green on the first successful tick and red after staleness.
-	probe := health.New(health.Options{})
+	// Liveness/readiness probe. /readyz flips green on the first successful
+	// broker contact and red once contact goes stale.
+	//
+	// The gate is refreshed by ANY successful contact, and the SLOWEST one
+	// differs by role: a consumer heartbeats every 15 s, a provider
+	// advertises every 30 s. The 30 s default therefore leaves a provider
+	// zero margin — a single slow advertisement trips it — so size the
+	// window off the role's own cadence. The consumer keeps the historical
+	// 30 s (2 beats); the provider gets 3 publishes of slack.
+	staleAfter := 2 * heartbeat.DefaultInterval // consumer: 30 s, unchanged
+	if role == roleProvider {
+		staleAfter = 3 * advertise.DefaultInterval // provider: 90 s
+	}
+	probe := health.New(health.Options{PollStaleAfter: staleAfter})
 
 	// Handler registry. Step 8 (provider role) and step 9 (consumer role)
 	// populate it with the role-specific ProviderInstruction /
@@ -221,11 +254,15 @@ func main() {
 	registry := poller.NewRegistry()
 
 	pollerInstance, err := poller.New(poller.Options{
-		Client:       brokerClient,
-		Registry:     registry,
-		Interval:     pollInterval,
-		Logger:       ctrl.Log.WithName("poller"),
-		OnPollResult: probe.RecordPoll,
+		Client:   brokerClient,
+		Registry: registry,
+		Interval: pollInterval,
+		Logger:   ctrl.Log.WithName("poller"),
+		// Handlers run synchronously on the poll goroutine, so a slow one
+		// (liqoctl peer: 40-90 s, 10 m ceiling) starves OnPollResult.
+		// OnHandlerActive tells the probe the loop is working, not stalled.
+		OnPollResult:    probe.RecordPoll,
+		OnHandlerActive: probe.RecordHandlerActive,
 	})
 	if err != nil {
 		setupLog.Error(err, "unable to build poller")
@@ -253,7 +290,8 @@ func main() {
 			OllamaURL:     ollamaURL,
 			OllamaModel:   ollamaModel,
 			Namespace:     namespace,
-			RegionFile:    regionFile,
+			NodeName:      nodeName,
+			AdvertisedIP:  advertisedIP,
 			MockGeoURL:    mockGeoURL,
 			Logger:        ctrl.Log.WithName("consumer"),
 			Probe:         probe,
@@ -270,9 +308,12 @@ func main() {
 			LiqoClusterID: liqoClusterID,
 			PriceFile:     priceFile,
 			CapacityFile:  capacityFile,
-			RegionFile:    regionFile,
+			RenewableFile: renewableFile,
+			NodeName:      nodeName,
+			AdvertisedIP:  advertisedIP,
 			MockEcoURL:    mockEcoURL,
 			MockGeoURL:    mockGeoURL,
+			ProbeUDPPort:  probeUDPPort,
 			ConsoleAddr:   consoleAddr,
 			Logger:        ctrl.Log.WithName("provider"),
 			Probe:         probe,

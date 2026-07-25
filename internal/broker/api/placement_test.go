@@ -17,16 +17,20 @@ limitations under the License.
 package api
 
 import (
+	"math"
 	"testing"
 
 	autoscalingv1alpha1 "github.com/netgroup-polito/federation-autoscaler/api/autoscaling/v1alpha1"
 	brokerv1alpha1 "github.com/netgroup-polito/federation-autoscaler/api/broker/v1alpha1"
 )
 
-// Representative coordinates reused across the latency cases.
+// Representative coordinates reused across the latency cases, ordered by distance
+// from the Montreal consumer: Montreal(0) < San Jose < London < Sydney.
 const (
 	montrealLat, montrealLon = 45.6085, -73.5493  // consumer + the "near" provider
-	sydneyLat, sydneyLon     = -33.8688, 151.2093 // the "far" provider
+	sanJoseLat, sanJoseLon   = 37.3382, -121.8863 // 2nd-nearest
+	londonLat, londonLon     = 51.5074, -0.1278   // 3rd-nearest
+	sydneyLat, sydneyLon     = -33.8688, 151.2093 // farthest
 )
 
 // stdAdvCarbon is stdAdv with an advertised current carbon intensity (gCO2/kWh).
@@ -44,34 +48,69 @@ func stdAdvAt(name string, reserved int32, lat, lon float64) *brokerv1alpha1.Clu
 	return a
 }
 
+// stdAdvAtProbe is stdAdvAt with an advertised UDP probe endpoint (feature 6).
+func stdAdvAtProbe(name string, reserved int32, lat, lon float64, probe string) *brokerv1alpha1.ClusterAdvertisement {
+	a := stdAdvAt(name, reserved, lat, lon)
+	a.Spec.ProbeEndpoint = probe
+	return a
+}
+
+// probeByProvider maps providerClusterID → advertised probe endpoint on the view.
+func probeByProvider(resp NodeGroupListResponse) map[string]string {
+	out := map[string]string{}
+	for _, v := range resp.NodeGroups {
+		out[v.ProviderClusterID] = v.ProbeEndpoint
+	}
+	return out
+}
+
+// stdAdvRenewable is stdAdv with the provider's self-declared renewable flag set
+// (the standard composite policy's bonus input).
+func stdAdvRenewable(name string, reserved int32, renewable bool) *brokerv1alpha1.ClusterAdvertisement {
+	a := stdAdv(name, reserved, nil)
+	a.Spec.Renewable = renewable
+	return a
+}
+
+// withStandardPolicy records an explicit Standard-preferring heartbeat.
+func withStandardPolicy(s *Server) {
+	s.consumers.Touch(consumerCluster, "liqo-c",
+		autoscalingv1alpha1.PlacementPolicy{Type: autoscalingv1alpha1.PlacementStrategyStandard}, "", "", nil, nil)
+}
+
 func withEcoPolicy(s *Server) {
 	s.consumers.Touch(consumerCluster, "liqo-c",
-		autoscalingv1alpha1.PlacementPolicy{Type: autoscalingv1alpha1.PlacementStrategyEco}, "", nil, nil)
+		autoscalingv1alpha1.PlacementPolicy{Type: autoscalingv1alpha1.PlacementStrategyEco}, "", "", nil, nil)
 }
 
 // withLatencyPolicy records a Latency-preferring heartbeat WITH a consumer location.
 func withLatencyPolicy(s *Server, lat, lon float64) {
 	la, lo := lat, lon
 	s.consumers.Touch(consumerCluster, "liqo-c",
-		autoscalingv1alpha1.PlacementPolicy{Type: autoscalingv1alpha1.PlacementStrategyLatency}, "QC", &la, &lo)
+		autoscalingv1alpha1.PlacementPolicy{Type: autoscalingv1alpha1.PlacementStrategyLatency}, "QC", "", &la, &lo)
 }
 
 // withLatencyPolicyNoLocation records a Latency-preferring heartbeat with NO
 // consumer location — the no-op case (R2).
 func withLatencyPolicyNoLocation(s *Server) {
 	s.consumers.Touch(consumerCluster, "liqo-c",
-		autoscalingv1alpha1.PlacementPolicy{Type: autoscalingv1alpha1.PlacementStrategyLatency}, "", nil, nil)
+		autoscalingv1alpha1.PlacementPolicy{Type: autoscalingv1alpha1.PlacementStrategyLatency}, "", "", nil, nil)
 }
 
 // TestNodeGroupsEcoPreference mirrors the price matrix: masking happens only
 // when an Eco policy is set AND a carbon-bearing provider has capacity; lowest
 // carbon wins and carbon-less providers are a last resort.
 func TestNodeGroupsEcoPreference(t *testing.T) {
-	t.Run("no policy, carbon set -> all exposed (carbon inert)", func(t *testing.T) {
-		s := newDashboardTestServer(t, stdAdvCarbon("p-green", 0, 25), stdAdvCarbon("p-dirty", 0, 650))
+	t.Run("no policy -> Standard composite ignores carbon; most-free grows", func(t *testing.T) {
+		// p-green is greener but LESS free; without an Eco policy the composite
+		// ignores carbon and grows the more-free (dirtier) provider.
+		s := newDashboardTestServer(t, stdAdvCarbon("p-green", 2, 25), stdAdvCarbon("p-dirty", 0, 650))
 		hr := headroomByProvider(callNodeGroups(t, s))
-		if hr["p-green"] != 3 || hr["p-dirty"] != 3 {
-			t.Errorf("without a policy carbon must not narrow; got %+v", hr)
+		if hr["p-dirty"] == 0 {
+			t.Errorf("without an Eco policy carbon must be inert; composite grows the most-free provider; got %+v", hr)
+		}
+		if hr["p-green"] != 0 {
+			t.Errorf("greener-but-less-free provider must be masked; got %+v", hr)
 		}
 	})
 
@@ -114,46 +153,257 @@ func TestNodeGroupsEcoPreference(t *testing.T) {
 	})
 }
 
-// TestNodeGroupsLatencyPreference covers the closest-first greedy plus the
-// genuinely-new branch: a consumer with no location yields NO masking (R2).
-func TestNodeGroupsLatencyPreference(t *testing.T) {
-	t.Run("policy + coords -> only closest grows; far + coordless masked", func(t *testing.T) {
+// TestNodeGroupsAppliedPlacement asserts the response echoes the consumer's
+// applied policy (feature 7's re-eval loop reads it to migrate only under a
+// stable-metric policy, never Standard).
+func TestNodeGroupsAppliedPlacement(t *testing.T) {
+	s := newDashboardTestServer(t, stdAdv("p1", 0, nil))
+	withPricePolicy(s)
+	if got := callNodeGroups(t, s).AppliedPlacement; got != autoscalingv1alpha1.PlacementStrategyPrice {
+		t.Errorf("appliedPlacement = %q, want Price", got)
+	}
+
+	s2 := newDashboardTestServer(t, stdAdv("p1", 0, nil))
+	// No policy set ⇒ empty applied placement (the Standard default is not a
+	// stable metric for migration).
+	if got := callNodeGroups(t, s2).AppliedPlacement; got != "" {
+		t.Errorf("appliedPlacement with no policy = %q, want empty", got)
+	}
+}
+
+// viewByProvider maps providerClusterID → its full node-group view.
+func viewByProvider(resp NodeGroupListResponse) map[string]NodeGroupView {
+	out := map[string]NodeGroupView{}
+	for _, v := range resp.NodeGroups {
+		out[v.ProviderClusterID] = v
+	}
+	return out
+}
+
+// TestNodeGroupsPlacementMetric asserts the Broker stamps the applied policy's
+// ranking metric (lower = better) onto EVERY view — the growable winner and the
+// masked losers alike — so feature 7's re-eval can tell a genuinely-better provider
+// from one that is merely full of the consumer's own reservation.
+func TestNodeGroupsPlacementMetric(t *testing.T) {
+	t.Run("price: the full-but-cheaper provider still carries the lower metric", func(t *testing.T) {
+		// p-cheap is fully reserved (masked, no head-room) yet must keep its low cost;
+		// p-dear is the growable spill target with a higher cost.
 		s := newDashboardTestServer(t,
-			stdAdvAt("p-near", 0, montrealLat, montrealLon),
-			stdAdvAt("p-far", 0, sydneyLat, sydneyLon),
-			stdAdv("p-nocoords", 0, nil))
-		withLatencyPolicy(s, montrealLat, montrealLon)
-		hr := headroomByProvider(callNodeGroups(t, s))
-		if hr["p-near"] != 3 {
-			t.Errorf("closest provider must keep head-room; got %+v", hr)
+			stdAdv("p-cheap", stdAdvChunks, cpuMemPrices("0.01")), // full
+			stdAdv("p-dear", 0, cpuMemPrices("0.05")))
+		withPricePolicy(s)
+		views := viewByProvider(callNodeGroups(t, s))
+		cheap, dear := views["p-cheap"], views["p-dear"]
+		if !cheap.HasMetric || !dear.HasMetric {
+			t.Fatalf("both providers must carry a price metric; cheap=%+v dear=%+v", cheap, dear)
 		}
-		if hr["p-far"] != 0 || hr["p-nocoords"] != 0 {
-			t.Errorf("farther and coordless providers must be masked; got %+v", hr)
+		if cheap.PlacementMetric >= dear.PlacementMetric {
+			t.Errorf("cheaper provider must have the lower metric; cheap=%v dear=%v", cheap.PlacementMetric, dear.PlacementMetric)
+		}
+		if cheap.MaxSize-cheap.CurrentReserved != 0 {
+			t.Errorf("the full cheaper provider must be masked (this is what blocks a spurious migration); headroom=%d", cheap.MaxSize-cheap.CurrentReserved)
 		}
 	})
 
-	t.Run("consumer has NO location -> no masking (all exposed)", func(t *testing.T) {
+	t.Run("standard / no policy exposes no stable metric", func(t *testing.T) {
+		s := newDashboardTestServer(t, stdAdv("p1", 0, nil), stdAdv("p2", 0, nil))
+		for _, v := range callNodeGroups(t, s).NodeGroups {
+			if v.HasMetric {
+				t.Errorf("no policy must expose no placement metric; %s has %v", v.ProviderClusterID, v.PlacementMetric)
+			}
+		}
+	})
+}
+
+// TestNodeGroupsLatencyPreference covers feature 6: the Broker exposes the top-3
+// NEAREST providers-with-capacity as a shortlist (LatencyShortlist=true) — the
+// consumer then UDP-probes them — instead of narrowing to the single closest.
+func TestNodeGroupsLatencyPreference(t *testing.T) {
+	t.Run("top-3 nearest-with-capacity stay growable; 4th + coordless masked", func(t *testing.T) {
+		// Distances from Montreal: p1(0) < p2 < p3 < p4; p-nocoords has no distance.
+		s := newDashboardTestServer(t,
+			stdAdvAtProbe("p1", 0, montrealLat, montrealLon, "10.0.0.1:30100"),
+			stdAdvAt("p2", 0, sanJoseLat, sanJoseLon),
+			stdAdvAt("p3", 0, londonLat, londonLon),
+			stdAdvAt("p4", 0, sydneyLat, sydneyLon),
+			stdAdv("p-nocoords", 0, nil))
+		withLatencyPolicy(s, montrealLat, montrealLon)
+		resp := callNodeGroups(t, s)
+
+		if !resp.LatencyShortlist {
+			t.Error("expected LatencyShortlist=true when a distance shortlist is produced")
+		}
+		hr := headroomByProvider(resp)
+		for _, near := range []string{"p1", "p2", "p3"} {
+			if hr[near] != 3 {
+				t.Errorf("nearest-3 must stay growable; %s got %+v", near, hr)
+			}
+		}
+		if hr["p4"] != 0 || hr["p-nocoords"] != 0 {
+			t.Errorf("the 4th-nearest and coordless providers must be masked; got %+v", hr)
+		}
+		// The probe endpoint round-trips onto the view.
+		if pe := probeByProvider(resp)["p1"]; pe != "10.0.0.1:30100" {
+			t.Errorf("probe endpoint not surfaced on the view; got %q", pe)
+		}
+	})
+
+	t.Run("consumer has NO location -> no masking, no shortlist", func(t *testing.T) {
 		s := newDashboardTestServer(t,
 			stdAdvAt("p-near", 0, montrealLat, montrealLon),
 			stdAdvAt("p-far", 0, sydneyLat, sydneyLon))
 		withLatencyPolicyNoLocation(s)
-		hr := headroomByProvider(callNodeGroups(t, s))
+		resp := callNodeGroups(t, s)
+		if resp.LatencyShortlist {
+			t.Error("no consumer location must not signal a shortlist")
+		}
+		hr := headroomByProvider(resp)
 		if hr["p-near"] != 3 || hr["p-far"] != 3 {
 			t.Errorf("no consumer location must leave all providers exposed; got %+v", hr)
 		}
 	})
 
-	t.Run("greedy spill: closest full -> next-closest grows", func(t *testing.T) {
+	t.Run("nearest full -> next-nearest fills the shortlist slot", func(t *testing.T) {
+		// p1 (nearest) fully reserved; the shortlist is the 3 nearest WITH head-room.
 		s := newDashboardTestServer(t,
-			stdAdvAt("p-near", 3, montrealLat, montrealLon), // fully reserved
-			stdAdvAt("p-far", 0, sydneyLat, sydneyLon))
+			stdAdvAt("p1", 3, montrealLat, montrealLon), // full
+			stdAdvAt("p2", 0, sanJoseLat, sanJoseLon),
+			stdAdvAt("p3", 0, londonLat, londonLon),
+			stdAdvAt("p4", 0, sydneyLat, sydneyLon))
 		withLatencyPolicy(s, montrealLat, montrealLon)
 		hr := headroomByProvider(callNodeGroups(t, s))
-		if hr["p-near"] != 0 {
-			t.Errorf("exhausted closest must have no head-room; got %+v", hr)
+		if hr["p1"] != 0 {
+			t.Errorf("exhausted nearest must have no head-room; got %+v", hr)
 		}
-		if hr["p-far"] != 3 {
-			t.Errorf("next-closest must be promoted to growable; got %+v", hr)
+		for _, p := range []string{"p2", "p3", "p4"} {
+			if hr[p] != 3 {
+				t.Errorf("the 3 nearest-with-head-room must stay growable; %s got %+v", p, hr)
+			}
+		}
+	})
+}
+
+// TestNodeGroupsStandardDefault covers the composite default (no ConsumerPolicy):
+// it always narrows to one grower — the most-free provider, with a renewable
+// tie-break — and an explicit "Standard" policy behaves identically.
+func TestNodeGroupsStandardDefault(t *testing.T) {
+	t.Run("most-free provider grows (spread load)", func(t *testing.T) {
+		// No Touch → no policy → Standard composite. p-idle is more free.
+		s := newDashboardTestServer(t, stdAdv("p-busy", 2, nil), stdAdv("p-idle", 0, nil))
+		hr := headroomByProvider(callNodeGroups(t, s))
+		if hr["p-idle"] == 0 {
+			t.Errorf("most-free provider must grow; got %+v", hr)
+		}
+		if hr["p-busy"] != 0 {
+			t.Errorf("busier provider must be masked; got %+v", hr)
+		}
+	})
+
+	t.Run("renewable breaks a capacity tie", func(t *testing.T) {
+		// Equal free capacity ⇒ the renewable bonus decides.
+		s := newDashboardTestServer(t, stdAdvRenewable("p-grey", 0, false), stdAdvRenewable("p-clean", 0, true))
+		hr := headroomByProvider(callNodeGroups(t, s))
+		if hr["p-clean"] == 0 {
+			t.Errorf("renewable provider must win a capacity tie; got %+v", hr)
+		}
+		if hr["p-grey"] != 0 {
+			t.Errorf("non-renewable provider must be masked; got %+v", hr)
+		}
+	})
+
+	t.Run("more capacity outweighs the renewable bonus", func(t *testing.T) {
+		// p-clean is renewable but less free (0.8*1/3+0.2 = 0.467); p-grey is
+		// fully free but grey (0.8). Capacity wins.
+		s := newDashboardTestServer(t, stdAdvRenewable("p-clean", 2, true), stdAdvRenewable("p-grey", 0, false))
+		hr := headroomByProvider(callNodeGroups(t, s))
+		if hr["p-grey"] == 0 {
+			t.Errorf("much-more-free provider must beat renewable-but-less-free; got %+v", hr)
+		}
+		if hr["p-clean"] != 0 {
+			t.Errorf("renewable-but-less-free provider must be masked; got %+v", hr)
+		}
+	})
+
+	t.Run("explicit Standard policy behaves like the default", func(t *testing.T) {
+		s := newDashboardTestServer(t, stdAdv("p-busy", 2, nil), stdAdv("p-idle", 0, nil))
+		withStandardPolicy(s)
+		hr := headroomByProvider(callNodeGroups(t, s))
+		if hr["p-idle"] == 0 || hr["p-busy"] != 0 {
+			t.Errorf("explicit Standard must match the default; got %+v", hr)
+		}
+	})
+}
+
+// stdAdvForecast is a fully-available stdAdv with an advertised hourly carbon
+// forecast (the eco weighted-ranking input).
+func stdAdvForecast(name string, forecast []float64) *brokerv1alpha1.ClusterAdvertisement {
+	a := stdAdv(name, 0, nil)
+	a.Spec.CarbonForecast = forecast
+	return a
+}
+
+func TestEcoWeightedScore(t *testing.T) {
+	// Uniform forecast → the weighted average equals the value.
+	if v, ok := ecoWeightedScore([]float64{100, 100, 100, 100, 100, 100}); !ok || v != 100 {
+		t.Errorf("uniform: got (%v,%v), want (100,true)", v, ok)
+	}
+	// Known weighting: 0.40·10+0.25·20+0.15·30+0.10·40+0.06·50+0.04·60 = 22.9 (Σw=1).
+	if v, ok := ecoWeightedScore([]float64{10, 20, 30, 40, 50, 60}); !ok || math.Abs(v-22.9) > 1e-9 {
+		t.Errorf("weighted: got %v, want 22.9", v)
+	}
+	// A short forecast normalizes by the weights actually used: [10,10] → 10.
+	if v, ok := ecoWeightedScore([]float64{10, 10}); !ok || math.Abs(v-10) > 1e-9 {
+		t.Errorf("short: got %v, want 10", v)
+	}
+	// Only the first 6 hours count.
+	if v, ok := ecoWeightedScore([]float64{0, 0, 0, 0, 0, 0, 1000, 1000}); !ok || v != 0 {
+		t.Errorf("6-hour cap: got %v, want 0", v)
+	}
+	// Empty forecast has no score.
+	if _, ok := ecoWeightedScore(nil); ok {
+		t.Error("empty forecast must be !ok")
+	}
+}
+
+// TestNodeGroupsEcoForecast: with a forecast advertised, the eco ranking uses the
+// 6-hour weighted score — not the single current value.
+func TestNodeGroupsEcoForecast(t *testing.T) {
+	t.Run("greenest weighted forecast grows", func(t *testing.T) {
+		s := newDashboardTestServer(t,
+			stdAdvForecast("p-green-fc", []float64{10, 10, 10, 10, 10, 10}),
+			stdAdvForecast("p-dirty-fc", []float64{500, 500, 500, 500, 500, 500}))
+		withEcoPolicy(s)
+		hr := headroomByProvider(callNodeGroups(t, s))
+		if hr["p-green-fc"] != 3 {
+			t.Errorf("greenest forecast must grow; got %+v", hr)
+		}
+		if hr["p-dirty-fc"] != 0 {
+			t.Errorf("dirtier forecast must be masked; got %+v", hr)
+		}
+	})
+
+	t.Run("forecast overrides a misleading current value", func(t *testing.T) {
+		// p-a's current value is the worst (999) but its forecast is the greenest;
+		// the ranking must follow the forecast, so p-a wins.
+		a := stdAdvForecast("p-a", []float64{10, 10, 10, 10, 10, 10})
+		big := 999.0
+		a.Spec.CarbonIntensity = &big
+		s := newDashboardTestServer(t, a, stdAdvForecast("p-b", []float64{500, 500, 500, 500, 500, 500}))
+		withEcoPolicy(s)
+		hr := headroomByProvider(callNodeGroups(t, s))
+		if hr["p-a"] != 3 || hr["p-b"] != 0 {
+			t.Errorf("forecast must drive ranking, not CarbonIntensity; got %+v", hr)
+		}
+	})
+
+	t.Run("no forecast falls back to the single current value", func(t *testing.T) {
+		// p-green has only a (green) single value; p-dirty only a (dirty) single
+		// value. Fallback keeps the greenest-first behaviour.
+		s := newDashboardTestServer(t, stdAdvCarbon("p-green", 0, 25), stdAdvCarbon("p-dirty", 0, 650))
+		withEcoPolicy(s)
+		hr := headroomByProvider(callNodeGroups(t, s))
+		if hr["p-green"] != 3 || hr["p-dirty"] != 0 {
+			t.Errorf("single-value fallback must still rank greenest first; got %+v", hr)
 		}
 	})
 }

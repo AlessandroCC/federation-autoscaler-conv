@@ -23,19 +23,24 @@
 #
 # Usage:
 #   demo-up.sh --central <ip> --consumers <ip[,ip...]> --providers <ip[,ip...]>
-#              [--mocks <ip>] [--tag <image-tag>] [--user <ssh-user>]
-#              [--ssh-key <path>] [--skip-ssh-copy-id] [--repo <git-url>]
-#              [--dir <clone-dir>]
+#              [--mocks <ip>] [--tag <image-tag>] [--reeval-interval <dur>]
+#              [--user <ssh-user>] [--ssh-key <path>] [--skip-ssh-copy-id]
+#              [--repo <git-url>] [--dir <clone-dir>]
 #
 #   --tag overrides the federation-autoscaler image tag the deploy pulls
 #   (broker/agent/grpc-server/mock-eco/mock-geo), e.g. --tag v0.2.7. Omit it to
 #   use the repo default (group_vars/all.yaml: fa_tag).
 #
+#   --reeval-interval sets how often an active MANUAL reservation is re-evaluated
+#   for a better provider (feature 7), e.g. --reeval-interval 5m. Omit it for the
+#   1h default; lower it to watch a migration during the demo.
+#
 #   --mocks <ip> adds ONE extra single-node VM as the dedicated mock cluster
 #   (option A) hosting mock-eco + mock-geo for the eco/latency placement
 #   strategies. Its address is auto-wired into every agent. Omit it to run the
-#   price-only demo (eco/latency stay inert). Regions are still applied by hand,
-#   per cluster, via samples/*-location.yaml after bring-up.
+#   price-only demo (eco/latency stay inert). Each cluster's location is
+#   auto-discovered from its node IP (mock-geo maps IP → region + coords); set a
+#   per-host fa_advertised_ip to steer a cluster to a specific city.
 #
 # Example (the verified 1+1+2 demo topology):
 #   demo-up.sh --central 172.23.6.90 --consumers 172.23.6.91 \
@@ -62,6 +67,7 @@ CONSUMERS=""
 PROVIDERS=""
 MOCKS=""    # optional single mock-cluster IP (eco/latency strategies, option A)
 FA_TAG=""   # empty ⇒ use the repo default (group_vars/all.yaml: fa_tag)
+REEVAL_INTERVAL=""  # optional feature-7 re-eval interval, e.g. "5m"; empty ⇒ 1h default
 
 # Tool versions — keep in lock-step with deploy/ansible/README.md.
 KUBECTL_VERSION="v1.32.5"
@@ -88,6 +94,7 @@ while [[ $# -gt 0 ]]; do
     --providers) PROVIDERS="$2"; shift 2 ;;
     --mocks)     MOCKS="$2"; shift 2 ;;
     --tag)       FA_TAG="$2"; shift 2 ;;
+    --reeval-interval) REEVAL_INTERVAL="$2"; shift 2 ;;
     --user)      SSH_USER="$2"; shift 2 ;;
     --ssh-key)   SSH_KEY="$2"; shift 2 ;;
     --skip-ssh-copy-id) SKIP_SSH_COPY=1; shift ;;
@@ -321,6 +328,10 @@ if [[ -n "$FA_TAG" ]]; then
   EXTRA_VARS+=(-e "fa_tag=${FA_TAG}")
   log "Using federation-autoscaler image tag: ${FA_TAG}"
 fi
+if [[ -n "$REEVAL_INTERVAL" ]]; then
+  EXTRA_VARS+=(-e "fa_reeval_interval=${REEVAL_INTERVAL}")
+  log "Manual-reservation re-eval interval (feature 7): ${REEVAL_INTERVAL}"
+fi
 
 run_play() {
   local pb="$1"
@@ -349,15 +360,16 @@ Next steps — drive the demo from the browser in this order
  1) BROKER  (central) — watch the federation decide
 ──────────────────────────────────────────────────────────────────────────
   Read-only dashboard:  http://${CENTRAL}:30444/
-  Shows every provider advertisement (cost · carbon · region), live
-  reservations, the instruction phase machine, and chunk capacity. Keep it
+  Shows every provider advertisement (cost · carbon · auto-discovered location),
+  live reservations, the instruction phase machine, and chunk capacity. Keep it
   open — it is where you SEE which provider the broker picks for each policy.
 
 ──────────────────────────────────────────────────────────────────────────
  2) PROVIDERS — advertise what each one offers
 ──────────────────────────────────────────────────────────────────────────
-  Config console (set unit prices, region, advertised CPU/RAM %, then Submit;
-  changes reach the broker on the next advertisement ~30 s):
+  Config console (set unit prices, advertised CPU/RAM %, renewable flag, then
+  Submit; changes reach the broker on the next advertisement ~30 s. The console
+  also shows this provider's auto-discovered location read-only):
 EOF
 j=0
 for ip in "${PROVIDER_IPS[@]}"; do
@@ -367,7 +379,7 @@ done
 if [[ -z "$MOCKS" ]]; then
   cat <<EOF
   NOTE: eco/latency need the mock cluster — re-run with --mocks <ip>. Without
-  it, region/carbon are inert and only the Price policy is meaningful.
+  it, location/carbon are inert and only the Price policy is meaningful.
 EOF
 fi
 
@@ -381,9 +393,9 @@ cat <<EOF
       ${CONSUMER_IPS[0]} liqo-dashboard.local
     then browse:  http://liqo-dashboard.local
 
-  Config console (pick the placement policy — No policy / Price / Eco /
-  Latency — and a region, then flip the workload switch ON to scale up /
-  OFF to scale down; watch the broker dashboard react):
+  Config console (pick the placement policy — Standard / Price / Eco /
+  Latency — then flip the workload switch ON to scale up / OFF to scale down;
+  watch the broker dashboard react. Location is auto-discovered, shown read-only):
 EOF
 i=0
 for ip in "${CONSUMER_IPS[@]}"; do

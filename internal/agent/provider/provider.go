@@ -83,26 +83,39 @@ type Options struct {
 	// Empty ⇒ the provider advertises no price.
 	PriceFile string
 
+	// RenewableFile is an optional path to this provider's self-declared
+	// renewable-energy flag file, re-read on every advertisement cycle (see
+	// advertise.Options). Empty/false ⇒ no renewable bonus.
+	RenewableFile string
+
 	// CapacityFile is an optional path to this provider's per-resource
 	// advertised-capacity percentage file, re-read on every advertisement cycle
 	// (see advertise.Options). Empty ⇒ the provider advertises full allocatable.
 	CapacityFile string
 
-	// RegionFile is an optional path to this provider's region file, re-read on
-	// every advertisement cycle (see advertise.Options). Empty ⇒ no region (the
-	// provider participates in neither the eco nor latency placement strategies).
-	RegionFile string
+	// NodeName is the node this agent pod runs on (NODE_NAME downward API); its IP
+	// is auto-discovered and geolocated (see advertise.Options). AdvertisedIP
+	// optionally overrides it (--advertised-ip). Empty NodeName + empty
+	// AdvertisedIP ⇒ no location (neither eco nor latency).
+	NodeName     string
+	AdvertisedIP string
 
 	// MockEcoURL / MockGeoURL are the base URLs of the carbon-intensity and
-	// geo-coordinates services (see advertise.Options). Empty disables the
-	// respective lookup.
+	// geo-IP services (see advertise.Options). Empty disables the respective
+	// lookup.
 	MockEcoURL string
 	MockGeoURL string
+
+	// ProbeUDPPort is the always-on UDP NodePort the udpecho responder is exposed
+	// on; the provider advertises <nodeIP>:ProbeUDPPort as its measured-latency
+	// probe endpoint. 0 ⇒ advertise no probe endpoint (see advertise.Options).
+	ProbeUDPPort int
 
 	// ConsoleAddr is the address the (plain-HTTP, unauthenticated) config
 	// console binds to, e.g. ":9095". Empty disables the console. This is the
 	// provider role's only HTTP server; it lets an operator set this provider's
-	// prices / region / advertised-capacity from a browser (NodePort).
+	// prices / advertised-capacity from a browser (NodePort) and view the
+	// auto-discovered location.
 	ConsoleAddr string
 
 	// Logger is the structured logger every provider goroutine logs
@@ -163,9 +176,12 @@ func Run(ctx context.Context, opts Options) error {
 		LiqoClusterID: opts.LiqoClusterID,
 		PriceFile:     opts.PriceFile,
 		CapacityFile:  opts.CapacityFile,
-		RegionFile:    opts.RegionFile,
+		RenewableFile: opts.RenewableFile,
+		NodeName:      opts.NodeName,
+		AdvertisedIP:  opts.AdvertisedIP,
 		MockEcoURL:    opts.MockEcoURL,
 		MockGeoURL:    opts.MockGeoURL,
+		ProbeUDPPort:  opts.ProbeUDPPort,
 		Logger:        logger.WithName("advertise"),
 		// The probe's poll-staleness gate is a "broker reachability"
 		// signal in practice, so a successful advertisement also
@@ -180,7 +196,7 @@ func Run(ctx context.Context, opts Options) error {
 	// Optional config console (plain HTTP, no auth) — the provider role's only
 	// HTTP server. Empty addr ⇒ disabled. The provider has no --namespace flag
 	// (it is consumer-only), so the console defaults to the agent namespace
-	// where the agent-prices / agent-capacity / agent-location ConfigMaps live.
+	// where the agent-prices / agent-capacity ConfigMaps live.
 	if opts.ConsoleAddr != "" {
 		consoleSrv, err := console.New(console.Options{
 			Role:          console.RoleProvider,
@@ -188,6 +204,9 @@ func Run(ctx context.Context, opts Options) error {
 			LocalClient:   opts.LocalClient,
 			ClusterID:     opts.ClusterID,
 			LiqoClusterID: opts.LiqoClusterID,
+			NodeName:      opts.NodeName,
+			AdvertisedIP:  opts.AdvertisedIP,
+			MockGeoURL:    opts.MockGeoURL,
 			Logger:        logger.WithName("console"),
 		})
 		if err != nil {

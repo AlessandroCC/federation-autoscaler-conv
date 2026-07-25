@@ -22,15 +22,21 @@ import (
 
 // PlacementStrategy selects how the Broker places a consumer's chunk requests
 // across the available provider clusters. An empty value (or a missing
-// ConsumerPolicy) means the Broker keeps its default behaviour: it exposes all
-// available providers and lets the Cluster Autoscaler pick — i.e. no
-// broker-driven preference. The Broker is the decision-maker only when a
-// strategy is set; the Cluster Autoscaler never sees the ranking metric
-// (price, carbon, or distance).
-// +kubebuilder:validation:Enum=Price;Eco;Latency;ConsumerChoice
+// ConsumerPolicy) means the Broker default — the "Standard" composite policy
+// (balance free capacity and prefer renewable providers). When a specific
+// strategy is set the Broker ranks on that single metric instead; the Cluster
+// Autoscaler never sees the ranking metric (price, carbon, distance, or the
+// composite score).
+// +kubebuilder:validation:Enum=Standard;Price;Eco;Latency;ConsumerChoice
 type PlacementStrategy string
 
 const (
+	// PlacementStrategyStandard is the default composite policy the Broker applies
+	// when a consumer sets no policy (empty Type is treated as Standard). It ranks
+	// providers by a blended score — mostly remaining free capacity (spread load),
+	// plus a bonus for self-declared renewable-energy providers — highest wins.
+	PlacementStrategyStandard PlacementStrategy = "Standard"
+
 	// PlacementStrategyPrice makes the Broker prefer, for this consumer, the
 	// cheapest *priced* provider(s) that still have capacity (cheapest-first
 	// greedy). Providers without a price are reached only as a last resort.
@@ -42,13 +48,13 @@ const (
 	// intensity are reached only as a last resort. Mirrors the Price greedy.
 	PlacementStrategyEco PlacementStrategy = "Eco"
 
-	// PlacementStrategyLatency makes the Broker prefer, for this consumer, the
-	// geographically closest provider(s) with capacity — ranked by the
-	// great-circle (Haversine) distance between the consumer's advertised
-	// location and each provider's advertised location (closest-first greedy).
-	// If the consumer has not advertised a location, the Broker applies no
-	// preference (all providers stay exposed). v1 is estimation-only; no
-	// measured RTT is used.
+	// PlacementStrategyLatency makes the Broker expose, for this consumer, a
+	// SHORTLIST of the top-N geographically nearest providers with capacity —
+	// ranked by great-circle (Haversine) distance from the consumer's advertised
+	// location. The Consumer Agent then UDP-probes that shortlist and grows the
+	// provider with the lowest MEASURED round-trip time (real network path, not
+	// just distance). If the consumer has not advertised a location, the Broker
+	// applies no preference (all providers stay exposed).
 	PlacementStrategyLatency PlacementStrategy = "Latency"
 
 	// PlacementStrategyConsumerChoice delegates provider selection to a local
@@ -63,9 +69,10 @@ const (
 // PlacementPolicy is the placement policy a consumer declares for itself. It is
 // carried on the Consumer Agent's heartbeat to the Broker.
 type PlacementPolicy struct {
-	// Type selects the placement strategy. Empty means the Broker default
-	// (no preference; the Cluster Autoscaler picks). Supported values are
-	// "Price" (cheapest), "Eco" (lowest carbon), and "Latency" (closest).
+	// Type selects the placement strategy. Empty means the Broker default — the
+	// "Standard" composite (balance free capacity, prefer renewable). Supported
+	// values are "Standard", "Price" (cheapest), "Eco" (lowest carbon), and
+	// "Latency" (closest).
 	// +optional
 	Type PlacementStrategy `json:"type,omitempty"`
 }

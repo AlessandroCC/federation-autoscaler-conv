@@ -131,6 +131,13 @@ type AdvertisementRequest struct {
 	// treats such providers as a last resort. Must be non-negative.
 	CarbonIntensity *float64 `json:"carbonIntensity,omitempty"`
 
+	// CarbonForecast is the provider's hourly carbon-intensity forecast
+	// (gCO2eq/kWh, current hour first), optional. When present the Broker ranks
+	// eco-preferring consumers on a weighted average of the first few hours rather
+	// than the single CarbonIntensity; when absent it falls back to
+	// CarbonIntensity. Fetched from the same service (mock-eco /carbon/forecast).
+	CarbonForecast []float64 `json:"carbonForecast,omitempty"`
+
 	// CapacityScalePercent records, per resource, the percentage of allocatable
 	// the provider's admin chose to advertise when it is less than 100% — i.e.
 	// the agent has already scaled Resources down accordingly. Keys are resource
@@ -148,6 +155,18 @@ type AdvertisementRequest struct {
 	// CapacityScalePercent this is informational (dashboard only); the Broker
 	// never re-derives Resources from it.
 	CapacityFixed corev1.ResourceList `json:"capacityFixed,omitempty"`
+
+	// Renewable is the provider admin's self-declaration that this cluster runs
+	// on renewable energy. It is an honour-system boolean (the Broker does not
+	// verify it); the standard composite default policy gives renewable providers
+	// a placement bonus. Omitted/false ⇒ no bonus.
+	Renewable bool `json:"renewable,omitempty"`
+
+	// ProbeEndpoint is this provider's always-on UDP echo address (<nodeIP>:port)
+	// for the measured-latency strategy (optional). The Broker carries it onto the
+	// latency shortlist so the Consumer Agent can probe real round-trip time before
+	// choosing. Omitted ⇒ this provider is not probeable (falls back to distance).
+	ProbeEndpoint string `json:"probeEndpoint,omitempty"`
 
 	// LiqoLabels are stamped on the virtual nodes Liqo creates on each
 	// peering consumer, e.g. liqo.io/type=virtual-node.
@@ -205,6 +224,13 @@ type AdvertisementSnapshot struct {
 	// (gCO2eq/kWh); nil when the provider advertises none. Surfaced on the
 	// dashboard for the eco placement strategy.
 	CarbonIntensity *float64 `json:"carbonIntensity,omitempty"`
+	// CarbonForecast mirrors the provider's hourly carbon-intensity forecast
+	// (current hour first); surfaced for the dashboard's rising/falling trend.
+	CarbonForecast []float64 `json:"carbonForecast,omitempty"`
+	// CarbonWeighted is the Broker's 6-hour weighted eco score — the value it
+	// actually ranks on (from the forecast, or the single CarbonIntensity when
+	// there is no forecast); nil when the provider advertises no carbon. Dashboard.
+	CarbonWeighted *float64 `json:"carbonWeighted,omitempty"`
 	// CapacityScalePercent mirrors the provider's per-resource advertised-capacity
 	// customization (resource name → percentage in (0,100)); empty/absent means
 	// the provider advertises full allocatable. Surfaced so the dashboard can
@@ -213,14 +239,20 @@ type AdvertisementSnapshot struct {
 	// CapacityFixed mirrors the provider's per-resource fixed advertised-capacity
 	// cap (resource name → quantity, e.g. memory: "8Gi"); empty/absent means no
 	// fixed cap lowered allocatable. Surfaced alongside CapacityScalePercent.
-	CapacityFixed   corev1.ResourceList `json:"capacityFixed,omitempty"`
-	LiqoLabels      map[string]string   `json:"liqoLabels,omitempty"`
-	LiqoTaints      []corev1.Taint      `json:"liqoTaints,omitempty"`
-	ChunkCount      int32               `json:"chunkCount"`
-	ReservedChunks  int32               `json:"reservedChunks"`
-	AvailableChunks int32               `json:"availableChunks"`
-	LastSeen        metav1.Time         `json:"lastSeen"`
-	Available       bool                `json:"available"`
+	CapacityFixed corev1.ResourceList `json:"capacityFixed,omitempty"`
+	// Renewable mirrors the provider's self-declared renewable-energy flag,
+	// surfaced on the dashboard and used by the standard composite policy.
+	Renewable bool `json:"renewable,omitempty"`
+	// ProbeEndpoint mirrors the provider's advertised UDP probe endpoint
+	// (<nodeIP>:port) for the measured-latency strategy; surfaced on the dashboard.
+	ProbeEndpoint   string            `json:"probeEndpoint,omitempty"`
+	LiqoLabels      map[string]string `json:"liqoLabels,omitempty"`
+	LiqoTaints      []corev1.Taint    `json:"liqoTaints,omitempty"`
+	ChunkCount      int32             `json:"chunkCount"`
+	ReservedChunks  int32             `json:"reservedChunks"`
+	AvailableChunks int32             `json:"availableChunks"`
+	LastSeen        metav1.Time       `json:"lastSeen"`
+	Available       bool              `json:"available"`
 }
 
 // -----------------------------------------------------------------------------
@@ -237,19 +269,31 @@ type HeartbeatRequest struct {
 	// (no preference).
 	Placement *autoscalingv1alpha1.PlacementPolicy `json:"placement,omitempty"`
 
-	// Region is the consumer's region identifier (optional). Read from the
-	// agent-location ConfigMap and pushed every heartbeat; surfaced on the
-	// dashboard. Informational alongside the latency strategy.
+	// Region is the consumer's region identifier (optional). Auto-discovered by
+	// the Consumer Agent (its node IP → geo service) and pushed every heartbeat;
+	// surfaced on the dashboard. Informational alongside the latency strategy.
 	Region string `json:"region,omitempty"`
 
+	// City is the human-readable city of the consumer's discovered location
+	// (optional). Informational only, surfaced on the dashboard.
+	City string `json:"city,omitempty"`
+
 	// Latitude/Longitude are the consumer's geographic coordinates in decimal
-	// degrees (optional). The Consumer Agent fetches them from a geo service
-	// (mock-geo in the demo) keyed by Region. The Broker uses them for the
-	// latency placement strategy (great-circle distance to each provider). nil
-	// means the consumer advertised no location, in which case the latency
-	// strategy applies no preference.
+	// degrees (optional). The Consumer Agent auto-discovers them from a geo
+	// service (mock-geo in the demo) keyed by its node IP. The Broker uses them
+	// for the latency placement strategy (great-circle distance to each
+	// provider). nil means the consumer advertised no location, in which case the
+	// latency strategy applies no preference.
 	Latitude  *float64 `json:"latitude,omitempty"`
 	Longitude *float64 `json:"longitude,omitempty"`
+
+	// MeasuredLatencies is the consumer's most recent measured RTT (milliseconds)
+	// per provider cluster ID, from UDP-probing the latency shortlist (optional,
+	// finite values only). ChosenProvider is the lowest-RTT provider it grew. Both
+	// are informational — the consumer already re-masked locally — surfaced on the
+	// dashboard so an operator can see the measured decision.
+	MeasuredLatencies map[string]float64 `json:"measuredLatencies,omitempty"`
+	ChosenProvider    string             `json:"chosenProvider,omitempty"`
 }
 
 type HeartbeatResponse struct {
@@ -274,6 +318,26 @@ type NodeGroupView struct {
 	ChunkResources        corev1.ResourceList      `json:"chunkResources"`
 	Cost                  *resource.Quantity       `json:"cost,omitempty"`
 	Topology              *brokerv1alpha1.Topology `json:"topology,omitempty"`
+	// ProbeEndpoint is the provider's UDP echo address (<nodeIP>:port) for the
+	// measured-latency strategy; empty when the provider advertised none. Set on
+	// every view (not only the shortlist) so the Consumer Agent can probe the
+	// growable candidates.
+	ProbeEndpoint string `json:"probeEndpoint,omitempty"`
+	// PlacementMetric is the value the applied placement policy ranked THIS
+	// provider on — per-chunk cost (Price), 6-hour weighted carbon (Eco), or
+	// great-circle distance in km (Latency); LOWER is better. HasMetric is false
+	// when the applied policy has no metric for this provider (Standard / no policy,
+	// or an unpriced/coordless provider). It is set on EVERY view — winner and
+	// masked losers alike — so the manual-reservation re-eval (feature 7) can
+	// compare its current provider's metric against the growable winner's and
+	// migrate ONLY when the winner is strictly better. This defeats the
+	// self-occupancy confound: a provider masked merely because THIS consumer's own
+	// reservation filled it is still the best (lower metric), so no spurious
+	// same-provider migration fires.
+	PlacementMetric float64           `json:"placementMetric,omitempty"`
+	HasMetric       bool              `json:"hasMetric,omitempty"`
+	Labels          map[string]string `json:"labels,omitempty"`
+	Taints          []corev1.Taint    `json:"taints,omitempty"`
 	// CarbonIntensity is the provider's advertised carbon intensity (gCO2eq/kWh).
 	// Populated when the provider advertises it; nil otherwise. Used by the
 	// ConsumerChoice AI strategy to evaluate eco-friendliness.
@@ -282,15 +346,26 @@ type NodeGroupView struct {
 	// Populated when the provider advertises prices; nil otherwise. Used by the
 	// ConsumerChoice AI strategy to evaluate cost.
 	UnitPrices corev1.ResourceList `json:"unitPrices,omitempty"`
-	Labels                map[string]string        `json:"labels,omitempty"`
-	Taints                []corev1.Taint           `json:"taints,omitempty"`
 }
 
 type NodeGroupListResponse struct {
-	NodeGroups      []NodeGroupView `json:"nodeGroups"`
-	Generation      int64           `json:"generation"`
-	ServedAt        metav1.Time     `json:"servedAt"`
-	CacheAgeSeconds int32           `json:"cacheAgeSeconds"`
+	NodeGroups []NodeGroupView `json:"nodeGroups"`
+	// LatencyShortlist is true when the Broker applied the measured-latency
+	// strategy and left more than one provider growable (the top-3 nearest with
+	// capacity). It tells the Consumer Agent to UDP-probe the growable candidates
+	// (by ProbeEndpoint) and re-mask locally to the lowest-RTT one. False for every
+	// other policy (the Broker already masked to a single provider) and for
+	// latency with no consumer location (a full no-op).
+	LatencyShortlist bool `json:"latencyShortlist,omitempty"`
+	// AppliedPlacement is the placement strategy the Broker masked this list with —
+	// the calling consumer's last-heartbeated ConsumerPolicy type ("Price"/"Eco"/
+	// "Latency"/"Standard"), or empty when no policy is set. Informational; the
+	// manual-reservation re-eval loop (feature 7) reads it to migrate only under a
+	// stable-metric policy (Price/Eco/Latency), never Standard.
+	AppliedPlacement autoscalingv1alpha1.PlacementStrategy `json:"appliedPlacement,omitempty"`
+	Generation       int64                                 `json:"generation"`
+	ServedAt         metav1.Time                           `json:"servedAt"`
+	CacheAgeSeconds  int32                                 `json:"cacheAgeSeconds"`
 }
 
 // -----------------------------------------------------------------------------

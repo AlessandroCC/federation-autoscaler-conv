@@ -91,6 +91,16 @@ spec:
                   so an empty map means "no customization". This field is informational
                   (surfaced on the dashboard); the Broker never re-derives Resources from it.
                 type: object
+              carbonForecast:
+                description: |-
+                  CarbonForecast is the provider's hourly carbon-intensity forecast
+                  (gCO2eq/kWh, current hour first), optional. When present the Broker ranks
+                  eco-preferring consumers on a weighted average of the first few hours (the
+                  near future counts most); when absent it falls back to CarbonIntensity. The
+                  Broker never fetches this — it only ranks what providers advertise.
+                items:
+                  type: number
+                type: array
               carbonIntensity:
                 description: |-
                   CarbonIntensity is the provider's current grid carbon intensity in
@@ -123,6 +133,20 @@ spec:
                   Agents use this value when executing liqoctl peer.
                 minLength: 1
                 type: string
+              probeEndpoint:
+                description: |-
+                  ProbeEndpoint is this provider's always-on UDP echo address (<nodeIP>:port)
+                  for the measured-latency strategy. The Broker carries it onto the latency
+                  shortlist so the Consumer Agent can probe real round-trip time before
+                  choosing. Empty ⇒ this provider is not probeable (falls back to distance).
+                type: string
+              renewable:
+                description: |-
+                  Renewable is the provider admin's self-declaration that this cluster runs on
+                  renewable energy. Honour-system (the Broker does not verify it). The standard
+                  composite default policy gives renewable providers a placement bonus; other
+                  policies ignore it. false/unset ⇒ no bonus.
+                type: boolean
               resources:
                 description: Resources is the currently allocatable capacity donated
                   by the provider.
@@ -147,6 +171,13 @@ spec:
                   Topology is optional and is used by the Broker's decision engine and by
                   the gRPC server when stamping Liqo virtual-node labels.
                 properties:
+                  city:
+                    description: |-
+                      City is the human-readable city name of the provider's discovered location
+                      (e.g. "Frankfurt"). Informational only — surfaced on the Broker dashboard so
+                      operators can see the auto-discovered location; not a decision-engine input
+                      and not a node label.
+                    type: string
                   latitude:
                     description: |-
                       Latitude is the provider's geographic latitude in decimal degrees. It is

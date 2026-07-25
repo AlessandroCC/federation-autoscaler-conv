@@ -79,43 +79,52 @@ func (s *Server) handleNodeGroupsList(w http.ResponseWriter, r *http.Request) {
 	for i, cadv := range avail {
 		cost, ok := s.perChunkCost(cadv)
 		costs[i], priced[i] = cost, ok
-		if cadv.Spec.CarbonIntensity != nil {
-			carbons[i], hasCarbon[i] = *cadv.Spec.CarbonIntensity, true
-		}
+		carbons[i], hasCarbon[i] = weightedCarbon(cadv)
 		views[i] = s.nodeGroupViewFromAdvertisement(cadv, cost, ok)
 	}
 
 	// Per-consumer placement preference: narrow to the single best provider with
-	// capacity within each chunk type, where "best" is cheapest (Price), greenest
-	// (Eco), or closest (Latency). No policy (or no qualifying provider with
-	// capacity) ⇒ no masking ⇒ today's behaviour.
+	// capacity within each chunk type. "best" is the composite Standard default
+	// (most free capacity, renewable bonus) when no policy is set, or cheapest
+	// (Price) / greenest (Eco) / closest (Latency) when one is.
 	consumerID := ClusterIDFromContext(ctx)
-	if entry, ok := s.consumers.Lookup(consumerID); ok && entry.Placement.Type != "" {
-		// In-flight reservations gate the "spill to the next-best" step so we
-		// don't prematurely expose a worse provider while the chosen one's chunk
-		// is still peering (CA would grab it and then have to unpeer it). The gate
-		// is policy-agnostic, so all three strategies share it.
-		inflight, err := s.inFlightByProvider(ctx, consumerID)
-		if err != nil {
-			s.log.Error(err, "list Reservations for placement gate failed", "requestId", requestID)
-			writeError(w, http.StatusInternalServerError, ErrorResponse{
-				Code: ErrCodeInternalError, Message: "reservation list failed", RequestID: requestID,
-			})
-			return
-		}
-		switch entry.Placement.Type {
-		case autoscalingv1alpha1.PlacementStrategyPrice:
-			applyPricePreference(views, costs, priced, inflight)
-		case autoscalingv1alpha1.PlacementStrategyEco:
-			applyEcoPreference(views, carbons, hasCarbon, inflight)
-		case autoscalingv1alpha1.PlacementStrategyLatency:
-			// Latency is a consumer↔provider PAIR metric: distance depends on the
-			// calling consumer's own location (from its heartbeat). If the consumer
-			// has not advertised a location, distances carry no usable value and the
-			// masking is a no-op (all providers stay exposed).
-			distances, hasDist := consumerProviderDistances(entry, avail)
-			applyLatencyPreference(views, distances, hasDist, inflight)
-		}
+	entry, _ := s.consumers.Lookup(consumerID) // zero ConsumerEntry ⇒ Standard default
+
+	// In-flight reservations gate the "spill to the next-best" step so we don't
+	// prematurely expose a worse provider while the chosen one's chunk is still
+	// peering (CA would grab it and then have to unpeer it). The gate is
+	// policy-agnostic, so every strategy shares it.
+	inflight, err := s.inFlightByProvider(ctx, consumerID)
+	if err != nil {
+		s.log.Error(err, "list Reservations for placement gate failed", "requestId", requestID)
+		writeError(w, http.StatusInternalServerError, ErrorResponse{
+			Code: ErrCodeInternalError, Message: "reservation list failed", RequestID: requestID,
+		})
+		return
+	}
+	latencyShortlist := false
+	switch entry.Placement.Type {
+	case autoscalingv1alpha1.PlacementStrategyPrice:
+		applyPricePreference(views, costs, priced, inflight)
+		setPlacementMetric(views, costs, priced)
+	case autoscalingv1alpha1.PlacementStrategyEco:
+		applyEcoPreference(views, carbons, hasCarbon, inflight)
+		setPlacementMetric(views, carbons, hasCarbon)
+	case autoscalingv1alpha1.PlacementStrategyLatency:
+		// Latency is a consumer↔provider PAIR metric: distance depends on the
+		// calling consumer's own location (from its heartbeat). Unlike the other
+		// policies the Broker does NOT narrow to one here — it exposes the top-N
+		// nearest-with-capacity as a shortlist and lets the Consumer Agent UDP-probe
+		// them and grow the lowest-RTT one. If the consumer has no location, this is
+		// a no-op (all providers stay exposed) and no shortlist is signalled.
+		distances, hasDist := consumerProviderDistances(entry, avail)
+		latencyShortlist = applyLatencyTopN(views, distances, hasDist, inflight, latencyShortlistSize)
+		setPlacementMetric(views, distances, hasDist)
+	default:
+		// Empty (no ConsumerPolicy) or "Standard" → the composite default. No stable
+		// per-provider metric is exposed (Standard's most-free score wanders as
+		// capacity fills), so the re-eval loop never migrates a Standard reservation.
+		applyStandardPreference(views, avail, inflight)
 	}
 
 	sort.SliceStable(views, func(i, j int) bool {
@@ -126,11 +135,28 @@ func (s *Server) handleNodeGroupsList(w http.ResponseWriter, r *http.Request) {
 	})
 
 	writeJSON(w, http.StatusOK, NodeGroupListResponse{
-		NodeGroups:      views,
-		Generation:      0, // step 5b will surface a real revision once the reconciler watches CRs.
-		ServedAt:        metav1.Now(),
-		CacheAgeSeconds: 0,
+		NodeGroups:       views,
+		LatencyShortlist: latencyShortlist,
+		AppliedPlacement: entry.Placement.Type,
+		Generation:       0, // step 5b will surface a real revision once the reconciler watches CRs.
+		ServedAt:         metav1.Now(),
+		CacheAgeSeconds:  0,
 	})
+}
+
+// setPlacementMetric records, on each view, the value the applied policy ranked it
+// on (lower = better) so the Consumer Agent's manual-reservation re-eval can tell a
+// genuinely-better provider from one that is merely full of its OWN reservation.
+// values[i]/has[i] align with views[i] (both indexed by the advertisement order);
+// has[i]==false leaves the view metric-less (HasMetric stays false). It runs BEFORE
+// the final sort, so the metric travels with each view as the slice is reordered.
+func setPlacementMetric(views []NodeGroupView, values []float64, has []bool) {
+	for i := range views {
+		if has[i] {
+			views[i].PlacementMetric = values[i]
+			views[i].HasMetric = true
+		}
+	}
 }
 
 // applyPricePreference masks the node-group view for a price-preferring
@@ -162,6 +188,40 @@ func applyPricePreference(views []NodeGroupView, costs []float64, priced []bool,
 	applyMetricPreference(views, costs, priced, inflight)
 }
 
+// ecoWeights weights the next 6 hours of a carbon forecast for the eco ranking —
+// the near future counts most (mirrors the origin's eco scoring). Lower weighted
+// score = greener.
+var ecoWeights = [6]float64{0.40, 0.25, 0.15, 0.10, 0.06, 0.04}
+
+// weightedCarbon returns the carbon value the eco ranking uses for a provider,
+// and whether it has one: the 6-hour weighted forecast average when a forecast is
+// advertised, else the single current CarbonIntensity, else (0, false).
+func weightedCarbon(cadv *brokerv1alpha1.ClusterAdvertisement) (float64, bool) {
+	if v, ok := ecoWeightedScore(cadv.Spec.CarbonForecast); ok {
+		return v, true
+	}
+	if cadv.Spec.CarbonIntensity != nil {
+		return *cadv.Spec.CarbonIntensity, true
+	}
+	return 0, false
+}
+
+// ecoWeightedScore returns the weighted average of the first min(6, len) forecast
+// hours, normalized by the weights actually used (so a short forecast still
+// scores sensibly). ok=false for an empty forecast.
+func ecoWeightedScore(forecast []float64) (float64, bool) {
+	n := min(len(forecast), len(ecoWeights))
+	if n == 0 {
+		return 0, false
+	}
+	var sum, wsum float64
+	for i := range n {
+		sum += ecoWeights[i] * forecast[i]
+		wsum += ecoWeights[i]
+	}
+	return sum / wsum, true
+}
+
 // applyEcoPreference masks the node-group view for a carbon-preferring consumer:
 // greenest-first greedy, exactly mirroring price. carbons[i]/hasCarbon[i] describe
 // the same advertisement as views[i]; a provider that advertises no carbon
@@ -176,8 +236,131 @@ func applyEcoPreference(views []NodeGroupView, carbons []float64, hasCarbon []bo
 // advertisement as views[i]; hasDist[i] is false when either endpoint lacks a
 // location, so a consumer with no location (every hasDist false) yields no
 // masking at all (all providers stay exposed) — see consumerProviderDistances.
-func applyLatencyPreference(views []NodeGroupView, distances []float64, hasDist []bool, inflight map[string]bool) {
-	applyMetricPreference(views, distances, hasDist, inflight)
+// latencyShortlistSize caps how many nearest providers the Broker exposes for the
+// measured-latency strategy. The Consumer Agent UDP-probes these and grows the
+// lowest-RTT one; a small shortlist keeps probing cheap while still letting the
+// real network path override raw distance.
+const latencyShortlistSize = 3
+
+// applyLatencyTopN masks the node-group view for a latency-preferring consumer.
+// Unlike the single-winner applyMetricPreference (Price/Eco/Standard), within each
+// chunk type it keeps the n NEAREST providers that still have head-room growable
+// and masks the rest — a shortlist the Consumer Agent then UDP-probes to grow the
+// lowest-RTT one. It returns true when it actually produced a distance shortlist
+// (the consumer advertised a location, so at least one hasDist is true); the
+// handler sets NodeGroupListResponse.LatencyShortlist from this so the consumer
+// knows to probe. A consumer with no location (every hasDist false) yields no
+// masking and returns false — identical to the previous no-op behaviour.
+//
+// The in-flight gate mirrors applyMetricPreference: if the nearest provider is
+// full but a reservation of ours is still mid-peering and nothing has been kept
+// yet, the whole type is held (nothing growable) rather than spilling early.
+func applyLatencyTopN(views []NodeGroupView, distances []float64, hasDist []bool, inflight map[string]bool, n int) bool {
+	anyDist := false
+	for _, h := range hasDist {
+		if h {
+			anyDist = true
+			break
+		}
+	}
+	if !anyDist {
+		return false // consumer has no location → expose all (no shortlist to probe)
+	}
+
+	byType := map[brokerv1alpha1.ChunkType][]int{}
+	for i := range views {
+		byType[views[i].Type] = append(byType[views[i].Type], i)
+	}
+	for _, idxs := range byType {
+		// Distance-bearing providers in this type, nearest first (name breaks ties).
+		order := make([]int, 0, len(idxs))
+		for _, i := range idxs {
+			if hasDist[i] {
+				order = append(order, i)
+			}
+		}
+		sort.SliceStable(order, func(a, b int) bool {
+			ia, ib := order[a], order[b]
+			if distances[ia] != distances[ib] {
+				return distances[ia] < distances[ib]
+			}
+			return views[ia].ProviderClusterID < views[ib].ProviderClusterID
+		})
+
+		keep := map[int]bool{}
+		blocked := false
+		for _, i := range order {
+			if len(keep) >= n {
+				break
+			}
+			if views[i].MaxSize-views[i].CurrentReserved > 0 {
+				keep[i] = true // nearest-so-far with head-room → shortlist it
+				continue
+			}
+			if len(keep) == 0 && inflight[views[i].ProviderClusterID] {
+				blocked = true // nearest is full but still peering → hold CA, don't spill
+				break
+			}
+			// full AND settled → skip, try the next-nearest
+		}
+
+		switch {
+		case blocked:
+			for _, j := range idxs {
+				views[j].MaxSize = views[j].CurrentReserved
+			}
+		case len(keep) > 0:
+			for _, j := range idxs {
+				if !keep[j] {
+					views[j].MaxSize = views[j].CurrentReserved
+				}
+			}
+		default:
+			// No distance-bearing provider has capacity → leave the type as-is
+			// (metric-less providers stay reachable as a last resort).
+		}
+	}
+	return true
+}
+
+// standardCapacityWeight / standardRenewableWeight are the composite Standard
+// policy's blend: mostly remaining free capacity (spread load across providers),
+// plus a bonus for self-declared renewable-energy providers. Highest score wins.
+const (
+	standardCapacityWeight  = 0.8
+	standardRenewableWeight = 0.2
+)
+
+// applyStandardPreference masks the node-group view for a consumer with no
+// explicit policy (the Standard composite default). It scores every provider by
+// standardCapacityWeight·freeFraction + standardRenewableWeight·renewable
+// (higher = better, so it spreads load and prefers greener providers) and feeds
+// (1 − score) — lower wins — through the shared greedy masking, so the Cluster
+// Autoscaler grows the single best provider (spilling to the next-best as each
+// fills). Unlike the single-metric policies EVERY provider has a score, so this
+// always narrows to one grower rather than exposing all.
+//
+// avail[i] is the advertisement behind views[i]; free capacity uses the same
+// TotalChunks/ReservedChunks the view carries so a just-reserved chunk lowers the
+// score and the next call naturally balances onto the now-more-free provider.
+func applyStandardPreference(views []NodeGroupView, avail []*brokerv1alpha1.ClusterAdvertisement, inflight map[string]bool) {
+	metric := make([]float64, len(views))
+	has := make([]bool, len(views))
+	for i, cadv := range avail {
+		free := 0.0
+		if total := cadv.Status.TotalChunks; total > 0 {
+			available := max(total-cadv.Status.ReservedChunks, 0)
+			free = float64(available) / float64(total)
+		}
+		renewable := 0.0
+		if cadv.Spec.Renewable {
+			renewable = 1.0
+		}
+		score := standardCapacityWeight*free + standardRenewableWeight*renewable
+		metric[i] = 1.0 - score // invert: applyMetricPreference is lower-wins
+		has[i] = true           // every provider has a composite score
+	}
+	applyMetricPreference(views, metric, has, inflight)
 }
 
 // applyMetricPreference is the strictly-additive greedy masking shared by all
@@ -346,6 +529,7 @@ func (s *Server) nodeGroupViewFromAdvertisement(
 		ChunkResources:        s.perChunkResources(cadv),
 		Cost:                  costQuantity(cost, priced),
 		Topology:              cadv.Spec.Topology,
+		ProbeEndpoint:         cadv.Spec.ProbeEndpoint,
 		CarbonIntensity:       cadv.Spec.CarbonIntensity,
 		UnitPrices:            cadv.Spec.UnitPrices,
 		// LiqoLabels / LiqoTaints aren't on ClusterAdvertisementSpec yet

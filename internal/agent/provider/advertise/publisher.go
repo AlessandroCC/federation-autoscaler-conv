@@ -31,6 +31,7 @@ package advertise
 import (
 	"context"
 	"errors"
+	"net"
 	"os"
 	"strconv"
 	"strings"
@@ -48,6 +49,7 @@ import (
 	agentclient "github.com/netgroup-polito/federation-autoscaler/internal/agent/client"
 	"github.com/netgroup-polito/federation-autoscaler/internal/agent/eco"
 	"github.com/netgroup-polito/federation-autoscaler/internal/agent/geo"
+	"github.com/netgroup-polito/federation-autoscaler/internal/agent/nodeip"
 	"github.com/netgroup-polito/federation-autoscaler/internal/agent/provider/snapshot"
 	brokerapi "github.com/netgroup-polito/federation-autoscaler/internal/broker/api"
 )
@@ -90,22 +92,36 @@ type Options struct {
 	// allocatable.
 	CapacityFile string
 
-	// RegionFile is an optional path to a YAML/JSON file holding this provider's
-	// region (e.g. {"region":"QC"}). Re-read on every publish cycle so an
-	// operator can relocate the provider without a restart. When set, the region
-	// is advertised on Topology and used to look up coordinates (MockGeoURL) and
-	// carbon intensity (MockEcoURL). Empty/missing/unparseable ⇒ no region, and
-	// the provider participates in neither the eco nor latency strategies.
-	RegionFile string
+	// RenewableFile is an optional path to a YAML/JSON file holding this
+	// provider's self-declared renewable-energy flag (e.g. {"renewable":true}).
+	// Re-read on every publish cycle so an operator can toggle it without a
+	// restart. Empty/missing/unparseable or {"renewable":false} ⇒ the provider
+	// advertises no renewable bonus. Honour-system: the Broker does not verify it.
+	RenewableFile string
+
+	// NodeName is the name of the Kubernetes node this agent pod runs on
+	// (injected via the NODE_NAME downward-API env). Its IP is auto-discovered
+	// from v1.Node and geolocated to derive this provider's location. Empty ⇒ no
+	// location discovery (unless AdvertisedIP is set).
+	NodeName string
+
+	// AdvertisedIP optionally overrides the discovered node IP (the --advertised-ip
+	// demo/steering lever). When set, the node is not read. Empty ⇒ use NodeName.
+	AdvertisedIP string
 
 	// MockEcoURL is the base URL of the carbon-intensity service (e.g.
 	// http://mock-eco:8081). Empty ⇒ the provider advertises no carbon intensity.
 	MockEcoURL string
 
-	// MockGeoURL is the base URL of the geo-coordinates service (e.g.
-	// http://mock-geo:8080). Empty ⇒ the provider advertises a region without
-	// coordinates (still usable for display, not for the latency strategy).
+	// MockGeoURL is the base URL of the geo-IP service (e.g. http://mock-geo:8080).
+	// The provider's node IP is looked up here to derive its region + coordinates.
+	// Empty ⇒ the provider advertises no location (neither eco nor latency).
 	MockGeoURL string
+
+	// ProbeUDPPort is the always-on UDP NodePort the udpecho responder is exposed
+	// on (the agent-probe Service). The provider advertises <nodeIP>:ProbeUDPPort
+	// as its measured-latency probe endpoint. 0 ⇒ advertise no probe endpoint.
+	ProbeUDPPort int
 
 	// Interval overrides DefaultInterval. Mainly useful in tests.
 	Interval time.Duration
@@ -132,9 +148,12 @@ type Publisher struct {
 	liqoClusterID string
 	priceFile     string
 	capacityFile  string
-	regionFile    string
+	renewableFile string
+	nodeName      string
+	advertisedIP  string
 	mockEcoURL    string
 	mockGeoURL    string
+	probeUDPPort  int
 	ecoClient     *eco.Client
 	geoClient     *geo.Client
 	interval      time.Duration
@@ -170,9 +189,12 @@ func New(opts Options) (*Publisher, error) {
 		liqoClusterID: opts.LiqoClusterID,
 		priceFile:     opts.PriceFile,
 		capacityFile:  opts.CapacityFile,
-		regionFile:    opts.RegionFile,
+		renewableFile: opts.RenewableFile,
+		nodeName:      opts.NodeName,
+		advertisedIP:  opts.AdvertisedIP,
 		mockEcoURL:    opts.MockEcoURL,
 		mockGeoURL:    opts.MockGeoURL,
+		probeUDPPort:  opts.ProbeUDPPort,
 		ecoClient:     eco.NewClient(),
 		geoClient:     geo.NewClient(),
 		interval:      interval,
@@ -218,7 +240,22 @@ func (p *Publisher) publishOnce(ctx context.Context) {
 	}
 
 	scaled, pctCustom, fixedCustom := p.applyCapacityScaling(snap.Allocatable)
-	topology, carbon := p.loadPlacementInputs(ctx)
+
+	// Resolve the node IP once and reuse it for BOTH geo discovery and the
+	// measured-latency probe endpoint (<nodeIP>:probeUDPPort). The probe endpoint
+	// is advertised whenever the IP is known even if geolocation fails — the
+	// consumer only needs a reachable UDP address to measure RTT.
+	ip, err := nodeip.Resolve(ctx, p.localClient, p.nodeName, p.advertisedIP)
+	if err != nil {
+		p.log.V(1).Info("node IP discovery failed; advertising no location/probe", "err", err.Error())
+		ip = ""
+	}
+	topology, carbon, carbonForecast := p.loadPlacementInputs(ctx, ip)
+
+	probeEndpoint := ""
+	if ip != "" && p.probeUDPPort > 0 {
+		probeEndpoint = net.JoinHostPort(ip, strconv.Itoa(p.probeUDPPort))
+	}
 
 	req := &brokerapi.AdvertisementRequest{
 		ClusterID:            p.clusterID,
@@ -227,8 +264,11 @@ func (p *Publisher) publishOnce(ctx context.Context) {
 		Topology:             topology,
 		UnitPrices:           p.loadUnitPrices(),
 		CarbonIntensity:      carbon,
+		CarbonForecast:       carbonForecast,
 		CapacityScalePercent: pctCustom,
 		CapacityFixed:        fixedCustom,
+		Renewable:            p.loadRenewable(),
+		ProbeEndpoint:        probeEndpoint,
 	}
 
 	resp, err := p.client.PostAdvertisement(ctx, req)
@@ -355,60 +395,58 @@ func (p *Publisher) loadUnitPrices() corev1.ResourceList {
 	return prices
 }
 
-// loadPlacementInputs reads the provider's region (best-effort, like
-// loadUnitPrices) and, when a region is configured, looks up its coordinates
-// (mock-geo) and current carbon intensity (mock-eco). It returns the Topology to
-// advertise (nil when no region) and the carbon intensity (nil when unavailable
-// or no mock-eco URL). Every lookup is best-effort: a failure logs at V(1) and
-// the corresponding field is omitted, never failing the publish cycle.
-func (p *Publisher) loadPlacementInputs(ctx context.Context) (*brokerv1alpha1.Topology, *float64) {
-	region := p.loadRegion()
-	if region == "" {
-		return nil, nil
+// loadPlacementInputs geolocates the provider's already-resolved node ip
+// (mock-geo) and, when discovered, looks up the region's carbon intensity
+// (mock-eco). It returns the Topology to advertise (nil when no location) and the
+// carbon signal (nil when unavailable or no mock-eco URL). Every lookup is
+// best-effort: a failure logs at V(1) and the corresponding field is omitted,
+// never failing the publish cycle. The discovered region CODE (e.g. "QC") is the
+// carbon join key, so an unset region means no carbon either. The caller resolves
+// ip (nodeip.Resolve) once and reuses it for the probe endpoint too; an empty ip
+// means location discovery is off.
+func (p *Publisher) loadPlacementInputs(ctx context.Context, ip string) (*brokerv1alpha1.Topology, *float64, []float64) {
+	if ip == "" {
+		return nil, nil, nil
 	}
-	topology := &brokerv1alpha1.Topology{Region: region}
-	if latlon, ok, err := p.geoClient.Lookup(ctx, p.mockGeoURL, region); err != nil {
-		p.log.V(1).Info("geo lookup failed; advertising region without coordinates",
+	loc, ok, err := p.geoClient.Lookup(ctx, p.mockGeoURL, ip)
+	if err != nil {
+		p.log.V(1).Info("geo lookup failed; advertising no location",
+			"ip", ip, "err", err.Error())
+		return nil, nil, nil
+	}
+	if !ok {
+		return nil, nil, nil
+	}
+	topology := &brokerv1alpha1.Topology{
+		Region:    loc.Region,
+		City:      loc.City,
+		Latitude:  loc.Lat,
+		Longitude: loc.Lon,
+	}
+	carbon, forecast := p.loadCarbon(ctx, loc.Region)
+	return topology, carbon, forecast
+}
+
+// loadCarbon fetches the region's carbon signal. It prefers the hourly forecast
+// (using forecast[0] as the current value) and falls back to the single
+// current-value endpoint when the forecast is unavailable — so an older carbon
+// service without /carbon/forecast still works. Every failure is best-effort:
+// it logs at V(1) and advertises no carbon rather than failing the publish cycle.
+func (p *Publisher) loadCarbon(ctx context.Context, region string) (*float64, []float64) {
+	forecast, err := p.ecoClient.Forecast(ctx, p.mockEcoURL, region)
+	if err != nil {
+		p.log.V(1).Info("carbon forecast fetch failed; falling back to current value",
 			"region", region, "err", err.Error())
-	} else if ok {
-		topology.Latitude = latlon.Lat
-		topology.Longitude = latlon.Lon
+	} else if len(forecast) > 0 {
+		cur := forecast[0]
+		return &cur, forecast
 	}
-	carbon, err := p.ecoClient.CurrentCarbon(ctx, p.mockEcoURL, region)
+	cur, err := p.ecoClient.CurrentCarbon(ctx, p.mockEcoURL, region)
 	if err != nil {
 		p.log.V(1).Info("carbon fetch failed; advertising no carbon intensity",
 			"region", region, "err", err.Error())
 	}
-	return topology, carbon
-}
-
-// loadRegion reads and parses the optional region file (if configured). Like
-// loadUnitPrices it is best-effort: a missing, empty, or unparseable file yields
-// "" so the provider simply advertises no region. Re-reading here (not at
-// construction) is what lets an operator relocate the provider live via the
-// projected ConfigMap.
-func (p *Publisher) loadRegion() string {
-	if p.regionFile == "" {
-		return ""
-	}
-	data, err := os.ReadFile(p.regionFile)
-	if err != nil {
-		p.log.V(1).Info("region file unreadable; advertising no region",
-			"path", p.regionFile, "err", err.Error())
-		return ""
-	}
-	if strings.TrimSpace(string(data)) == "" {
-		return ""
-	}
-	var loc struct {
-		Region string `json:"region"`
-	}
-	if err := yaml.Unmarshal(data, &loc); err != nil {
-		p.log.V(1).Info("region file unparseable; advertising no region",
-			"path", p.regionFile, "err", err.Error())
-		return ""
-	}
-	return strings.TrimSpace(loc.Region)
+	return cur, nil
 }
 
 // capRule is one resource's advertised-capacity cap parsed from the capacity
@@ -424,6 +462,34 @@ type capRule struct {
 	isPercent bool
 	percent   int32
 	fixed     resource.Quantity
+}
+
+// loadRenewable reads and parses the optional renewable-energy file (if
+// configured). Like loadUnitPrices it is best-effort: a missing, empty, or
+// unparseable file yields false so the provider simply advertises no renewable
+// bonus. Re-reading here (not at construction) lets an operator toggle it live.
+func (p *Publisher) loadRenewable() bool {
+	if p.renewableFile == "" {
+		return false
+	}
+	data, err := os.ReadFile(p.renewableFile)
+	if err != nil {
+		p.log.V(1).Info("renewable file unreadable; advertising no renewable bonus",
+			"path", p.renewableFile, "err", err.Error())
+		return false
+	}
+	if strings.TrimSpace(string(data)) == "" {
+		return false
+	}
+	var doc struct {
+		Renewable bool `json:"renewable"`
+	}
+	if err := yaml.Unmarshal(data, &doc); err != nil {
+		p.log.V(1).Info("renewable file unparseable; advertising no renewable bonus",
+			"path", p.renewableFile, "err", err.Error())
+		return false
+	}
+	return doc.Renewable
 }
 
 // loadCapacityCaps reads and parses the per-resource advertised-capacity cap

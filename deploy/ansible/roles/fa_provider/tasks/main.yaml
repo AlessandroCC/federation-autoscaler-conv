@@ -2,27 +2,25 @@
 # Deploys the provider agent on a provider cluster. Mirrors
 # test/e2e/bootstrap/overlays.go's ApplyOverlay for config/agent/provider.
 
-- name: Render provider-agent overlay with Docker Hub image, apply, then reset
+# Pin the agent image with a STREAM edit (sed over the built manifest) instead of
+# `kustomize edit set image` on config/agent/base. The old approach mutated that
+# SHARED base kustomization once per provider host; because Ansible runs the
+# provider hosts in parallel, the concurrent `kustomize edit` writes raced and
+# could truncate config/agent/base/kustomization.yaml down to just its `images:`
+# block — stripping the `resources:` list, so the overlay silently applied without
+# agent-config or the agent Deployment. This stream edit never touches the repo,
+# so parallel hosts are safe. `pipefail` also surfaces a kustomize-build failure
+# instead of masking it as an empty apply.
+- name: Apply provider agent overlay (agent image pinned via stream edit — race-free)
   delegate_to: localhost
-  block:
-    - name: Set agent image
-      ansible.builtin.shell:
-        cmd: |
-          cd {{ fa_repo_root }}/config/agent/base
-          kustomize edit set image federation-autoscaler/agent={{ fa_image_agent }}
-      changed_when: true
-    - name: Apply provider agent overlay
-      ansible.builtin.shell:
-        cmd: |
-          kubectl --kubeconfig {{ cluster_kubeconfig }} apply -k {{ fa_repo_root }}/config/agent/provider
-      changed_when: true
-  always:
-    - name: Reset agent image override
-      ansible.builtin.shell:
-        cmd: |
-          cd {{ fa_repo_root }}/config/agent/base
-          kustomize edit set image federation-autoscaler/agent=federation-autoscaler/agent:latest
-      changed_when: true
+  ansible.builtin.shell:
+    executable: /bin/bash
+    cmd: |
+      set -o pipefail
+      kustomize build {{ fa_repo_root }}/config/agent/provider \
+        | sed 's#image: federation-autoscaler/agent:latest#image: {{ fa_image_agent }}#' \
+        | kubectl --kubeconfig {{ cluster_kubeconfig }} apply -f -
+  changed_when: true
 
 - name: Patch agent-config ConfigMap with this cluster's identity, broker URL, and mock URLs
   delegate_to: localhost
@@ -33,22 +31,20 @@
         '{"data":{"brokerUrl":"https://{{ broker_address }}:{{ broker_node_port }}","clusterId":"{{ cluster_id }}","liqoClusterId":"{{ cluster_id }}","mockEcoUrl":"{{ fa_mock_eco_url }}","mockGeoUrl":"{{ fa_mock_geo_url }}"}}'
   changed_when: true
 
-# Per-provider region for the eco/latency placement strategies. Define
-# `fa_cluster_region` in inventory (per host) as a region code the mocks know
-# (QC, LOM, CA, HE, 13, NSW, IDF, SP, SG, ENG); give the demo's providers
-# DISTINCT regions so the greenest/closest wins visibly. When unset the empty
-# agent-location ConfigMap stands and the provider advertises no region — fully
-# backwards-compatible. Re-read every advertisement so it can change live.
-- name: Set this provider's region (eco/latency placement)
+# Location is AUTO-DISCOVERED from the provider's node IP (mock-geo maps the IP
+# to a region + coordinates that drive the eco/latency strategies). Optionally
+# define `fa_advertised_ip` in inventory (per host) to OVERRIDE the node IP — the
+# demo steering lever: set it to an IP inside a distinct mock-geo /26 block so the
+# demo's providers land in DISTINCT cities and the greenest/closest wins visibly.
+# Unset ⇒ the agent geolocates its own node IP.
+- name: Set this provider's advertised-ip override (location discovery)
   delegate_to: localhost
-  when: fa_cluster_region is defined and (fa_cluster_region | length) > 0
+  when: fa_advertised_ip is defined and (fa_advertised_ip | length) > 0
   ansible.builtin.shell:
     cmd: |
       kubectl --kubeconfig {{ cluster_kubeconfig }} -n {{ fa_namespace }} \
-        create configmap agent-location \
-        --from-literal=location.yaml='region: "{{ fa_cluster_region }}"' \
-        --dry-run=client -o yaml | \
-        kubectl --kubeconfig {{ cluster_kubeconfig }} apply -f -
+        patch configmap agent-config --type merge -p \
+        '{"data":{"advertisedIp":"{{ fa_advertised_ip }}"}}'
   changed_when: true
 
 # Per-provider unit prices for price-based placement. Define `fa_provider_prices`

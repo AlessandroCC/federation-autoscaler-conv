@@ -90,6 +90,14 @@ type ClusterAdvertisementSpec struct {
 	// +optional
 	CarbonIntensity *float64 `json:"carbonIntensity,omitempty"`
 
+	// CarbonForecast is the provider's hourly carbon-intensity forecast
+	// (gCO2eq/kWh, current hour first), optional. When present the Broker ranks
+	// eco-preferring consumers on a weighted average of the first few hours (the
+	// near future counts most); when absent it falls back to CarbonIntensity. The
+	// Broker never fetches this — it only ranks what providers advertise.
+	// +optional
+	CarbonForecast []float64 `json:"carbonForecast,omitempty"`
+
 	// CapacityScalePercent records, per resource, the percentage of allocatable
 	// the provider's admin chose to advertise when it is below 100% — the
 	// Provider Agent has already scaled Resources.Allocatable down accordingly.
@@ -109,6 +117,20 @@ type ClusterAdvertisementSpec struct {
 	// Broker never re-derives Resources from it.
 	// +optional
 	CapacityFixed corev1.ResourceList `json:"capacityFixed,omitempty"`
+
+	// Renewable is the provider admin's self-declaration that this cluster runs on
+	// renewable energy. Honour-system (the Broker does not verify it). The standard
+	// composite default policy gives renewable providers a placement bonus; other
+	// policies ignore it. false/unset ⇒ no bonus.
+	// +optional
+	Renewable bool `json:"renewable,omitempty"`
+
+	// ProbeEndpoint is this provider's always-on UDP echo address (<nodeIP>:port)
+	// for the measured-latency strategy. The Broker carries it onto the latency
+	// shortlist so the Consumer Agent can probe real round-trip time before
+	// choosing. Empty ⇒ this provider is not probeable (falls back to distance).
+	// +optional
+	ProbeEndpoint string `json:"probeEndpoint,omitempty"`
 }
 
 // ClusterAdvertisementStatus is the Broker's observed view of the advertisement.

@@ -49,6 +49,7 @@ spec:
         - --grpc-key-name=tls.key
         - --grpc-ca-name=ca.crt
         - --agent-local-api-url=http://agent.federation-autoscaler-system.svc.cluster.local:9090
+        env: []
         ports:
         - name: grpc
           containerPort: 9443

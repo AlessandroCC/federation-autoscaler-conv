@@ -65,7 +65,8 @@ func (s *Server) handleHeartbeat(w http.ResponseWriter, r *http.Request) {
 	if req.Placement != nil {
 		placement = *req.Placement
 	}
-	s.consumers.Touch(req.ClusterID, req.LiqoClusterID, placement, req.Region, req.Latitude, req.Longitude)
+	s.consumers.Touch(req.ClusterID, req.LiqoClusterID, placement, req.Region, req.City, req.Latitude, req.Longitude)
+	s.consumers.SetMeasuredLatency(req.ClusterID, req.MeasuredLatencies, req.ChosenProvider)
 
 	writeJSON(w, http.StatusOK, HeartbeatResponse{AckAt: metav1.Now()})
 }

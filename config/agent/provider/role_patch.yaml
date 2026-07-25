@@ -23,6 +23,15 @@
   path: /spec/template/spec/containers/0/args/-
   value: --capacity-file=/etc/federation-autoscaler/capacity/capacity.yaml
 - op: add
+  path: /spec/template/spec/containers/0/args/-
+  value: --renewable-file=/etc/federation-autoscaler/renewable/renewable.yaml
+# Advertise the udpecho probe endpoint <nodeIP>:<port> for the measured-latency
+# strategy. This port MUST match the nodePort of the agent-probe Service in
+# udpecho.yaml (30100) — the consumer probes <advertised nodeIP>:30100.
+- op: add
+  path: /spec/template/spec/containers/0/args/-
+  value: --probe-udp-port=30100
+- op: add
   path: /spec/template/spec/containers/0/volumeMounts/-
   value:
     name: prices
@@ -33,6 +42,12 @@
   value:
     name: capacity
     mountPath: /etc/federation-autoscaler/capacity
+    readOnly: true
+- op: add
+  path: /spec/template/spec/containers/0/volumeMounts/-
+  value:
+    name: renewable
+    mountPath: /etc/federation-autoscaler/renewable
     readOnly: true
 - op: add
   path: /spec/template/spec/volumes/-
@@ -47,6 +62,13 @@
     name: capacity
     configMap:
       name: agent-capacity
+      optional: true
+- op: add
+  path: /spec/template/spec/volumes/-
+  value:
+    name: renewable
+    configMap:
+      name: agent-renewable
       optional: true
 # Config console (plain HTTP, no auth) — exposed via the agent-console NodePort
 # Service so an operator can set prices/region/capacity from a browser. This is

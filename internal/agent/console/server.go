@@ -24,17 +24,16 @@ limitations under the License.
 //
 //	consumer role:
 //	  POST /api/policy    create/update/delete the `default` ConsumerPolicy
-//	  POST /api/region    upsert the agent-location ConfigMap
 //	  POST /api/workload  apply/delete the federation-demo burst workload
 //	  POST /api/reservation apply/delete the console-managed ResourceRequest
 //	provider role:
 //	  POST /api/prices    upsert the agent-prices ConfigMap
-//	  POST /api/region    upsert the agent-location ConfigMap
 //	  POST /api/capacity  upsert the agent-capacity ConfigMap
+//	  POST /api/renewable upsert the agent-renewable ConfigMap
 //	both roles:
 //	  GET  /              the role's embedded single-page UI
-//	  GET  /api/state     current values (so the UI can pre-select/pre-fill)
-//	  GET  /api/regions   the selectable region list (internal/regions)
+//	  GET  /api/state     current values, incl. the auto-discovered location
+//	                      (read-only; location is no longer operator-set)
 //	  GET  /healthz       liveness probe
 //
 // SECURITY: this listener is unauthenticated and, when exposed on a NodePort,
@@ -67,7 +66,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 
 	autoscalingv1alpha1 "github.com/netgroup-polito/federation-autoscaler/api/autoscaling/v1alpha1"
-	"github.com/netgroup-polito/federation-autoscaler/internal/regions"
+	"github.com/netgroup-polito/federation-autoscaler/internal/agent/geo"
 )
 
 // Role discriminates which UI and which write endpoints the console exposes.
@@ -77,15 +76,15 @@ const (
 )
 
 // Resource coordinates the console reads from / writes to. The ConfigMap names
-// and keys MUST match what the agent's loaders read (loadRegion / loadUnitPrices
-// / loadCapacityPercents) and what the per-role kustomize overlays mount.
+// and keys MUST match what the agent's loaders read (loadUnitPrices /
+// loadCapacityPercents / loadRenewable) and what the per-role kustomize overlays mount.
 const (
-	locationConfigMap = "agent-location"
-	locationKey       = "location.yaml"
-	pricesConfigMap   = "agent-prices"
-	pricesKey         = "prices.yaml"
-	capacityConfigMap = "agent-capacity"
-	capacityKey       = "capacity.yaml"
+	pricesConfigMap    = "agent-prices"
+	pricesKey          = "prices.yaml"
+	capacityConfigMap  = "agent-capacity"
+	capacityKey        = "capacity.yaml"
+	renewableConfigMap = "agent-renewable"
+	renewableKey       = "renewable.yaml"
 
 	// The burst workload lives in `default` (offloaded LocalAndRemote), NOT in
 	// the agent namespace — the consumer overlay's scoped Role grants the write.
@@ -143,6 +142,14 @@ type Options struct {
 	ClusterID     string
 	LiqoClusterID string
 
+	// NodeName, AdvertisedIP, and MockGeoURL let the console show this cluster's
+	// AUTO-DISCOVERED location read-only (same inputs the agent's poller uses):
+	// the node IP (or AdvertisedIP override) is geolocated via MockGeoURL. All
+	// optional; when unset the location card simply shows "not configured".
+	NodeName     string
+	AdvertisedIP string
+	MockGeoURL   string
+
 	// Logger is the structured logger every handler logs through. Defaults to
 	// controller-runtime's logger named "console".
 	Logger logr.Logger
@@ -160,6 +167,10 @@ type Server struct {
 	ns            string
 	clusterID     string
 	liqoClusterID string
+	nodeName      string
+	advertisedIP  string
+	mockGeoURL    string
+	geoClient     *geo.Client
 	log           logr.Logger
 	shutdown      time.Duration
 
@@ -197,6 +208,10 @@ func New(opts Options) (*Server, error) {
 		ns:            ns,
 		clusterID:     opts.ClusterID,
 		liqoClusterID: opts.LiqoClusterID,
+		nodeName:      opts.NodeName,
+		advertisedIP:  opts.AdvertisedIP,
+		mockGeoURL:    opts.MockGeoURL,
+		geoClient:     geo.NewClient(),
 		log:           logger,
 		shutdown:      shutdown,
 	}
@@ -219,9 +234,7 @@ func (s *Server) handler() http.Handler {
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte(`{"status":"ok"}`))
 	})
-	mux.HandleFunc("GET /api/regions", s.handleRegions)
 	mux.HandleFunc("GET /api/state", s.handleState)
-	mux.HandleFunc("POST /api/region", s.handleRegion)
 	// Role-gated writes. Only the active role's routes are registered, so the
 	// other role's paths 404; handlers also re-check the role (defence in depth).
 	switch s.role {
@@ -232,6 +245,7 @@ func (s *Server) handler() http.Handler {
 	case RoleProvider:
 		mux.HandleFunc("POST /api/prices", s.handlePrices)
 		mux.HandleFunc("POST /api/capacity", s.handleCapacity)
+		mux.HandleFunc("POST /api/renewable", s.handleRenewable)
 	}
 	return mux
 }
@@ -277,34 +291,9 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(page)
 }
 
-func (s *Server) handleRegions(w http.ResponseWriter, _ *http.Request) {
-	s.writeJSON(w, http.StatusOK, map[string]any{"regions": regions.All})
-}
-
 // -----------------------------------------------------------------------------
 // POST handlers
 // -----------------------------------------------------------------------------
-
-// handleRegion upserts the agent-location ConfigMap (both roles). An empty
-// region clears it; a non-empty one must be a known code.
-func (s *Server) handleRegion(w http.ResponseWriter, r *http.Request) {
-	var body struct {
-		Region string `json:"region"`
-	}
-	if !s.decode(w, r, &body) {
-		return
-	}
-	if body.Region != "" && !regions.Valid(body.Region) {
-		s.writeError(w, http.StatusBadRequest, fmt.Sprintf("unknown region %q", body.Region))
-		return
-	}
-	value := fmt.Sprintf("region: %q\n", body.Region)
-	if err := s.upsertConfigMap(r.Context(), locationConfigMap, locationKey, value); err != nil {
-		s.writeError(w, http.StatusInternalServerError, "write agent-location: "+err.Error())
-		return
-	}
-	s.ok(w)
-}
 
 // handlePolicy creates/updates/deletes the `default` ConsumerPolicy. Empty or
 // "None" deletes it (= no broker-driven preference).
@@ -472,6 +461,28 @@ func (s *Server) releaseManualReservation(ctx context.Context, name string) erro
 		return fmt.Errorf("reservation %q is not managed by the console", name)
 	}
 	return s.local.Delete(ctx, &rr)
+}
+
+// handleRenewable upserts the agent-renewable ConfigMap with this provider's
+// self-declared renewable-energy flag (the standard composite policy's bonus
+// input). Provider-only.
+func (s *Server) handleRenewable(w http.ResponseWriter, r *http.Request) {
+	if s.role != RoleProvider {
+		s.writeError(w, http.StatusMethodNotAllowed, "renewable is a provider-only setting")
+		return
+	}
+	var body struct {
+		Renewable bool `json:"renewable"`
+	}
+	if !s.decode(w, r, &body) {
+		return
+	}
+	value := fmt.Sprintf("renewable: %t\n", body.Renewable)
+	if err := s.upsertConfigMap(r.Context(), renewableConfigMap, renewableKey, value); err != nil {
+		s.writeError(w, http.StatusInternalServerError, "write agent-renewable: "+err.Error())
+		return
+	}
+	s.ok(w)
 }
 
 // handlePrices upserts the agent-prices ConfigMap. Values are unit prices
