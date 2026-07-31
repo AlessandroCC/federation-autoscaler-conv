@@ -70,6 +70,7 @@ spec:
                     - Eco
                     - Latency
                     - ConsumerChoice
+                    - Random
                     type: string
                 type: object
               userPrompt:

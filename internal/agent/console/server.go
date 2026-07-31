@@ -318,7 +318,8 @@ func (s *Server) handlePolicy(w http.ResponseWriter, r *http.Request) {
 	case string(autoscalingv1alpha1.PlacementStrategyPrice),
 		string(autoscalingv1alpha1.PlacementStrategyEco),
 		string(autoscalingv1alpha1.PlacementStrategyLatency),
-		string(autoscalingv1alpha1.PlacementStrategyConsumerChoice):
+		string(autoscalingv1alpha1.PlacementStrategyConsumerChoice),
+		string(autoscalingv1alpha1.PlacementStrategyRandom):
 		if err := s.upsertConsumerPolicy(r.Context(), autoscalingv1alpha1.PlacementStrategy(t), body.UserPrompt); err != nil {
 			s.writeError(w, http.StatusInternalServerError, "write ConsumerPolicy: "+err.Error())
 			return

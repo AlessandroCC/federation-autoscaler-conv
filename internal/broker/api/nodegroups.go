@@ -18,6 +18,7 @@ package api
 
 import (
 	"context"
+	"math/rand"
 	"net/http"
 	"sort"
 
@@ -110,6 +111,8 @@ func (s *Server) handleNodeGroupsList(w http.ResponseWriter, r *http.Request) {
 	case autoscalingv1alpha1.PlacementStrategyEco:
 		applyEcoPreference(views, carbons, hasCarbon, inflight)
 		setPlacementMetric(views, carbons, hasCarbon)
+	case autoscalingv1alpha1.PlacementStrategyRandom:
+		applyRandomPreference(views, inflight)
 	case autoscalingv1alpha1.PlacementStrategyLatency:
 		// Latency is a consumer↔provider PAIR metric: distance depends on the
 		// calling consumer's own location (from its heartbeat). Unlike the other
@@ -229,6 +232,43 @@ func ecoWeightedScore(forecast []float64) (float64, bool) {
 // provider of that chunk type is exhausted (mirrors the unpriced tail).
 func applyEcoPreference(views []NodeGroupView, carbons []float64, hasCarbon []bool, inflight map[string]bool) {
 	applyMetricPreference(views, carbons, hasCarbon, inflight)
+}
+
+// applyRandomPreference masks the node-group view for a random-preferring
+// consumer: within each chunk type it collects providers with available capacity
+// and picks one at random, masking all others (MaxSize = CurrentReserved). No
+// metric is set — Random has no ranking value. The in-flight gate is respected:
+// if the randomly-chosen provider is full but still peering, nothing growable is
+// exposed in that type.
+func applyRandomPreference(views []NodeGroupView, inflight map[string]bool) {
+	byType := map[brokerv1alpha1.ChunkType][]int{}
+	for i := range views {
+		byType[views[i].Type] = append(byType[views[i].Type], i)
+	}
+	for _, idxs := range byType {
+		var withCapacity []int
+		hasInflight := false
+		for _, i := range idxs {
+			if views[i].MaxSize-views[i].CurrentReserved > 0 {
+				withCapacity = append(withCapacity, i)
+			} else if inflight[views[i].ProviderClusterID] {
+				hasInflight = true
+			}
+		}
+		switch {
+		case len(withCapacity) == 0 && hasInflight:
+			for _, i := range idxs {
+				views[i].MaxSize = views[i].CurrentReserved
+			}
+		case len(withCapacity) > 0:
+			chosen := withCapacity[rand.Intn(len(withCapacity))]
+			for _, i := range idxs {
+				if i != chosen {
+					views[i].MaxSize = views[i].CurrentReserved
+				}
+			}
+		}
+	}
 }
 
 // applyLatencyPreference masks the node-group view for a latency-preferring

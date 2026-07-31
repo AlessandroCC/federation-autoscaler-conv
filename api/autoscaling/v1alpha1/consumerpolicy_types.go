@@ -27,7 +27,7 @@ import (
 // strategy is set the Broker ranks on that single metric instead; the Cluster
 // Autoscaler never sees the ranking metric (price, carbon, distance, or the
 // composite score).
-// +kubebuilder:validation:Enum=Standard;Price;Eco;Latency;ConsumerChoice
+// +kubebuilder:validation:Enum=Standard;Price;Eco;Latency;ConsumerChoice;Random
 type PlacementStrategy string
 
 const (
@@ -64,6 +64,13 @@ const (
 	// to the AI, which picks one. Falls back deterministically if the AI is
 	// unreachable or returns an invalid choice.
 	PlacementStrategyConsumerChoice PlacementStrategy = "ConsumerChoice"
+
+	// PlacementStrategyRandom makes the Broker pick, for this consumer, a
+	// random provider with available capacity within each chunk type. Pure
+	// random on every call — no sticky cache, no ranking metric. The
+	// simplest policy, useful when the consumer has no preference and wants
+	// to minimise broker computation.
+	PlacementStrategyRandom PlacementStrategy = "Random"
 )
 
 // PlacementPolicy is the placement policy a consumer declares for itself. It is

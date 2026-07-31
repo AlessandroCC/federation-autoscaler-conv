@@ -81,12 +81,12 @@ func TestSelect_ValidResponse(t *testing.T) {
 		makeNodeGroup("provider-2", 5, 1, floatPtr(0.05), floatPtr(40), "QC"),
 	}
 
-	chosen, err := c.Select(context.Background(), "cheapest provider", groups)
+	ranked, err := c.Select(context.Background(), "cheapest provider", groups)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if chosen != "provider-2" {
-		t.Fatalf("expected provider-2, got %q", chosen)
+	if len(ranked) == 0 || ranked[0] != "provider-2" {
+		t.Fatalf("expected [provider-2, ...], got %v", ranked)
 	}
 }
 
@@ -173,12 +173,12 @@ func TestSelect_SingleProvider_SkipsAI(t *testing.T) {
 		makeNodeGroup("provider-1", 5, 0, nil, nil, ""),
 	}
 
-	chosen, err := c.Select(context.Background(), "any", groups)
+	ranked, err := c.Select(context.Background(), "any", groups)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if chosen != "provider-1" {
-		t.Fatalf("expected provider-1, got %q", chosen)
+	if len(ranked) != 1 || ranked[0] != "provider-1" {
+		t.Fatalf("expected [provider-1], got %v", ranked)
 	}
 	if called {
 		t.Fatal("AI should not have been called for single provider")
@@ -224,12 +224,12 @@ func TestDeterministicFallback_CheapestWins(t *testing.T) {
 		makeNodeGroup("cheap", 5, 0, floatPtr(0.05), nil, ""),
 	}
 
-	chosen, ok := DeterministicFallback(groups)
+	ranked, ok := DeterministicFallback(groups)
 	if !ok {
 		t.Fatal("expected ok=true")
 	}
-	if chosen != "cheap" {
-		t.Fatalf("expected cheap, got %q", chosen)
+	if len(ranked) == 0 || ranked[0] != "cheap" {
+		t.Fatalf("expected cheap first, got %v", ranked)
 	}
 }
 
@@ -240,12 +240,12 @@ func TestDeterministicFallback_CarbonTiebreaker(t *testing.T) {
 		makeNodeGroup("green", 5, 0, &cost, floatPtr(30), ""),
 	}
 
-	chosen, ok := DeterministicFallback(groups)
+	ranked, ok := DeterministicFallback(groups)
 	if !ok {
 		t.Fatal("expected ok=true")
 	}
-	if chosen != "green" {
-		t.Fatalf("expected green, got %q", chosen)
+	if len(ranked) == 0 || ranked[0] != "green" {
+		t.Fatalf("expected green first, got %v", ranked)
 	}
 }
 
@@ -255,12 +255,12 @@ func TestDeterministicFallback_MostCapacityLast(t *testing.T) {
 		makeNodeGroup("big", 10, 0, nil, nil, ""),
 	}
 
-	chosen, ok := DeterministicFallback(groups)
+	ranked, ok := DeterministicFallback(groups)
 	if !ok {
 		t.Fatal("expected ok=true")
 	}
-	if chosen != "big" {
-		t.Fatalf("expected big (most capacity), got %q", chosen)
+	if len(ranked) == 0 || ranked[0] != "big" {
+		t.Fatalf("expected big (most capacity) first, got %v", ranked)
 	}
 }
 
@@ -281,12 +281,63 @@ func TestDeterministicFallback_PricedPreferred(t *testing.T) {
 		makeNodeGroup("priced", 5, 0, floatPtr(0.10), nil, ""),
 	}
 
-	chosen, ok := DeterministicFallback(groups)
+	ranked, ok := DeterministicFallback(groups)
 	if !ok {
 		t.Fatal("expected ok=true")
 	}
-	if chosen != "priced" {
-		t.Fatalf("expected priced provider to be preferred, got %q", chosen)
+	if len(ranked) == 0 || ranked[0] != "priced" {
+		t.Fatalf("expected priced provider first, got %v", ranked)
+	}
+}
+
+func TestSelect_RankedList(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		resp := ollamaResponse{
+			Response: `{"rankedList": ["provider-2", "provider-1"], "providerId": "provider-2"}`,
+			Done:     true,
+		}
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, "test-model")
+	groups := []brokerapi.NodeGroupView{
+		makeNodeGroup("provider-1", 5, 0, floatPtr(0.10), nil, ""),
+		makeNodeGroup("provider-2", 5, 0, floatPtr(0.05), nil, ""),
+	}
+
+	ranked, err := c.Select(context.Background(), "cheapest", groups)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(ranked) != 2 || ranked[0] != "provider-2" || ranked[1] != "provider-1" {
+		t.Fatalf("expected [provider-2 provider-1], got %v", ranked)
+	}
+}
+
+func TestSelect_RankedListFiltersUnknown(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		resp := ollamaResponse{
+			Response: `{"rankedList": ["bogus", "provider-1"], "providerId": "bogus"}`,
+			Done:     true,
+		}
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, "test-model")
+	groups := []brokerapi.NodeGroupView{
+		makeNodeGroup("provider-1", 5, 0, nil, nil, ""),
+	}
+
+	ranked, err := c.Select(context.Background(), "any", groups)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(ranked) != 1 || ranked[0] != "provider-1" {
+		t.Fatalf("expected [provider-1] after filtering unknown IDs, got %v", ranked)
 	}
 }
 

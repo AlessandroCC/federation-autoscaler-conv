@@ -32,14 +32,16 @@ import (
 const SystemPrompt = `You are a Kubernetes provider selection assistant.
 
 You will receive a user request and a JSON list of available providers.
-Select exactly one provider that best matches the user's request.
+Rank ALL providers from best to worst match for the user's request.
 
 Rules:
 - Choose only from the providers in the list.
 - Never invent provider IDs or field values.
 - If the request is vague, prefer in order: lowest cost, lowest carbon, most resources.
 - If two providers are equivalent, prefer the one with lower cost.
-- Return only valid JSON matching this schema: {"providerId": "<id>"}
+- Return only valid JSON matching this schema: {"rankedList": ["<best>", "<2nd>", ...], "providerId": "<best>"}
+- rankedList must contain ALL provider IDs, ordered best first.
+- providerId must equal the first element of rankedList.
 - No explanations, markdown, or extra text.`
 
 // ProviderInfo is the structured JSON the LLM sees per provider. It contains
@@ -59,9 +61,13 @@ type ProviderInfo struct {
 	Longitude       float64  `json:"longitude,omitempty"`
 }
 
-// SelectionResponse is the JSON schema Ollama must return.
+// SelectionResponse is the JSON schema Ollama must return. The LLM is
+// instructed to return a ranked list of ALL provider IDs; the single
+// ProviderID field is kept for backward compatibility with older models
+// that return only one.
 type SelectionResponse struct {
-	ProviderID string `json:"providerId"`
+	ProviderID string   `json:"providerId"`
+	RankedList []string `json:"rankedList,omitempty"`
 }
 
 // NodeGroupViewToProviderInfo converts a broker NodeGroupView into the

@@ -120,7 +120,7 @@ type Server struct {
 
 	aiMutex     sync.Mutex
 	aiRunning   bool
-	aiResult    string
+	aiResult    []string
 	aiTimestamp time.Time
 	aiPrompt    string
 	ollama      *ollama.Client
@@ -231,21 +231,17 @@ func (s *Server) handleNodeGroups(w http.ResponseWriter, r *http.Request) {
 
 			// If the prompt changed, clear cache
 			if s.aiPrompt != prompt {
-				s.aiResult = ""
+				s.aiResult = nil
 				s.aiPrompt = prompt
 				s.aiTimestamp = time.Time{}
 			}
 
 			// If cache is fresh (< 60s), use it
-			if s.aiResult != "" && time.Since(s.aiTimestamp) < 60*time.Second {
-				chosen := s.aiResult
+			if len(s.aiResult) > 0 && time.Since(s.aiTimestamp) < 60*time.Second {
+				ranked := s.aiResult
 				s.aiMutex.Unlock()
 
-				for i := range resp.NodeGroups {
-					if resp.NodeGroups[i].ProviderClusterID != chosen {
-						resp.NodeGroups[i].MaxSize = resp.NodeGroups[i].CurrentReserved
-					}
-				}
+				maskToFirstAvailable(resp, ranked)
 				s.writeJSON(w, http.StatusOK, resp)
 				return
 			}
@@ -262,22 +258,22 @@ func (s *Server) handleNodeGroups(w http.ResponseWriter, r *http.Request) {
 					defer cancel()
 
 					s.log.V(1).Info("AI selection background task started", "prompt", prompt)
-					chosen, aiErr := s.ollama.Select(ctx, prompt, groups)
+					ranked, aiErr := s.ollama.Select(ctx, prompt, groups)
 
 					s.aiMutex.Lock()
 					defer s.aiMutex.Unlock()
 					s.aiRunning = false
 
-					if aiErr != nil || chosen == "" {
+					if aiErr != nil || len(ranked) == 0 {
 						if aiErr != nil {
 							s.log.V(1).Info("AI selection failed, using deterministic fallback", "err", aiErr.Error())
 						}
-						chosen, _ = ollama.DeterministicFallback(groups)
+						ranked, _ = ollama.DeterministicFallback(groups)
 					}
 
-					s.aiResult = chosen
+					s.aiResult = ranked
 					s.aiTimestamp = time.Now()
-					s.log.V(1).Info("AI selection background task finished", "chosen", chosen)
+					s.log.V(1).Info("AI selection background task finished", "ranked", ranked)
 				}(prompt, nodeGroupsCopy)
 			}
 			s.aiMutex.Unlock()
@@ -328,6 +324,32 @@ func (s *Server) maskToMeasuredWinner(ctx context.Context, resp *brokerapi.NodeG
 	}
 	s.log.V(1).Info("measured-latency: masked shortlist to lowest-RTT provider",
 		"chosen", res.Chosen, "rtts", res.RTTs)
+}
+
+// maskToFirstAvailable iterates the ranked provider list in order and picks the
+// first provider that has available capacity (MaxSize > CurrentReserved),
+// masking all others. If no provider in the list has capacity, everything is
+// masked (CA waits).
+func maskToFirstAvailable(resp *brokerapi.NodeGroupListResponse, ranked []string) {
+	chosen := ""
+	capacity := map[string]bool{}
+	for i := range resp.NodeGroups {
+		ng := &resp.NodeGroups[i]
+		if ng.MaxSize-ng.CurrentReserved > 0 {
+			capacity[ng.ProviderClusterID] = true
+		}
+	}
+	for _, id := range ranked {
+		if capacity[id] {
+			chosen = id
+			break
+		}
+	}
+	for i := range resp.NodeGroups {
+		if resp.NodeGroups[i].ProviderClusterID != chosen {
+			resp.NodeGroups[i].MaxSize = resp.NodeGroups[i].CurrentReserved
+		}
+	}
 }
 
 // currentConsumerChoice reads the ConsumerPolicy CRD and returns (true, userPrompt)

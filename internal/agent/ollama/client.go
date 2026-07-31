@@ -74,10 +74,11 @@ type ollamaResponse struct {
 	Done     bool   `json:"done"`
 }
 
-// Select sends the provider list and user prompt to Ollama and returns the
-// chosen provider's ClusterID. Returns ("", err) on failure; the caller MUST
-// fall back to a deterministic strategy when err != nil.
-func (c *Client) Select(ctx context.Context, userPrompt string, nodeGroups []brokerapi.NodeGroupView) (string, error) {
+// Select sends the provider list and user prompt to Ollama and returns a
+// ranked list of provider ClusterIDs ordered by preference (best first).
+// Returns (nil, err) on failure; the caller MUST fall back to a
+// deterministic strategy when err != nil.
+func (c *Client) Select(ctx context.Context, userPrompt string, nodeGroups []brokerapi.NodeGroupView) ([]string, error) {
 	// Build provider info list (only providers with available capacity).
 	var providers []ProviderInfo
 	validIDs := make(map[string]struct{})
@@ -89,12 +90,12 @@ func (c *Client) Select(ctx context.Context, userPrompt string, nodeGroups []bro
 		}
 	}
 	if len(providers) == 0 {
-		return "", fmt.Errorf("no providers with available capacity")
+		return nil, fmt.Errorf("no providers with available capacity")
 	}
 
 	// If there is only one provider, skip the AI call entirely.
 	if len(providers) == 1 {
-		return providers[0].ProviderID, nil
+		return []string{providers[0].ProviderID}, nil
 	}
 
 	// Build the prompt.
@@ -111,7 +112,7 @@ func (c *Client) Select(ctx context.Context, userPrompt string, nodeGroups []bro
 
 	bodyBytes, err := json.Marshal(reqBody)
 	if err != nil {
-		return "", fmt.Errorf("marshal ollama request: %w", err)
+		return nil, fmt.Errorf("marshal ollama request: %w", err)
 	}
 
 	// Make the HTTP call.
@@ -121,44 +122,59 @@ func (c *Client) Select(ctx context.Context, userPrompt string, nodeGroups []bro
 	httpReq, err := http.NewRequestWithContext(reqCtx, http.MethodPost,
 		c.baseURL+"/api/generate", bytes.NewReader(bodyBytes))
 	if err != nil {
-		return "", fmt.Errorf("build ollama HTTP request: %w", err)
+		return nil, fmt.Errorf("build ollama HTTP request: %w", err)
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 
 	resp, err := c.http.Do(httpReq)
 	if err != nil {
-		return "", fmt.Errorf("call ollama: %w", err)
+		return nil, fmt.Errorf("call ollama: %w", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
-		return "", fmt.Errorf("ollama returned status %d: %s", resp.StatusCode, string(body))
+		return nil, fmt.Errorf("ollama returned status %d: %s", resp.StatusCode, string(body))
 	}
 
 	// Parse the response.
 	var ollamaResp ollamaResponse
 	if err := json.NewDecoder(resp.Body).Decode(&ollamaResp); err != nil {
-		return "", fmt.Errorf("decode ollama response: %w", err)
+		return nil, fmt.Errorf("decode ollama response: %w", err)
 	}
 
-	// Parse the LLM's JSON output to extract the provider ID.
+	// Parse the LLM's JSON output.
 	var selection SelectionResponse
 	if err := json.Unmarshal([]byte(ollamaResp.Response), &selection); err != nil {
-		return "", fmt.Errorf("parse LLM selection JSON %q: %w", ollamaResp.Response, err)
+		return nil, fmt.Errorf("parse LLM selection JSON %q: %w", ollamaResp.Response, err)
+	}
+
+	// Prefer RankedList; fall back to single ProviderID for backward compat.
+	if len(selection.RankedList) > 0 {
+		var filtered []string
+		for _, id := range selection.RankedList {
+			if _, ok := validIDs[id]; ok {
+				filtered = append(filtered, id)
+			}
+		}
+		if len(filtered) == 0 {
+			return nil, fmt.Errorf("LLM rankedList contains no valid IDs (valid: %v)",
+				validIDsList(validIDs))
+		}
+		return filtered, nil
 	}
 
 	if selection.ProviderID == "" {
-		return "", fmt.Errorf("LLM returned empty providerId in response %q", ollamaResp.Response)
+		return nil, fmt.Errorf("LLM returned empty providerId in response %q", ollamaResp.Response)
 	}
 
 	// Validate the returned ID exists in the input list.
 	if _, ok := validIDs[selection.ProviderID]; !ok {
-		return "", fmt.Errorf("LLM returned unknown providerId %q (valid: %v)",
+		return nil, fmt.Errorf("LLM returned unknown providerId %q (valid: %v)",
 			selection.ProviderID, validIDsList(validIDs))
 	}
 
-	return selection.ProviderID, nil
+	return []string{selection.ProviderID}, nil
 }
 
 // validIDsList returns a sorted list of valid IDs for error messages.
@@ -171,14 +187,15 @@ func validIDsList(ids map[string]struct{}) []string {
 	return out
 }
 
-// DeterministicFallback selects a provider using a deterministic strategy when
-// the AI is unavailable or returns an invalid choice. Priority:
+// DeterministicFallback returns a ranked list of providers using a
+// deterministic strategy when the AI is unavailable or returns an invalid
+// choice. Priority per provider:
 //  1. Lowest cost (if priced)
 //  2. Lowest carbon intensity (if advertised)
 //  3. Most available chunks
 //
-// Returns ("", false) if no provider has available capacity.
-func DeterministicFallback(nodeGroups []brokerapi.NodeGroupView) (string, bool) {
+// Returns (nil, false) if no provider has available capacity.
+func DeterministicFallback(nodeGroups []brokerapi.NodeGroupView) ([]string, bool) {
 	type candidate struct {
 		id        string
 		cost      float64
@@ -210,7 +227,7 @@ func DeterministicFallback(nodeGroups []brokerapi.NodeGroupView) (string, bool) 
 	}
 
 	if len(candidates) == 0 {
-		return "", false
+		return nil, false
 	}
 
 	sort.SliceStable(candidates, func(i, j int) bool {
@@ -233,5 +250,9 @@ func DeterministicFallback(nodeGroups []brokerapi.NodeGroupView) (string, bool) 
 		return ci.available > cj.available
 	})
 
-	return candidates[0].id, true
+	ranked := make([]string, len(candidates))
+	for i, c := range candidates {
+		ranked[i] = c.id
+	}
+	return ranked, true
 }
