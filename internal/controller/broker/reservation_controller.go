@@ -853,7 +853,23 @@ func (r *ReservationReconciler) advancePhase(
 	patched.Status.Phase = next
 	patched.Status.Message = message
 	patched.Status.ObservedGeneration = resv.Generation
-	return r.Status().Update(ctx, patched)
+	if err := r.Status().Update(ctx, patched); err != nil {
+		return err
+	}
+	// Phase transitions are otherwise untimed. Status carries only CreatedAt
+	// and TerminatedAt, and Status.Conditions — which would give a
+	// LastTransitionTime per marker — is declared on the CRD but never
+	// written, so the duration of every intermediate phase
+	// (GeneratingKubeconfig, Peering, Unpeering) is unrecoverable once a run
+	// is over. This line is the only durable record of when the machine
+	// moved, at the millisecond resolution the sub-second broker steps need;
+	// deploy/bench reconstructs the scale-up / scale-down timeline from it.
+	logf.FromContext(ctx).Info("timing",
+		"event", "reservation.phase",
+		"reservation", resv.Name,
+		"from", string(resv.Status.Phase),
+		"to", string(next))
+	return nil
 }
 
 // ensureExpiry guarantees a Reservation has Status.ExpiresAt (and CreatedAt)

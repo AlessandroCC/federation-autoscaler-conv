@@ -1,0 +1,24 @@
+---
+# Defaults for the chrony role. Override in group_vars/all.yaml or with
+# `-e` when the lab has its own time server.
+
+# NTP sources. Every host gets the same list — mutual agreement between the
+# four VMs is what the measurements depend on, not absolute UTC accuracy.
+# On an air-gapped lab, replace this with the site's own server.
+chrony_ntp_sources:
+  - pool.ntp.org
+
+# makestep <threshold> <limit>: step the clock (rather than slewing it
+# slowly) when the offset exceeds <threshold> seconds, for the first <limit>
+# updates after start-up. A fresh VM can be far enough off that slewing would
+# take hours; -1 means "always allowed to step", which is right here because
+# the benchmark is started after this role has settled, never during.
+chrony_makestep: "1.0 -1"
+
+# Debian/Ubuntu name the unit "chrony"; RHEL-family call it "chronyd".
+# k3s_install already assumes an apt-based distro, so this matches.
+chrony_service_name: chrony
+
+# `chronyc tracking` is retried this many times (5 s apart) before the play
+# fails. Two minutes is generous for a first sync over the public pool.
+chrony_sync_retries: 24

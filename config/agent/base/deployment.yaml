@@ -49,6 +49,13 @@ spec:
         - --client-key=/etc/federation-autoscaler/tls/tls.key
         - --broker-ca=/etc/federation-autoscaler/tls/ca.crt
         - --health-probe-bind-address=:8081
+        # Sub-second log timestamps. zap's dev encoder writes whole seconds by
+        # default, which is coarser than the phases being measured — the poll
+        # wait this agent contributes to a scale-up is 0-5 s, and the steps
+        # around `liqoctl peer` are milliseconds. deploy/bench merges these
+        # lines with the broker's to reconstruct the scale-up / scale-down
+        # timeline, so the resolution has to beat the thing being timed.
+        - --zap-time-encoding=rfc3339nano
         # Pin the consumer agent's resources (VirtualNodeState, Liqo
         # ResourceSlice, kubeconfig Secret) to the agent's own namespace
         # rather than the binary default — keeps federation-autoscaler

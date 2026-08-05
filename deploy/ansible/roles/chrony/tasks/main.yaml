@@ -1,0 +1,71 @@
+---
+# Installs and starts chrony on every VM in the inventory, pointing all of
+# them at the same NTP sources.
+#
+# Why this is a deployment concern and not a lab-notes footnote: the four
+# clusters each stamp their own half of every measurement. A scale-up's
+# "detect" phase starts from a Pod timestamp written by the CONSUMER's
+# apiserver and ends at a Reservation timestamp written by the CENTRAL one;
+# "node materialisation" starts on central and ends on consumer. Subtracting
+# two unsynchronised clocks yields a duration that is wrong by the drift
+# between them — commonly seconds on a fresh cloud VM, and occasionally
+# negative, which is how the error usually announces itself.
+#
+# Idempotent: the package install and service enable are both no-ops on a
+# host that already has chrony running.
+
+- name: Install chrony
+  become: true
+  ansible.builtin.package:
+    name: chrony
+    state: present
+
+# Every host is given the SAME source list. Agreeing with each other matters
+# more here than agreeing with UTC: all the durations we measure are
+# differences between two hosts in this inventory.
+- name: Configure chrony sources
+  become: true
+  ansible.builtin.copy:
+    dest: /etc/chrony/chrony.conf
+    mode: '0644'
+    content: |
+      # Managed by federation-autoscaler deploy/ansible/roles/chrony.
+      {% for src in chrony_ntp_sources %}
+      pool {{ src }} iburst
+      {% endfor %}
+      driftfile /var/lib/chrony/chrony.drift
+      makestep {{ chrony_makestep }}
+      rtcsync
+      logdir /var/log/chrony
+  notify: Restart chrony
+
+- name: Ensure chrony is enabled and running
+  become: true
+  ansible.builtin.service:
+    name: "{{ chrony_service_name }}"
+    state: started
+    enabled: true
+
+# Force the handler now rather than at the end of the play: the very next
+# role (k3s_install) starts writing timestamps, and a step correction landing
+# mid-install would smear them.
+- name: Apply any pending chrony restart before the clusters come up
+  ansible.builtin.meta: flush_handlers
+
+# First sync after a restart can take a few seconds. Wait for chrony to admit
+# it has a source before declaring the host usable for measurement.
+- name: Wait for chrony to lock onto a source
+  become: true
+  ansible.builtin.command: chronyc tracking
+  register: chrony_tracking
+  changed_when: false
+  retries: "{{ chrony_sync_retries }}"
+  delay: 5
+  until: chrony_tracking.stdout is search('Leap status.*Normal')
+
+- name: "[{{ cluster_id | default(inventory_hostname) }}] clock synced"
+  ansible.builtin.debug:
+    msg: >-
+      {{ chrony_tracking.stdout_lines
+         | select('search', 'Reference ID|System time|Leap status')
+         | list }}

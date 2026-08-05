@@ -12,6 +12,18 @@
 # it serves two plain HTTP Deployments and never peers, so cert-manager, Liqo,
 # and the federation-autoscaler CRDs are intentionally skipped for it.
 
+# Clocks first, before anything starts producing timestamps. Every
+# cross-cluster duration the benchmark measures (deploy/bench) is the
+# difference between a stamp written by one VM's apiserver and one written by
+# another's, so unsynchronised clocks do not add noise — they add a constant
+# error, sometimes a negative one.
+- name: Synchronise clocks on every host
+  hosts: all
+  gather_facts: true
+  become: true
+  roles:
+    - chrony
+
 - name: Install k3s on every host
   hosts: all
   gather_facts: true
