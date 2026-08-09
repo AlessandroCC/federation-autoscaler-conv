@@ -136,10 +136,18 @@ func NewPeerHandler(cfg PeerConfig) poller.HandlerFunc {
 			"reservationId", in.ReservationID,
 			"provider", in.ProviderClusterID)
 
+		// Step timers. This handler is the single longest stretch of a cold
+		// scale-up (docs/design.md §10 measures it at 40-90 s of a ~107 s
+		// total), and none of its internal structure is visible from the
+		// instruction CR — see logStep in timing.go.
+		handlerStart := time.Now()
+		stepStart := handlerStart
+
 		// 1. Persist the kubeconfig Secret.
 		if err := persistKubeconfig(ctx, cfg.LocalClient, cfg.Namespace, in.ReservationID, in.Kubeconfig); err != nil {
 			return nil, fmt.Errorf("persist kubeconfig: %w", err)
 		}
+		logStep(logger, "peer", "kubeconfig-secret", stepStart)
 
 		// 2. Write the kubeconfig to a temp file and run `liqoctl peer`.
 		kubeconfigPath, cleanup, err := writeKubeconfigToTempFile(in.ReservationID, in.Kubeconfig)
@@ -187,25 +195,32 @@ func NewPeerHandler(cfg PeerConfig) poller.HandlerFunc {
 			"--create-resource-slice=false",
 		}
 		logger.V(1).Info("running liqoctl", "path", cfg.LiqoctlPath, "args", args)
+		stepStart = time.Now()
 		_, stderr, err := cfg.Run(execCtx, cfg.LiqoctlPath, args...)
 		if err != nil {
 			trimmed := strings.TrimSpace(string(stderr))
 			if trimmed == "" {
 				trimmed = "(no stderr)"
 			}
+			// Timed even on failure: a peer that burns the full 10 min exec
+			// timeout is exactly the case a benchmark run needs to see.
+			logStep(logger, "peer", "liqoctl-peer-failed", stepStart)
 			return nil, fmt.Errorf("liqoctl peer failed: %w — stderr: %s", err, trimmed)
 		}
+		logStep(logger, "peer", "liqoctl-peer", stepStart)
 
 		// 3. Create the ResourceSlice claiming this reservation's chunk. This
 		// is the object that actually produces the borrowed node — it lands in
 		// the provider's Liqo tenant namespace and is named rs-<reservationID>,
 		// which becomes the node's name.
+		stepStart = time.Now()
 		sliceName, err := ensureResourceSlice(
 			ctx, cfg.LocalClient, in.ReservationID,
 			in.ProviderLiqoClusterID, in.ResourceSliceResources)
 		if err != nil {
 			return nil, err
 		}
+		logStep(logger, "peer", "resource-slice", stepStart)
 
 		// 4. (NamespaceOffloading is intentionally NOT created here.)
 		// Liqo NamespaceOffloading is a per-K8s-namespace singleton named
@@ -223,9 +238,12 @@ func NewPeerHandler(cfg PeerConfig) poller.HandlerFunc {
 		// gRPC server consumes via /local/virtual-nodes; the
 		// VirtualNodeStateReconciler then projects the Liqo
 		// VirtualNode's status onto it as Liqo materialises the node.
+		stepStart = time.Now()
 		if err := ensureVirtualNodeState(ctx, cfg.LocalClient, cfg.Namespace, sliceName, in); err != nil {
 			return nil, err
 		}
+		logStep(logger, "peer", "virtual-node-state", stepStart)
+		logStep(logger, "peer", "total", handlerStart)
 
 		logger.V(1).Info("peer complete", "resourceSlice", sliceName)
 		return &brokerapi.InstructionResultRequest{

@@ -145,7 +145,7 @@ ansible -i inventory.yaml all -m ping
 
 Every host should reply with `pong`.
 
-## Step 2 — Bootstrap (k3s + cert-manager + Liqo + CRDs)
+## Step 2 — Bootstrap (chrony + k3s + cert-manager + Liqo + CRDs)
 
 ```bash
 ansible-playbook -i inventory.yaml playbooks/01-bootstrap.yaml
@@ -154,6 +154,14 @@ ansible-playbook -i inventory.yaml playbooks/01-bootstrap.yaml
 Takes ~10–15 min on the first run (k3s install + image pulls). When it
 finishes you'll have four kubeconfigs on your laptop at
 `~/.kube/{central,consumer-1,provider-1,provider-2}.yaml`.
+
+The play starts by installing **chrony** on every VM and waiting for each to
+lock onto a time source. The demo itself doesn't care, but every measurement
+does: a scale-up phase typically starts from a timestamp written by one
+cluster's apiserver and ends at one written by another's, so unsynchronised
+clocks don't add noise — they add a constant error. `03-verify` prints each
+host's offset. See `deploy/bench/` for the benchmark harness that depends on
+this.
 
 Sanity check:
 

@@ -113,6 +113,12 @@ func NewUnpeerHandler(cfg UnpeerConfig) poller.HandlerFunc {
 			"reservationId", in.ReservationID,
 			"lastChunk", in.LastChunk)
 
+		// Step timers — see logStep in timing.go. The LastChunk branch below
+		// is what makes one scale-down cost ~1 s and another ~15 s, so the
+		// steps are timed separately rather than as one handler total.
+		handlerStart := time.Now()
+		stepStart := handlerStart
+
 		// 1. Delete the VirtualNodeState CR (idempotent on missing).
 		// The order matters: tearing the VNS first removes the chunk
 		// from the gRPC server's view of the cluster before Liqo
@@ -121,11 +127,14 @@ func NewUnpeerHandler(cfg UnpeerConfig) poller.HandlerFunc {
 		if err := deleteVirtualNodeState(ctx, cfg.LocalClient, cfg.Namespace, in.ReservationID); err != nil {
 			return nil, err
 		}
+		logStep(logger, "unpeer", "virtual-node-state", stepStart)
 
 		// 2. Delete ResourceSlice (idempotent on missing).
+		stepStart = time.Now()
 		if err := deleteResourceSlice(ctx, cfg.LocalClient, in.ReservationID, in.ProviderLiqoClusterID); err != nil {
 			return nil, err
 		}
+		logStep(logger, "unpeer", "resource-slice", stepStart)
 
 		// 3. Stage the kubeconfig and run `liqoctl unpeer` — only when this
 		//    is the LAST reservation to this provider, and only if the
@@ -157,7 +166,9 @@ func NewUnpeerHandler(cfg UnpeerConfig) poller.HandlerFunc {
 			defer cancelExec()
 			args := []string{"unpeer", "--remote-kubeconfig", kubeconfigPath}
 			logger.V(1).Info("running liqoctl", "path", cfg.LiqoctlPath, "args", args)
+			stepStart = time.Now()
 			_, stderr, err := cfg.Run(execCtx, cfg.LiqoctlPath, args...)
+			logStep(logger, "unpeer", "liqoctl-unpeer", stepStart)
 			if err != nil {
 				trimmed := strings.TrimSpace(string(stderr))
 				// "not peered" / "already unpeered" stderr is treated
@@ -196,6 +207,7 @@ func NewUnpeerHandler(cfg UnpeerConfig) poller.HandlerFunc {
 			}
 			logger.V(1).Info("deleted ForeignCluster shell", "foreignCluster", in.ProviderLiqoClusterID)
 		}
+		logStep(logger, "unpeer", "total", handlerStart)
 
 		return &brokerapi.InstructionResultRequest{
 			Status: brokerapi.ResultStatusSucceeded,

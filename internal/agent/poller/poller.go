@@ -177,6 +177,17 @@ func (p *Poller) dispatch(ctx context.Context, in *brokerapi.InstructionView) {
 
 	logger := p.log.WithValues("instructionId", in.ID, "kind", in.Kind, "reservationId", in.ReservationID)
 
+	// Timing pair (received / handled). The broker stamps
+	// Status.LastDeliveredAt when it hands an instruction out and
+	// Status.LastUpdateTime when the result lands, which already bounds the
+	// handler — but both are metav1.Time, i.e. whole seconds. These two lines
+	// carry the agent's millisecond clock, so deploy/bench can separate the
+	// poll wait from the handler run at the resolution the fast phases need.
+	// "received" is emitted for every kind, including ones with no handler, so
+	// a misconfigured agent still shows up on the timeline.
+	dispatchStart := time.Now()
+	logger.Info("timing", "event", "instruction.received")
+
 	handler, ok := p.registry.Lookup(in.Kind)
 	if !ok {
 		logger.Info("no handler registered for instruction kind")
@@ -207,6 +218,11 @@ func (p *Poller) dispatch(ctx context.Context, in *brokerapi.InstructionView) {
 		// the same envelope.
 		result = &brokerapi.InstructionResultRequest{Status: brokerapi.ResultStatusSucceeded}
 	}
+
+	logger.Info("timing",
+		"event", "instruction.handled",
+		"status", string(result.Status),
+		"elapsedMs", time.Since(dispatchStart).Milliseconds())
 
 	p.postResult(ctx, in.ID, result, logger)
 }

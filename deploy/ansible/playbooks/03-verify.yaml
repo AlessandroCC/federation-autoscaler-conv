@@ -18,6 +18,33 @@
         name: k3s_install
         tasks_from: fetch_kubeconfig
 
+# Clock drift is checked before the functional assertions because it
+# invalidates measurements silently — the demo works perfectly with skewed
+# clocks, and only the benchmark numbers come out wrong. Warn rather than
+# fail: a skewed federation is still a working federation.
+- name: Report clock offset on every host
+  hosts: all
+  gather_facts: false
+  become: true
+  tasks:
+
+    - name: "[{{ cluster_id | default(inventory_hostname) }}] read chrony offset"
+      ansible.builtin.shell:
+        cmd: |
+          set -o pipefail
+          chronyc tracking | awk -F':' '/System time/ {print $2}'
+        executable: /bin/bash
+      register: chrony_offset
+      changed_when: false
+      failed_when: false
+
+    - name: "[{{ cluster_id | default(inventory_hostname) }}] clock offset"
+      ansible.builtin.debug:
+        msg: >-
+          {{ cluster_id | default(inventory_hostname) }} system time {{ chrony_offset.stdout | default('unknown') | trim }}
+          {{ '— WARNING: chrony not reachable; cross-cluster timings will be unreliable'
+             if chrony_offset.rc | default(1) != 0 else '' }}
+
 - name: Verify federation health
   hosts: central
   gather_facts: false

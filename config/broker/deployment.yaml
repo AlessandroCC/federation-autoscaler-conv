@@ -67,6 +67,13 @@ spec:
         # reachable live view of broker state. Exposed via NodePort in the
         # Ansible deploy. Set to "" (empty) to disable it.
         - --dashboard-bind-address=:9444
+        # Sub-second log timestamps. The phase machine's transitions are the
+        # backbone of any scale-up / scale-down measurement (Status carries
+        # only createdAt / terminatedAt, and Conditions is never written), and
+        # zap's dev encoder writes whole seconds by default — coarser than the
+        # transitions themselves, which are milliseconds apart. See
+        # deploy/bench.
+        - --zap-time-encoding=rfc3339nano
         env:
         - name: POD_NAMESPACE
           valueFrom:
