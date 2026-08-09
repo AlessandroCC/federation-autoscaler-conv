@@ -98,6 +98,8 @@ func main() {
 		mockEcoURL      string
 		mockGeoURL      string
 		probeUDPPort    int
+		ollamaURL       string
+		ollamaModel     string
 	)
 
 	flag.StringVar(&role, "role", "",
@@ -163,6 +165,14 @@ func main() {
 			"exposed on; the provider advertises <nodeIP>:<port> as its measured-"+
 			"latency probe endpoint. Must match the agent-probe Service's nodePort. "+
 			"0 ⇒ advertise no probe endpoint (latency falls back to distance).")
+	flag.StringVar(&ollamaURL, "ollama-url", "",
+		"(consumer role only) Base URL of a local Ollama instance, e.g. "+
+			"http://localhost:11434. When set alongside a ConsumerPolicy with placement "+
+			"type ConsumerChoice, provider selection is delegated to the LLM. "+
+			"Empty ⇒ ConsumerChoice falls back to a deterministic strategy.")
+	flag.StringVar(&ollamaModel, "ollama-model", "llama3.2",
+		"(consumer role only) Ollama model name for ConsumerChoice selection. "+
+			"Ignored when --ollama-url is empty.")
 
 	opts := zap.Options{Development: true}
 	opts.BindFlags(flag.CommandLine)
@@ -277,6 +287,8 @@ func main() {
 			LiqoClusterID: liqoClusterID,
 			LocalAPIAddr:  localAPIAddr,
 			ConsoleAddr:   consoleAddr,
+			OllamaURL:     ollamaURL,
+			OllamaModel:   ollamaModel,
 			Namespace:     namespace,
 			NodeName:      nodeName,
 			AdvertisedIP:  advertisedIP,

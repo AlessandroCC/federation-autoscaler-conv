@@ -20,9 +20,16 @@ import (
 	"math"
 	"testing"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
 	autoscalingv1alpha1 "github.com/netgroup-polito/federation-autoscaler/api/autoscaling/v1alpha1"
 	brokerv1alpha1 "github.com/netgroup-polito/federation-autoscaler/api/broker/v1alpha1"
 )
+
+func withRandomPolicy(s *Server) {
+	s.consumers.Touch(consumerCluster, "liqo-c",
+		autoscalingv1alpha1.PlacementPolicy{Type: autoscalingv1alpha1.PlacementStrategyRandom}, "", "", nil, nil)
+}
 
 // Representative coordinates reused across the latency cases, ordered by distance
 // from the Montreal consumer: Montreal(0) < San Jose < London < Sydney.
@@ -404,6 +411,100 @@ func TestNodeGroupsEcoForecast(t *testing.T) {
 		hr := headroomByProvider(callNodeGroups(t, s))
 		if hr["p-green"] != 3 || hr["p-dirty"] != 0 {
 			t.Errorf("single-value fallback must still rank greenest first; got %+v", hr)
+		}
+	})
+}
+
+// TestNodeGroupsRandomPreference covers the Random placement policy: the Broker
+// picks a random provider with capacity, masking the rest.
+func TestNodeGroupsRandomPreference(t *testing.T) {
+	t.Run("chosen is one of the providers with capacity", func(t *testing.T) {
+		// p-full is exhausted; p-a and p-b have capacity. Random must pick
+		// exactly one of them.
+		s := newDashboardTestServer(t,
+			stdAdv("p-full", stdAdvChunks, nil), // full
+			stdAdv("p-a", 0, nil),
+			stdAdv("p-b", 0, nil))
+		withRandomPolicy(s)
+
+		// Run multiple times to exercise randomness; every iteration must
+		// choose exactly one growable provider from {p-a, p-b}.
+		for range 20 {
+			hr := headroomByProvider(callNodeGroups(t, s))
+			if hr["p-full"] != 0 {
+				t.Fatalf("full provider must stay masked; got %+v", hr)
+			}
+			growable := 0
+			for _, p := range []string{"p-a", "p-b"} {
+				if hr[p] > 0 {
+					growable++
+				}
+			}
+			if growable != 1 {
+				t.Fatalf("exactly one provider must be growable; got %+v", hr)
+			}
+		}
+	})
+
+	t.Run("in-flight gate holds when all are full", func(t *testing.T) {
+		// Both providers full, p-a has an in-flight reservation → the gate
+		// must hold CA (no growable providers) rather than exposing nothing
+		// and letting CA give up. This mirrors the metric policies' gate.
+		peering := &brokerv1alpha1.Reservation{
+			ObjectMeta: metav1.ObjectMeta{Name: "r-inflight-rand", Namespace: dashboardTestNS},
+			Spec: brokerv1alpha1.ReservationSpec{
+				ConsumerClusterID: consumerCluster,
+				ProviderClusterID: "p-a",
+				ChunkCount:        1,
+				ChunkType:         brokerv1alpha1.ChunkTypeStandard,
+			},
+			Status: brokerv1alpha1.ReservationStatus{Phase: brokerv1alpha1.ReservationPhasePeering},
+		}
+		s := newDashboardTestServer(t,
+			stdAdv("p-a", stdAdvChunks, nil), // full
+			stdAdv("p-b", stdAdvChunks, nil), // full
+			peering)
+		withRandomPolicy(s)
+
+		hr := headroomByProvider(callNodeGroups(t, s))
+		if hr["p-a"] != 0 || hr["p-b"] != 0 {
+			t.Errorf("in-flight gate must mask everything; got %+v", hr)
+		}
+	})
+
+	t.Run("with-capacity provider grows even when another is in-flight", func(t *testing.T) {
+		// p-a is full with an in-flight reservation, but p-b has capacity.
+		// Random should pick p-b — unlike metric policies, Random has no
+		// "best" provider ordering so the in-flight gate doesn't block.
+		peering := &brokerv1alpha1.Reservation{
+			ObjectMeta: metav1.ObjectMeta{Name: "r-inflight-rand2", Namespace: dashboardTestNS},
+			Spec: brokerv1alpha1.ReservationSpec{
+				ConsumerClusterID: consumerCluster,
+				ProviderClusterID: "p-a",
+				ChunkCount:        1,
+				ChunkType:         brokerv1alpha1.ChunkTypeStandard,
+			},
+			Status: brokerv1alpha1.ReservationStatus{Phase: brokerv1alpha1.ReservationPhasePeering},
+		}
+		s := newDashboardTestServer(t,
+			stdAdv("p-a", stdAdvChunks, nil), // full
+			stdAdv("p-b", 0, nil),            // has capacity
+			peering)
+		withRandomPolicy(s)
+
+		hr := headroomByProvider(callNodeGroups(t, s))
+		if hr["p-b"] == 0 {
+			t.Errorf("provider with capacity must be growable; got %+v", hr)
+		}
+	})
+
+	t.Run("no metric is set", func(t *testing.T) {
+		s := newDashboardTestServer(t, stdAdv("p-a", 0, nil), stdAdv("p-b", 0, nil))
+		withRandomPolicy(s)
+		for _, v := range callNodeGroups(t, s).NodeGroups {
+			if v.HasMetric {
+				t.Errorf("Random must expose no placement metric; %s has %v", v.ProviderClusterID, v.PlacementMetric)
+			}
 		}
 	})
 }
