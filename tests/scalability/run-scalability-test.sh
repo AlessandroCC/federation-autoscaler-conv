@@ -173,14 +173,24 @@ fi
 mkdir -p "$OUTPUT_DIR"
 
 BROKER_LOG="$OUTPUT_DIR/broker.log"
-HEALTH_PORT=8081
+HEALTH_PORT=8083
 
 # Kill any leftover Broker from a previous run
 for port in "$BROKER_PORT" "$HEALTH_PORT"; do
-  if pid=$(netstat -ano 2>/dev/null | grep "LISTENING" | grep ":${port} " | awk '{print $NF}' | head -1) && [[ -n "$pid" ]]; then
-    warn "Port $port already in use by PID $pid — killing it"
-    taskkill //F //PID "$pid" >/dev/null 2>&1 || kill "$pid" 2>/dev/null || true
-    sleep 1
+  if [[ "$(uname -s)" == MINGW* || "$(uname -s)" == MSYS* ]]; then
+    pid=$(netstat -ano 2>/dev/null | grep "LISTENING" | grep ":${port} " | awk '{print $NF}' | head -1) || true
+    if [[ -n "$pid" ]]; then
+      warn "Port $port already in use by PID $pid — killing it"
+      taskkill //F //PID "$pid" >/dev/null 2>&1 || true
+      sleep 1
+    fi
+  else
+    pid=$(ss -tlnp 2>/dev/null | grep ":${port} " | sed -n 's/.*pid=\([0-9]*\).*/\1/p' | head -1) || true
+    if [[ -n "$pid" ]]; then
+      warn "Port $port already in use by PID $pid — killing it"
+      kill "$pid" 2>/dev/null || true
+      sleep 1
+    fi
   fi
 done
 
@@ -191,7 +201,7 @@ step "Starting Broker on :${BROKER_PORT}..."
   --api-tls-key-file="$CERTS_DIR/server.key" \
   --api-client-ca-file="$CERTS_DIR/ca.crt" \
   --namespace="$BROKER_NAMESPACE" \
-  --health-probe-bind-address=":8081" \
+  --health-probe-bind-address=":${HEALTH_PORT}" \
   --metrics-bind-address="0" \
   --dashboard-bind-address="" \
   --reservation-timeout="2m" \
@@ -212,7 +222,7 @@ for i in $(seq 1 "$MAX_WAIT"); do
     tail -20 "$BROKER_LOG"
     die "Broker failed to start"
   fi
-  if curl -sf http://localhost:8081/readyz >/dev/null 2>&1; then
+  if curl -sf http://localhost:${HEALTH_PORT}/readyz >/dev/null 2>&1; then
     _green "    Broker ready after ${i}s (PID $BROKER_PID)"
     break
   fi
