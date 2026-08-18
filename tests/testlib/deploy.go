@@ -1,0 +1,531 @@
+/*
+Copyright 2026 Politecnico di Torino - NetGroup.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+package testlib
+
+import (
+	"context"
+	"fmt"
+	"log"
+	"net/http"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"time"
+)
+
+// DeployOpts holds everything needed to deploy the full topology.
+type DeployOpts struct {
+	RepoRoot       string
+	RunID          string
+	Specs          []ClusterSpec
+	KubeconfigDir  string
+	CADir          string // temp dir for PKI material
+	NumConsumers   int
+	NumProviders   int
+	ProviderRegions []string
+	ImgPrefix      string
+	ImgTag         string
+	LiqoProvider   string // "kind", "k3s", "kubeadm"
+}
+
+// DeployAll deploys the full federation topology onto the Kind clusters.
+func DeployAll(ctx context.Context, opts DeployOpts) error {
+	standaloneDir := filepath.Join(opts.RepoRoot, "deploy", "standalone")
+
+	centralSpec := opts.Specs[0]
+	centralContainerName := centralSpec.Name + "-control-plane"
+	centralIP, err := ContainerIP(ctx, centralContainerName)
+	if err != nil {
+		return fmt.Errorf("get central IP: %w", err)
+	}
+	log.Printf("[deploy] central cluster IP: %s", centralIP)
+
+	// --- Deploy broker on central ---
+	if err := deployCentral(ctx, standaloneDir, centralSpec, centralIP, opts); err != nil {
+		return fmt.Errorf("deploy central: %w", err)
+	}
+
+	// --- Deploy mocks on central ---
+	if err := deployMocks(ctx, standaloneDir, centralSpec, opts); err != nil {
+		return fmt.Errorf("deploy mocks: %w", err)
+	}
+
+	// Replace static mocks with controllable versions for tests.
+	if err := deployControllableMockEco(ctx, opts.RepoRoot, centralSpec, centralIP); err != nil {
+		return fmt.Errorf("deploy controllable mock-eco: %w", err)
+	}
+	if err := deployControllableMockGeo(ctx, opts.RepoRoot, centralSpec, centralIP); err != nil {
+		return fmt.Errorf("deploy controllable mock-geo: %w", err)
+	}
+
+	mockEcoURL := fmt.Sprintf("http://%s:30081", centralIP)
+	mockGeoURL := fmt.Sprintf("http://%s:30080", centralIP)
+
+	// --- Register geo overrides BEFORE deploying agents ---
+	// Kind clusters are already created, so Docker bridge IPs are known. Register
+	// them now so agents get correct regions on their very first geo lookup.
+	if err := registerGeoOverrides(ctx, mockGeoURL, opts); err != nil {
+		return fmt.Errorf("register geo overrides: %w", err)
+	}
+
+	// --- Mint join bundles for all consumers and providers ---
+	bundleDir := filepath.Join(opts.CADir, "bundles")
+	if err := os.MkdirAll(bundleDir, 0o700); err != nil {
+		return fmt.Errorf("create bundle dir: %w", err)
+	}
+
+	clusterIDs := allClusterIDs(opts)
+	for _, cid := range clusterIDs {
+		if err := mintJoinBundle(ctx, standaloneDir, opts.CADir, cid, bundleDir); err != nil {
+			return fmt.Errorf("mint bundle for %s: %w", cid, err)
+		}
+	}
+
+	// --- Deploy consumers ---
+	for i := 0; i < opts.NumConsumers; i++ {
+		spec := opts.Specs[1+i]
+		cid := fmt.Sprintf("consumer-%d", i+1)
+		bundlePath := filepath.Join(bundleDir, cid+"-bundle.tgz")
+		containerName := spec.Name + "-control-plane"
+		consumerIP, err := ContainerIP(ctx, containerName)
+		if err != nil {
+			return fmt.Errorf("get consumer-%d IP: %w", i+1, err)
+		}
+		if err := deployConsumer(ctx, standaloneDir, spec, cid, bundlePath, consumerIP, mockGeoURL, opts); err != nil {
+			return fmt.Errorf("deploy consumer-%d: %w", i+1, err)
+		}
+	}
+
+	// --- Deploy providers ---
+	for i := 0; i < opts.NumProviders; i++ {
+		spec := opts.Specs[1+opts.NumConsumers+i]
+		cid := fmt.Sprintf("provider-%d", i+1)
+		bundlePath := filepath.Join(bundleDir, cid+"-bundle.tgz")
+		if err := deployProvider(ctx, standaloneDir, spec, cid, bundlePath, mockEcoURL, mockGeoURL, opts); err != nil {
+			return fmt.Errorf("deploy provider-%d: %w", i+1, err)
+		}
+	}
+
+	return nil
+}
+
+func allClusterIDs(opts DeployOpts) []string {
+	ids := make([]string, 0, opts.NumConsumers+opts.NumProviders)
+	for i := 1; i <= opts.NumConsumers; i++ {
+		ids = append(ids, fmt.Sprintf("consumer-%d", i))
+	}
+	for i := 1; i <= opts.NumProviders; i++ {
+		ids = append(ids, fmt.Sprintf("provider-%d", i))
+	}
+	return ids
+}
+
+func deployCentral(ctx context.Context, standaloneDir string, spec ClusterSpec, centralIP string, opts DeployOpts) error {
+	log.Printf("[deploy] deploying broker on %s", spec.Name)
+	scriptPath := filepath.Join(standaloneDir, "central-up.sh")
+	args := []string{
+		scriptPath,
+		"--public-endpoint", centralIP,
+		"--kubeconfig", spec.Kubeconfig,
+		"--ca-dir", opts.CADir,
+		"--registry", opts.ImgPrefix,
+		"--tag", opts.ImgTag,
+	}
+	return runScript(ctx, "bash", args...)
+}
+
+func deployMocks(ctx context.Context, standaloneDir string, spec ClusterSpec, opts DeployOpts) error {
+	log.Printf("[deploy] deploying mock-eco + mock-geo on %s", spec.Name)
+	scriptPath := filepath.Join(standaloneDir, "mock-up.sh")
+	args := []string{
+		scriptPath,
+		"--kubeconfig", spec.Kubeconfig,
+		"--registry", opts.ImgPrefix,
+		"--tag", opts.ImgTag,
+	}
+	return runScript(ctx, "bash", args...)
+}
+
+func mintJoinBundle(ctx context.Context, standaloneDir, caDir, clusterID, bundleDir string) error {
+	log.Printf("[deploy] minting join bundle for %s", clusterID)
+	scriptPath := filepath.Join(standaloneDir, "central-up.sh")
+	outPath := filepath.Join(bundleDir, clusterID+"-bundle.tgz")
+	args := []string{
+		scriptPath,
+		"join",
+		"--cluster-id", clusterID,
+		"--ca-dir", caDir,
+		"--out", outPath,
+	}
+	return runScript(ctx, "bash", args...)
+}
+
+func deployConsumer(ctx context.Context, standaloneDir string, spec ClusterSpec, clusterID, bundlePath, consumerIP, mockGeoURL string, opts DeployOpts) error {
+	log.Printf("[deploy] deploying consumer %s on %s", clusterID, spec.Name)
+	scriptPath := filepath.Join(standaloneDir, "consumer-up.sh")
+	args := []string{
+		scriptPath,
+		"--bundle", bundlePath,
+		"--cluster-id", clusterID,
+		"--kubeconfig", spec.Kubeconfig,
+		"--registry", opts.ImgPrefix,
+		"--tag", opts.ImgTag,
+		"--public-endpoint", consumerIP,
+		"--mock-geo-url", mockGeoURL,
+		"--liqo-provider", opts.LiqoProvider,
+		"--skip-liqo-dashboard",
+		"--scale-down-unneeded-time", "1m",
+	}
+	if opts.LiqoProvider != "kind" {
+		args = append(args, "--pod-cidr", spec.PodCIDR, "--service-cidr", spec.SvcCIDR)
+	}
+	return runScript(ctx, "bash", args...)
+}
+
+func deployProvider(ctx context.Context, standaloneDir string, spec ClusterSpec, clusterID, bundlePath, mockEcoURL, mockGeoURL string, opts DeployOpts) error {
+	log.Printf("[deploy] deploying provider %s on %s", clusterID, spec.Name)
+	scriptPath := filepath.Join(standaloneDir, "provider-up.sh")
+	args := []string{
+		scriptPath,
+		"--bundle", bundlePath,
+		"--cluster-id", clusterID,
+		"--kubeconfig", spec.Kubeconfig,
+		"--registry", opts.ImgPrefix,
+		"--tag", opts.ImgTag,
+		"--mock-eco-url", mockEcoURL,
+		"--mock-geo-url", mockGeoURL,
+		"--liqo-provider", opts.LiqoProvider,
+	}
+	if opts.LiqoProvider != "kind" {
+		args = append(args, "--pod-cidr", spec.PodCIDR, "--service-cidr", spec.SvcCIDR)
+	}
+	return runScript(ctx, "bash", args...)
+}
+
+func runScript(ctx context.Context, name string, args ...string) error {
+	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("run %s %s: %w", name, strings.Join(args[:1], " "), err)
+	}
+	return nil
+}
+
+// WaitForReadiness polls the federation topology until all components are ready.
+func WaitForReadiness(ctx context.Context, brokerURL, serverName string, consoleURLs []string, expectedProviders []string, id Identity, caFile string, timeout time.Duration) (*ExperimentClients, error) {
+	log.Println("[readiness] waiting for all components to come online...")
+	deadline := time.Now().Add(timeout)
+	ticker := time.NewTicker(10 * time.Second)
+	defer ticker.Stop()
+
+	var lastErr error
+	for {
+		if time.Now().After(deadline) {
+			return nil, fmt.Errorf("readiness timeout (%s): last error: %v", timeout, lastErr)
+		}
+
+		clients, err := tryBuildClients(ctx, brokerURL, serverName, consoleURLs, expectedProviders, id, caFile)
+		if err == nil {
+			log.Println("[readiness] all components online")
+			return clients, nil
+		}
+		lastErr = err
+		log.Printf("[readiness] not ready yet: %v", err)
+
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-ticker.C:
+		}
+	}
+}
+
+func tryBuildClients(ctx context.Context, brokerURL, serverName string, consoleURLs []string, expectedProviders []string, id Identity, caFile string) (*ExperimentClients, error) {
+	broker, err := NewBrokerClientFromIdentity(brokerURL, serverName, id, caFile)
+	if err != nil {
+		return nil, fmt.Errorf("build broker client: %w", err)
+	}
+
+	if err := broker.CheckReachable(ctx); err != nil {
+		return nil, fmt.Errorf("broker not reachable: %w", err)
+	}
+
+	ngResp, err := broker.GetNodeGroups(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("get nodegroups: %w", err)
+	}
+
+	advertisingIDs := UniqueProviderIDs(ngResp.NodeGroups)
+	advertisingSet := make(map[string]bool, len(advertisingIDs))
+	for _, pid := range advertisingIDs {
+		advertisingSet[pid] = true
+	}
+	for _, prov := range expectedProviders {
+		if !advertisingSet[prov] {
+			return nil, fmt.Errorf("provider %q not yet advertising (have: %v)", prov, advertisingIDs)
+		}
+	}
+
+	certFP, _ := id.CertFingerprint()
+	consoles := make(map[string]*ConsoleClient, len(consoleURLs))
+	for i, url := range consoleURLs {
+		cid := fmt.Sprintf("consumer-%d", i+1)
+		cc := NewConsoleClient(url)
+		if _, err := cc.getState(ctx); err != nil {
+			return nil, fmt.Errorf("consumer %s console not ready at %s: %w", cid, url, err)
+		}
+		consoles[cid] = cc
+	}
+
+	return &ExperimentClients{
+		Identity:   id,
+		CertFP:     certFP,
+		Broker:     broker,
+		Consoles:   consoles,
+		InitialNGs: ngResp,
+	}, nil
+}
+
+// deployControllableMockEco builds the controllable mock-eco image, loads it
+// into the central Kind cluster, and patches the mock-eco Deployment to use it.
+func deployControllableMockEco(ctx context.Context, repoRoot string, centralSpec ClusterSpec, centralIP string) error {
+	imgName := "federation-autoscaler/mock-eco-test:latest"
+
+	log.Println("[deploy] building controllable mock-eco image")
+	cmd := exec.CommandContext(ctx, "docker", "build",
+		"-t", imgName,
+		"-f", filepath.Join(repoRoot, "tests", "mock-eco-test", "Dockerfile"),
+		repoRoot,
+	)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("build mock-eco-test image: %w", err)
+	}
+
+	log.Println("[deploy] loading controllable mock-eco into central cluster")
+	if err := KindLoadImages(ctx, centralSpec.Name, []string{imgName}); err != nil {
+		return fmt.Errorf("load mock-eco-test image: %w", err)
+	}
+
+	log.Println("[deploy] patching mock-eco Deployment to use controllable version")
+	patchJSON := fmt.Sprintf(`{"spec":{"template":{"spec":{"containers":[{"name":"mock-eco","image":"%s","args":["--port=8081"]}]}}}}`, imgName)
+	cmd = exec.CommandContext(ctx, "kubectl",
+		"--kubeconfig", centralSpec.Kubeconfig,
+		"-n", "federation-autoscaler-system",
+		"patch", "deploy/mock-eco",
+		"--type=strategic",
+		"-p", patchJSON,
+	)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("patch mock-eco deployment: %w", err)
+	}
+
+	log.Println("[deploy] waiting for mock-eco rollout")
+	cmd = exec.CommandContext(ctx, "kubectl",
+		"--kubeconfig", centralSpec.Kubeconfig,
+		"-n", "federation-autoscaler-system",
+		"rollout", "status", "deploy/mock-eco",
+		"--timeout=120s",
+	)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
+}
+
+// regionLocation maps region codes to the coordinates mock-geo would return.
+// Used by registerGeoOverrides to tell the controllable mock-geo what location
+// to return for each cluster's Docker bridge IP.
+type regionLoc struct {
+	City string
+	Lat  float64
+	Lon  float64
+}
+
+var regionLocation = map[string]regionLoc{
+	"QC":  {"Montreal", 45.6085, -73.5493},
+	"CA":  {"San Jose", 37.3382, -121.8863},
+	"NSW": {"Sydney", -33.8688, 151.2093},
+	"IDF": {"Paris", 48.8566, 2.3522},
+	"ENG": {"London", 51.5074, -0.1278},
+	"13":  {"Tokyo", 35.6895, 139.6917},
+	"HE":  {"Frankfurt", 50.1109, 8.6821},
+	"SP":  {"Sao Paulo", -23.5505, -46.6333},
+	"MH":  {"Mumbai", 19.0760, 72.8777},
+	"AB":  {"Stockholm", 59.3293, 18.0686},
+	"LOM": {"Milan", 45.4642, 9.1900},
+	"SG":  {"Singapore", 1.3521, 103.8198},
+}
+
+// registerGeoOverrides calls the controllable mock-geo admin API to map each
+// cluster's real Docker bridge IP to its configured region. This lets agents
+// keep their real (routable) IPs for probe endpoints while mock-geo returns
+// the correct region for geo discovery.
+func registerGeoOverrides(ctx context.Context, mockGeoURL string, opts DeployOpts) error {
+	if len(opts.ProviderRegions) == 0 {
+		return nil
+	}
+
+	httpClient := &http.Client{Timeout: 5 * time.Second}
+
+	// Register each provider's node IPs. Kind clusters with a worker node have
+	// two Docker containers (control-plane + worker) with different IPs. The
+	// agent can be scheduled on either, so register both.
+	for i := 0; i < opts.NumProviders; i++ {
+		region := ""
+		if i < len(opts.ProviderRegions) {
+			region = opts.ProviderRegions[i]
+		}
+		if region == "" {
+			continue
+		}
+		loc, ok := regionLocation[region]
+		if !ok {
+			return fmt.Errorf("provider-%d: unknown region %q", i+1, region)
+		}
+
+		spec := opts.Specs[1+opts.NumConsumers+i]
+		for _, suffix := range nodeContainerSuffixes(spec) {
+			containerName := spec.Name + suffix
+			ip, err := ContainerIP(ctx, containerName)
+			if err != nil {
+				log.Printf("[deploy] mock-geo: skip %s (no IP): %v", containerName, err)
+				continue
+			}
+			if err := postGeoOverride(ctx, httpClient, mockGeoURL, ip, region, loc); err != nil {
+				return fmt.Errorf("register geo for %s (%s): %w", containerName, ip, err)
+			}
+			log.Printf("[deploy] mock-geo: %s (%s) → %s (%s)", ip, containerName, region, loc.City)
+		}
+	}
+
+	// Register each consumer's node IPs (needed for latency distance calculation).
+	for i := 0; i < opts.NumConsumers; i++ {
+		spec := opts.Specs[1+i]
+		region := opts.ProviderRegions[0]
+		loc := regionLocation[region]
+		for _, suffix := range nodeContainerSuffixes(spec) {
+			containerName := spec.Name + suffix
+			ip, err := ContainerIP(ctx, containerName)
+			if err != nil {
+				log.Printf("[deploy] mock-geo: skip %s (no IP): %v", containerName, err)
+				continue
+			}
+			if err := postGeoOverride(ctx, httpClient, mockGeoURL, ip, region, loc); err != nil {
+				return fmt.Errorf("register geo for %s (%s): %w", containerName, ip, err)
+			}
+			log.Printf("[deploy] mock-geo: %s (%s, consumer-%d) → %s (%s)", ip, containerName, i+1, region, loc.City)
+		}
+	}
+
+	return nil
+}
+
+// nodeContainerSuffixes returns the Docker container name suffixes for a Kind
+// cluster. A cluster with a worker has two containers; without, just one.
+func nodeContainerSuffixes(spec ClusterSpec) []string {
+	if spec.HasWorker {
+		return []string{"-control-plane", "-worker"}
+	}
+	return []string{"-control-plane"}
+}
+
+func postGeoOverride(ctx context.Context, client *http.Client, mockGeoURL, ip, region string, loc regionLoc) error {
+	body := fmt.Sprintf(`{"ip":"%s","region":"%s","city":"%s","lat":%f,"lon":%f}`,
+		ip, region, loc.City, loc.Lat, loc.Lon)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		mockGeoURL+"/admin/geo", strings.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("admin/geo returned %d", resp.StatusCode)
+	}
+	return nil
+}
+
+// deployControllableMockGeo builds the controllable mock-geo image, loads it
+// into the central Kind cluster, and patches the mock-geo Deployment to use it.
+func deployControllableMockGeo(ctx context.Context, repoRoot string, centralSpec ClusterSpec, centralIP string) error {
+	imgName := "federation-autoscaler/mock-geo-test:latest"
+
+	log.Println("[deploy] building controllable mock-geo image")
+	cmd := exec.CommandContext(ctx, "docker", "build",
+		"-t", imgName,
+		"-f", filepath.Join(repoRoot, "tests", "mock-geo-test", "Dockerfile"),
+		repoRoot,
+	)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("build mock-geo-test image: %w", err)
+	}
+
+	log.Println("[deploy] loading controllable mock-geo into central cluster")
+	if err := KindLoadImages(ctx, centralSpec.Name, []string{imgName}); err != nil {
+		return fmt.Errorf("load mock-geo-test image: %w", err)
+	}
+
+	log.Println("[deploy] patching mock-geo Deployment to use controllable version")
+	patchJSON := fmt.Sprintf(`{"spec":{"template":{"spec":{"containers":[{"name":"mock-geo","image":"%s","args":["--port=8080"]}]}}}}`, imgName)
+	cmd = exec.CommandContext(ctx, "kubectl",
+		"--kubeconfig", centralSpec.Kubeconfig,
+		"-n", "federation-autoscaler-system",
+		"patch", "deploy/mock-geo",
+		"--type=strategic",
+		"-p", patchJSON,
+	)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("patch mock-geo deployment: %w", err)
+	}
+
+	log.Println("[deploy] waiting for mock-geo rollout")
+	cmd = exec.CommandContext(ctx, "kubectl",
+		"--kubeconfig", centralSpec.Kubeconfig,
+		"-n", "federation-autoscaler-system",
+		"rollout", "status", "deploy/mock-geo",
+		"--timeout=120s",
+	)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
+}
+
+// ScaleClusterAutoscaler scales the cluster-autoscaler deployment to the given replicas.
+func ScaleClusterAutoscaler(ctx context.Context, kubeconfig string, replicas int) error {
+	cmd := exec.CommandContext(ctx, "kubectl",
+		"--kubeconfig", kubeconfig,
+		"-n", "federation-autoscaler-system",
+		"scale", "deploy/cluster-autoscaler",
+		fmt.Sprintf("--replicas=%d", replicas),
+	)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
+}

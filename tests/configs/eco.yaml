@@ -1,0 +1,28 @@
+consumers: 2
+providers: 4
+
+providerRegions:
+  - QC      # Quebec — will be the "green" region
+  - LOM     # Lombardy
+  - CA      # California
+  - IDF     # Île-de-France
+
+experiment:
+  mode: observe
+  iterations: 10
+  phasePause: 30s
+  policyPropagationWait: 20s
+  advertisementLag: 20s
+
+  greenRegion: QC
+  greenCarbon: 10
+  otherCarbon: 800
+
+infra:
+  readinessTimeout: 10m
+  liqoProvider: kind
+
+cleanup: true
+
+output:
+  dir: results

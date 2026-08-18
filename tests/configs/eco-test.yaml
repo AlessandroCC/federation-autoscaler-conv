@@ -1,0 +1,26 @@
+consumers: 1
+providers: 2
+
+providerRegions:
+  - QC
+  - LOM
+
+experiment:
+  mode: observe
+  iterations: 3
+  phasePause: 15s
+  policyPropagationWait: 15s
+  advertisementLag: 15s
+
+  greenRegion: QC
+  greenCarbon: 10
+  otherCarbon: 800
+
+infra:
+  readinessTimeout: 10m
+  liqoProvider: kind
+
+cleanup: true
+
+output:
+  dir: results

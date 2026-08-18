@@ -1,0 +1,66 @@
+# Comparative test experiment configuration.
+# Copy this file, fill in your cluster IPs and cert paths, then run:
+#   go run ./tests/comparative-eco/  --config experiment.yaml
+#   go run ./tests/comparative-latency/ --config experiment.yaml
+
+broker:
+  url: https://10.0.0.1:30443                          # Broker mTLS API (NodePort 30443)
+  serverName: broker.federation-autoscaler-system.svc   # TLS ServerName (needed when accessing via NodePort)
+
+consumers:
+  - id: consumer-1
+    consoleURL: http://10.0.0.2:30445                   # Consumer Agent console (NodePort 30445)
+  - id: consumer-2
+    consoleURL: http://10.0.0.3:30445
+
+providers:
+  - id: provider-1
+    region: QC       # Quebec — will be made "green" in eco test
+  - id: provider-2
+    region: LOM      # Lombardy
+  - id: provider-3
+    region: CA       # California
+  - id: provider-4
+    region: IDF      # Île-de-France
+
+certs:
+  dir: /path/to/generate-test-certs-output              # contains ca.crt + scaltest-consumer-001.{crt,key}
+  prefix: scaltest                                       # cert filename prefix (default: scaltest)
+  # Alternative: explicit paths (when dir is empty)
+  # certFile: /path/to/consumer.crt
+  # keyFile:  /path/to/consumer.key
+  # caFile:   /path/to/ca.crt
+
+mockEco:
+  url: http://10.0.0.4:30081                            # Controllable mock-eco (deploy tests/mock-eco-test/cmd)
+
+experiment:
+  mode: observe           # "observe" = fast, just reads nodegroup masking (30s ok)
+                          # "reserve" = full reserve→Peered→release (minutes per iteration)
+  iterations: 10          # per phase — with phasePause=30s this gives 5 min/phase
+  phasePause: 30s         # interval between samples
+  policyPropagationWait: 20s   # wait after setting policy (agent heartbeat = 15s)
+  advertisementLag: 20s        # wait after setting mock-eco carbon (provider adv = 30s)
+  warmupTimeout: 5m            # max wait for reservation to reach Peered (reserve mode)
+  reservationPoll: 5s          # polling interval for reservation status (reserve mode)
+
+  # Eco test parameters:
+  greenRegion: QC         # region to make greenest in Phase B (must match a provider's region)
+  greenCarbon: 10         # gCO2eq/kWh for the green region
+  otherCarbon: 800        # gCO2eq/kWh for all other regions
+
+  # Latency test parameters:
+  tcDelays:
+    - host: user@10.0.0.5       # SSH target for provider-2 node
+      interface: eth0
+      delayMs: 50                # adds 50ms to UDP echo responses
+    - host: user@10.0.0.6       # SSH target for provider-3 node
+      interface: eth0
+      delayMs: 100
+    - host: user@10.0.0.7       # SSH target for provider-4 node
+      interface: eth0
+      delayMs: 200
+  sshKey: ~/.ssh/id_rsa          # SSH key for tc commands
+
+output:
+  dir: results                   # base dir — test creates results/<test-type>/<timestamp>/

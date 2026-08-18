@@ -1,0 +1,31 @@
+consumers: 2
+providers: 4
+
+providerRegions:
+  - QC
+  - LOM
+  - CA
+  - IDF
+
+experiment:
+  mode: observe
+  iterations: 10
+  phasePause: 30s
+  policyPropagationWait: 20s
+
+  tcDelays:
+    - providerIndex: 2    # LOM
+      delayMs: 50
+    - providerIndex: 3    # CA
+      delayMs: 100
+    - providerIndex: 4    # IDF
+      delayMs: 200
+
+infra:
+  readinessTimeout: 10m
+  liqoProvider: kind
+
+cleanup: true
+
+output:
+  dir: results

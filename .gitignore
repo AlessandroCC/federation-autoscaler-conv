@@ -20,6 +20,13 @@ go.work
 # Kubernetes Generated files - skip generated files, except for vendored files
 !vendor/**/zz_generated.*
 
+# Compiled test binaries (go build ./tests/comparative-*)
+comparative-eco
+comparative-latency
+
+# Test results (generated per-run)
+results/
+
 # editor and IDE paraphernalia
 .idea
 .vscode
