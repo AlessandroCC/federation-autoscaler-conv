@@ -133,6 +133,7 @@ type TestParams struct {
 	AdvertisementLag      time.Duration `yaml:"advertisementLag"`
 	WarmupTimeout         time.Duration `yaml:"warmupTimeout"`
 	ReservationPoll       time.Duration `yaml:"reservationPoll"`
+	ReservationTimeout    time.Duration `yaml:"reservationTimeout"`
 
 	// Eco-specific.
 	GreenRegion string `yaml:"greenRegion"`
@@ -204,6 +205,9 @@ func (c *AutoConfig) applyDefaults() {
 	}
 	if c.Experiment.ReservationPoll <= 0 {
 		c.Experiment.ReservationPoll = 5 * time.Second
+	}
+	if c.Experiment.ReservationTimeout <= 0 {
+		c.Experiment.ReservationTimeout = 10 * time.Minute
 	}
 	if c.Experiment.GreenCarbon <= 0 {
 		c.Experiment.GreenCarbon = 10
@@ -637,6 +641,9 @@ func (c *ExperimentConfig) applyDefaults() {
 	}
 	if c.Experiment.ReservationPoll <= 0 {
 		c.Experiment.ReservationPoll = 5 * time.Second
+	}
+	if c.Experiment.ReservationTimeout <= 0 {
+		c.Experiment.ReservationTimeout = 10 * time.Minute
 	}
 	if c.Experiment.GreenCarbon <= 0 {
 		c.Experiment.GreenCarbon = 10

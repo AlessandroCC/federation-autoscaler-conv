@@ -586,7 +586,7 @@ func runReservePhase(ctx context.Context, orch *testlib.Orchestrator, clients *t
 			if cur != nil {
 				prevProvider = cur.ProviderClusterID
 				releaseStart := time.Now()
-				releaseCtx, releaseCancel := context.WithTimeout(ctx, 5*time.Minute)
+				releaseCtx, releaseCancel := context.WithTimeout(ctx, exp.ReservationTimeout)
 				if err := broker.ReleaseAndWait(releaseCtx, cur.ReservationID, cur.Request, pollInterval); err != nil {
 					log.Printf("[%s] iter %d %s: release error for %s: %v", phase, i, consID, cur.ReservationID, err)
 				}
@@ -613,7 +613,7 @@ func runReservePhase(ctx context.Context, orch *testlib.Orchestrator, clients *t
 			}
 
 			peerStart := time.Now()
-			peerCtx, peerCancel := context.WithTimeout(ctx, 5*time.Minute)
+			peerCtx, peerCancel := context.WithTimeout(ctx, exp.ReservationTimeout)
 			resp, peerErr := broker.ReserveAndWait(peerCtx, resID, req, pollInterval)
 			peerCancel()
 			peerMs := msSince(peerStart)
