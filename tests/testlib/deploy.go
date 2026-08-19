@@ -228,7 +228,7 @@ func runScript(ctx context.Context, name string, args ...string) error {
 }
 
 // WaitForReadiness polls the federation topology until all components are ready.
-func WaitForReadiness(ctx context.Context, brokerURL, serverName string, consoleURLs []string, expectedProviders []string, id Identity, caFile string, timeout time.Duration) (*ExperimentClients, error) {
+func WaitForReadiness(ctx context.Context, brokerURL, serverName string, consoleURLs []string, expectedProviders []string, identities map[string]Identity, caFile string, timeout time.Duration) (*ExperimentClients, error) {
 	log.Println("[readiness] waiting for all components to come online...")
 	deadline := time.Now().Add(timeout)
 	ticker := time.NewTicker(10 * time.Second)
@@ -240,7 +240,7 @@ func WaitForReadiness(ctx context.Context, brokerURL, serverName string, console
 			return nil, fmt.Errorf("readiness timeout (%s): last error: %v", timeout, lastErr)
 		}
 
-		clients, err := tryBuildClients(ctx, brokerURL, serverName, consoleURLs, expectedProviders, id, caFile)
+		clients, err := tryBuildClients(ctx, brokerURL, serverName, consoleURLs, expectedProviders, identities, caFile)
 		if err == nil {
 			log.Println("[readiness] all components online")
 			return clients, nil
@@ -256,17 +256,20 @@ func WaitForReadiness(ctx context.Context, brokerURL, serverName string, console
 	}
 }
 
-func tryBuildClients(ctx context.Context, brokerURL, serverName string, consoleURLs []string, expectedProviders []string, id Identity, caFile string) (*ExperimentClients, error) {
-	broker, err := NewBrokerClientFromIdentity(brokerURL, serverName, id, caFile)
+func tryBuildClients(ctx context.Context, brokerURL, serverName string, consoleURLs []string, expectedProviders []string, identities map[string]Identity, caFile string) (*ExperimentClients, error) {
+	// Use consumer-1 as the primary identity for shared operations.
+	primaryID := identities["consumer-1"]
+
+	primaryBroker, err := NewBrokerClientFromIdentity(brokerURL, serverName, primaryID, caFile)
 	if err != nil {
-		return nil, fmt.Errorf("build broker client: %w", err)
+		return nil, fmt.Errorf("build primary broker client: %w", err)
 	}
 
-	if err := broker.CheckReachable(ctx); err != nil {
+	if err := primaryBroker.CheckReachable(ctx); err != nil {
 		return nil, fmt.Errorf("broker not reachable: %w", err)
 	}
 
-	ngResp, err := broker.GetNodeGroups(ctx)
+	ngResp, err := primaryBroker.GetNodeGroups(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("get nodegroups: %w", err)
 	}
@@ -282,7 +285,21 @@ func tryBuildClients(ctx context.Context, brokerURL, serverName string, consoleU
 		}
 	}
 
-	certFP, _ := id.CertFingerprint()
+	// Build per-consumer broker clients.
+	brokers := make(map[string]*BrokerClient, len(identities))
+	for cid, id := range identities {
+		bc, err := NewBrokerClientFromIdentity(brokerURL, serverName, id, caFile)
+		if err != nil {
+			return nil, fmt.Errorf("build broker client for %s: %w", cid, err)
+		}
+		if err := bc.CheckReachable(ctx); err != nil {
+			return nil, fmt.Errorf("broker not reachable for %s: %w", cid, err)
+		}
+		brokers[cid] = bc
+		log.Printf("[readiness] broker client for %s (identity=%s): OK", cid, id.ClusterID)
+	}
+
+	certFP, _ := primaryID.CertFingerprint()
 	consoles := make(map[string]*ConsoleClient, len(consoleURLs))
 	for i, url := range consoleURLs {
 		cid := fmt.Sprintf("consumer-%d", i+1)
@@ -294,9 +311,10 @@ func tryBuildClients(ctx context.Context, brokerURL, serverName string, consoleU
 	}
 
 	return &ExperimentClients{
-		Identity:   id,
+		Identity:   primaryID,
 		CertFP:     certFP,
-		Broker:     broker,
+		Broker:     primaryBroker,
+		Brokers:    brokers,
 		Consoles:   consoles,
 		InitialNGs: ngResp,
 	}, nil

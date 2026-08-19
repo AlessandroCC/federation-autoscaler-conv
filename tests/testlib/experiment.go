@@ -401,11 +401,11 @@ func (o *Orchestrator) Setup(ctx context.Context) error {
 		}
 	}
 
-	// Resolve identity from the first consumer's join bundle.
+	// Resolve identities from all consumer join bundles.
 	log.Println("=== WAIT FOR READINESS ===")
-	id, caFile, err := o.resolveIdentity()
+	identities, caFile, err := o.resolveIdentities()
 	if err != nil {
-		return fmt.Errorf("resolve identity: %w", err)
+		return fmt.Errorf("resolve identities: %w", err)
 	}
 
 	centralIP, err := ContainerIP(ctx, o.Specs[0].Name+"-control-plane")
@@ -429,7 +429,7 @@ func (o *Orchestrator) Setup(ctx context.Context) error {
 		expectedProviders = append(expectedProviders, fmt.Sprintf("provider-%d", i))
 	}
 
-	o.Clients, err = WaitForReadiness(ctx, brokerURL, serverName, consoleURLs, expectedProviders, id, caFile, o.Config.Infra.ReadinessTimeout)
+	o.Clients, err = WaitForReadiness(ctx, brokerURL, serverName, consoleURLs, expectedProviders, identities, caFile, o.Config.Infra.ReadinessTimeout)
 	if err != nil {
 		return fmt.Errorf("readiness: %w", err)
 	}
@@ -444,31 +444,42 @@ func (o *Orchestrator) Setup(ctx context.Context) error {
 	return nil
 }
 
-func (o *Orchestrator) resolveIdentity() (Identity, string, error) {
+func (o *Orchestrator) resolveIdentities() (map[string]Identity, string, error) {
 	bundleDir := filepath.Join(o.CADir, "bundles")
-	bundlePath := filepath.Join(bundleDir, "consumer-1-bundle.tgz")
+	identities := make(map[string]Identity, o.Config.Consumers)
+	var caFile string
 
-	extractDir, err := os.MkdirTemp("", o.RunID+"-bundle-extract-")
-	if err != nil {
-		return Identity{}, "", err
+	for i := 1; i <= o.Config.Consumers; i++ {
+		cid := fmt.Sprintf("consumer-%d", i)
+		bundlePath := filepath.Join(bundleDir, cid+"-bundle.tgz")
+
+		extractDir, err := os.MkdirTemp("", fmt.Sprintf("%s-%s-extract-", o.RunID, cid))
+		if err != nil {
+			return nil, "", err
+		}
+
+		cmd := exec.Command("tar", "-xzf", bundlePath, "-C", extractDir)
+		if err := cmd.Run(); err != nil {
+			os.RemoveAll(extractDir)
+			return nil, "", fmt.Errorf("extract bundle for %s: %w", cid, err)
+		}
+
+		certFile := filepath.Join(extractDir, "client.crt")
+		keyFile := filepath.Join(extractDir, "client.key")
+
+		id, err := ResolveIdentityFromFiles(certFile, keyFile, filepath.Join(extractDir, "ca.crt"))
+		if err != nil {
+			os.RemoveAll(extractDir)
+			return nil, "", fmt.Errorf("resolve identity for %s: %w", cid, err)
+		}
+		identities[cid] = id
+
+		if caFile == "" {
+			caFile = filepath.Join(extractDir, "ca.crt")
+		}
 	}
 
-	cmd := exec.Command("tar", "-xzf", bundlePath, "-C", extractDir)
-	if err := cmd.Run(); err != nil {
-		os.RemoveAll(extractDir)
-		return Identity{}, "", fmt.Errorf("extract bundle: %w", err)
-	}
-
-	certFile := filepath.Join(extractDir, "client.crt")
-	keyFile := filepath.Join(extractDir, "client.key")
-	caFile := filepath.Join(extractDir, "ca.crt")
-
-	id, err := ResolveIdentityFromFiles(certFile, keyFile, caFile)
-	if err != nil {
-		os.RemoveAll(extractDir)
-		return Identity{}, "", err
-	}
-	return id, caFile, nil
+	return identities, caFile, nil
 }
 
 // Teardown deletes all Kind clusters created by this run.
@@ -753,10 +764,20 @@ func (c *ExperimentConfig) BuildClients(ctx context.Context) (*ExperimentClients
 type ExperimentClients struct {
 	Identity   Identity
 	CertFP     string
-	Broker     *BrokerClient
+	Broker     *BrokerClient                // primary (consumer-1) for shared queries
+	Brokers    map[string]*BrokerClient      // per-consumer broker clients for reservations
 	Consoles   map[string]*ConsoleClient
 	MockEco    *MockEcoClient
 	InitialNGs interface{}
+}
+
+// BrokerFor returns the BrokerClient for a specific consumer. Falls back to the
+// primary Broker if no per-consumer client exists.
+func (ec *ExperimentClients) BrokerFor(consumerID string) *BrokerClient {
+	if bc, ok := ec.Brokers[consumerID]; ok {
+		return bc
+	}
+	return ec.Broker
 }
 
 // SetPolicyAll sets the same policy on ALL consumers and waits for propagation.

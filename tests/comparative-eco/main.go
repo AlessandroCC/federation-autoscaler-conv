@@ -233,8 +233,9 @@ func runObservePhase(ctx context.Context, orch *testlib.Orchestrator, clients *t
 
 		for _, consID := range consumerIDs {
 			start := time.Now()
+			broker := clients.BrokerFor(consID)
 
-			ngResp, err := clients.Broker.GetNodeGroups(ctx)
+			ngResp, err := broker.GetNodeGroups(ctx)
 			if err != nil {
 				records = append(records, testlib.SelectionRecord{
 					Timestamp:    start,
@@ -320,7 +321,7 @@ func runReservePhase(ctx context.Context, orch *testlib.Orchestrator, clients *t
 			}
 			log.Printf("[%s] cleanup: releasing %s (%s)", phase, res.ReservationID, consID)
 			cleanupCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-			if err := clients.Broker.ReleaseAndWait(cleanupCtx, res.ReservationID, res.Request, pollInterval); err != nil {
+			if err := clients.BrokerFor(consID).ReleaseAndWait(cleanupCtx, res.ReservationID, res.Request, pollInterval); err != nil {
 				log.Printf("[%s] cleanup: release error %s: %v", phase, res.ReservationID, err)
 			}
 			cancel()
@@ -334,8 +335,9 @@ func runReservePhase(ctx context.Context, orch *testlib.Orchestrator, clients *t
 
 		for _, consID := range consumerIDs {
 			start := time.Now()
+			broker := clients.BrokerFor(consID)
 
-			ngResp, err := clients.Broker.GetNodeGroups(ctx)
+			ngResp, err := broker.GetNodeGroups(ctx)
 			if err != nil {
 				selections = append(selections, testlib.SelectionRecord{
 					Timestamp:    start,
@@ -419,7 +421,7 @@ func runReservePhase(ctx context.Context, orch *testlib.Orchestrator, clients *t
 				prevProvider = cur.ProviderClusterID
 				releaseStart := time.Now()
 				releaseCtx, releaseCancel := context.WithTimeout(ctx, 5*time.Minute)
-				if err := clients.Broker.ReleaseAndWait(releaseCtx, cur.ReservationID, cur.Request, pollInterval); err != nil {
+				if err := broker.ReleaseAndWait(releaseCtx, cur.ReservationID, cur.Request, pollInterval); err != nil {
 					log.Printf("[%s] iter %d %s: release error for %s: %v", phase, i, consID, cur.ReservationID, err)
 				}
 				releaseCancel()
@@ -440,7 +442,7 @@ func runReservePhase(ctx context.Context, orch *testlib.Orchestrator, clients *t
 
 			peerStart := time.Now()
 			peerCtx, peerCancel := context.WithTimeout(ctx, 5*time.Minute)
-			resp, peerErr := clients.Broker.ReserveAndWait(peerCtx, resID, req, pollInterval)
+			resp, peerErr := broker.ReserveAndWait(peerCtx, resID, req, pollInterval)
 			peerCancel()
 			peerMs := msSince(peerStart)
 

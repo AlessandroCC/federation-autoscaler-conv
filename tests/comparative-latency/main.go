@@ -140,10 +140,10 @@ func runExperiment(ctx context.Context, orch *testlib.Orchestrator) error {
 	var phaseAProbe []testlib.ProbeRecord
 	if mode == "reserve" {
 		var phaseARes []testlib.ReservationRecord
-		phaseASel, phaseAProbe, phaseARes, err = runReservePhase(ctx, orch, clients.Broker, clients.Consoles, probeEndpoints, testlib.PhaseA, "Random")
+		phaseASel, phaseAProbe, phaseARes, err = runReservePhase(ctx, orch, clients, probeEndpoints, testlib.PhaseA, "Random")
 		allReservations = append(allReservations, phaseARes...)
 	} else {
-		phaseASel, phaseAProbe, err = runLatencyPhase(ctx, orch, clients.Broker, clients.Consoles, probeEndpoints, testlib.PhaseA, "Random")
+		phaseASel, phaseAProbe, err = runLatencyPhase(ctx, orch, clients, probeEndpoints, testlib.PhaseA, "Random")
 	}
 	if err != nil {
 		return fmt.Errorf("phase A: %w", err)
@@ -164,10 +164,10 @@ func runExperiment(ctx context.Context, orch *testlib.Orchestrator) error {
 	var phaseBProbe []testlib.ProbeRecord
 	if mode == "reserve" {
 		var phaseBRes []testlib.ReservationRecord
-		phaseBSel, phaseBProbe, phaseBRes, err = runReservePhase(ctx, orch, clients.Broker, clients.Consoles, probeEndpoints, testlib.PhaseB, "Latency")
+		phaseBSel, phaseBProbe, phaseBRes, err = runReservePhase(ctx, orch, clients, probeEndpoints, testlib.PhaseB, "Latency")
 		allReservations = append(allReservations, phaseBRes...)
 	} else {
-		phaseBSel, phaseBProbe, err = runLatencyPhase(ctx, orch, clients.Broker, clients.Consoles, probeEndpoints, testlib.PhaseB, "Latency")
+		phaseBSel, phaseBProbe, err = runLatencyPhase(ctx, orch, clients, probeEndpoints, testlib.PhaseB, "Latency")
 	}
 	if err != nil {
 		return fmt.Errorf("phase B: %w", err)
@@ -228,13 +228,13 @@ func runExperiment(ctx context.Context, orch *testlib.Orchestrator) error {
 	return nil
 }
 
-func runLatencyPhase(ctx context.Context, orch *testlib.Orchestrator, broker *testlib.BrokerClient, consoles map[string]*testlib.ConsoleClient, endpoints map[string]string, phase, policy string) ([]testlib.SelectionRecord, []testlib.ProbeRecord, error) {
+func runLatencyPhase(ctx context.Context, orch *testlib.Orchestrator, clients *testlib.ExperimentClients, endpoints map[string]string, phase, policy string) ([]testlib.SelectionRecord, []testlib.ProbeRecord, error) {
 	exp := orch.Config.Experiment
 	var selections []testlib.SelectionRecord
 	var probes []testlib.ProbeRecord
 
-	consumerIDs := make([]string, 0, len(consoles))
-	for id := range consoles {
+	consumerIDs := make([]string, 0, len(clients.Consoles))
+	for id := range clients.Consoles {
 		consumerIDs = append(consumerIDs, id)
 	}
 	sort.Strings(consumerIDs)
@@ -245,7 +245,8 @@ func runLatencyPhase(ctx context.Context, orch *testlib.Orchestrator, broker *te
 		}
 
 		for _, consID := range consumerIDs {
-			console := consoles[consID]
+			console := clients.Consoles[consID]
+			broker := clients.BrokerFor(consID)
 			start := time.Now()
 			rec := testlib.SelectionRecord{
 				Timestamp:  start,
@@ -367,7 +368,7 @@ func runLatencyPhase(ctx context.Context, orch *testlib.Orchestrator, broker *te
 	return selections, probes, nil
 }
 
-func runReservePhase(ctx context.Context, orch *testlib.Orchestrator, broker *testlib.BrokerClient, consoles map[string]*testlib.ConsoleClient, endpoints map[string]string, phase, policy string) ([]testlib.SelectionRecord, []testlib.ProbeRecord, []testlib.ReservationRecord, error) {
+func runReservePhase(ctx context.Context, orch *testlib.Orchestrator, clients *testlib.ExperimentClients, endpoints map[string]string, phase, policy string) ([]testlib.SelectionRecord, []testlib.ProbeRecord, []testlib.ReservationRecord, error) {
 	exp := orch.Config.Experiment
 	pollInterval := exp.ReservationPoll
 
@@ -375,8 +376,8 @@ func runReservePhase(ctx context.Context, orch *testlib.Orchestrator, broker *te
 	var probes []testlib.ProbeRecord
 	var reservations []testlib.ReservationRecord
 
-	consumerIDs := make([]string, 0, len(consoles))
-	for id := range consoles {
+	consumerIDs := make([]string, 0, len(clients.Consoles))
+	for id := range clients.Consoles {
 		consumerIDs = append(consumerIDs, id)
 	}
 	sort.Strings(consumerIDs)
@@ -391,7 +392,7 @@ func runReservePhase(ctx context.Context, orch *testlib.Orchestrator, broker *te
 			}
 			log.Printf("[%s] cleanup: releasing %s (%s)", phase, res.ReservationID, consID)
 			cleanupCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-			if err := broker.ReleaseAndWait(cleanupCtx, res.ReservationID, res.Request, pollInterval); err != nil {
+			if err := clients.BrokerFor(consID).ReleaseAndWait(cleanupCtx, res.ReservationID, res.Request, pollInterval); err != nil {
 				log.Printf("[%s] cleanup: release error %s: %v", phase, res.ReservationID, err)
 			}
 			cancel()
@@ -404,7 +405,8 @@ func runReservePhase(ctx context.Context, orch *testlib.Orchestrator, broker *te
 		}
 
 		for _, consID := range consumerIDs {
-			console := consoles[consID]
+			console := clients.Consoles[consID]
+			broker := clients.BrokerFor(consID)
 			start := time.Now()
 
 			ngResp, err := broker.GetNodeGroups(ctx)
