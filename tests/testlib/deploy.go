@@ -373,6 +373,14 @@ var regionLocation = map[string]regionLoc{
 	"AB":  {"Stockholm", 59.3293, 18.0686},
 	"LOM": {"Milan", 45.4642, 9.1900},
 	"SG":  {"Singapore", 1.3521, 103.8198},
+	"VA":  {"Ashburn", 38.7223, -77.0193},
+	"TX":  {"Dallas", 32.7767, -96.7970},
+	"OR":  {"Portland", 45.5051, -122.6750},
+	"IE":  {"Dublin", 53.3498, -6.2603},
+	"NL":  {"Amsterdam", 52.3676, 4.9041},
+	"KR":  {"Seoul", 37.5665, 126.9780},
+	"ZA":  {"Johannesburg", -26.2041, 28.0473},
+	"AE":  {"Dubai", 25.2048, 55.2708},
 }
 
 // registerGeoOverrides calls the controllable mock-geo admin API to map each

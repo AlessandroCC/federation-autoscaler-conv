@@ -41,6 +41,7 @@ const (
 // under which policy, and any measured RTT.
 type SelectionRecord struct {
 	Timestamp      time.Time `json:"timestamp"`
+	ConsumerID     string    `json:"consumerId"`
 	Phase          string    `json:"phase"`
 	Policy         string    `json:"policy"`
 	Iteration      int       `json:"iteration"`
@@ -56,7 +57,7 @@ type SelectionRecord struct {
 }
 
 var selectionCSVHeader = []string{
-	"timestamp", "phase", "policy", "iteration",
+	"timestamp", "consumer_id", "phase", "policy", "iteration",
 	"selected_provider_id", "nodegroup_id", "reservation_id",
 	"placement_value", "has_metric", "rtt_ms",
 	"duration_ms", "outcome", "error_message",
@@ -65,6 +66,7 @@ var selectionCSVHeader = []string{
 func selectionCSVRow(r SelectionRecord) []string {
 	return []string{
 		r.Timestamp.UTC().Format(time.RFC3339Nano),
+		r.ConsumerID,
 		r.Phase,
 		r.Policy,
 		strconv.Itoa(r.Iteration),
@@ -104,6 +106,7 @@ func WriteSelectionCSV(dir, name string, records []SelectionRecord) error {
 // ProbeRecord captures one RTT measurement session.
 type ProbeRecord struct {
 	Timestamp  time.Time          `json:"timestamp"`
+	ConsumerID string             `json:"consumerId"`
 	Phase      string             `json:"phase"`
 	Policy     string             `json:"policy"`
 	Iteration  int                `json:"iteration"`
@@ -122,7 +125,7 @@ func WriteProbeCSV(dir, name string, records []ProbeRecord) error {
 	w := csv.NewWriter(f)
 	defer w.Flush()
 
-	header := []string{"timestamp", "phase", "policy", "iteration", "chosen", "duration_ms", "provider_id", "rtt_ms"}
+	header := []string{"timestamp", "consumer_id", "phase", "policy", "iteration", "chosen", "duration_ms", "provider_id", "rtt_ms"}
 	if err := w.Write(header); err != nil {
 		return err
 	}
@@ -130,6 +133,7 @@ func WriteProbeCSV(dir, name string, records []ProbeRecord) error {
 		for providerID, rtt := range r.RTTs {
 			row := []string{
 				r.Timestamp.UTC().Format(time.RFC3339Nano),
+				r.ConsumerID,
 				r.Phase,
 				r.Policy,
 				strconv.Itoa(r.Iteration),
@@ -229,6 +233,81 @@ func WriteSummaryMarkdown(dir string, s ExperimentSummary) error {
 		fmt.Fprintf(f, "\n")
 	}
 	return nil
+}
+
+// ReservationRecord captures one reservation lifecycle event in reserve mode.
+type ReservationRecord struct {
+	Timestamp         time.Time `json:"timestamp"`
+	ConsumerID        string    `json:"consumerId"`
+	Phase             string    `json:"phase"`
+	Policy            string    `json:"policy"`
+	Iteration         int       `json:"iteration"`
+	ReservationID     string    `json:"reservationId"`
+	ProviderClusterID string    `json:"providerClusterId"`
+	NodeGroupID       string    `json:"nodeGroupId"`
+	Action            string    `json:"action"`
+	PrevProviderID    string    `json:"prevProviderId,omitempty"`
+	PeerMs            float64   `json:"peerMs"`
+	ReleaseMs         float64   `json:"releaseMs,omitempty"`
+	TotalMs           float64   `json:"totalMs"`
+	FinalPhase        string    `json:"finalPhase"`
+	PlacementMetric   float64   `json:"placementMetric,omitempty"`
+	RTTMs             float64   `json:"rttMs,omitempty"`
+	Outcome           string    `json:"outcome"`
+	ErrorMessage      string    `json:"errorMessage,omitempty"`
+}
+
+var reservationCSVHeader = []string{
+	"timestamp", "consumer_id", "phase", "policy", "iteration",
+	"reservation_id", "provider_id", "nodegroup_id",
+	"action", "prev_provider_id",
+	"peer_duration_ms", "release_duration_ms", "total_duration_ms",
+	"final_phase", "placement_metric", "rtt_ms",
+	"outcome", "error_message",
+}
+
+func reservationCSVRow(r ReservationRecord) []string {
+	return []string{
+		r.Timestamp.UTC().Format(time.RFC3339Nano),
+		r.ConsumerID,
+		r.Phase,
+		r.Policy,
+		strconv.Itoa(r.Iteration),
+		r.ReservationID,
+		r.ProviderClusterID,
+		r.NodeGroupID,
+		r.Action,
+		r.PrevProviderID,
+		strconv.FormatFloat(r.PeerMs, 'f', 3, 64),
+		strconv.FormatFloat(r.ReleaseMs, 'f', 3, 64),
+		strconv.FormatFloat(r.TotalMs, 'f', 3, 64),
+		r.FinalPhase,
+		strconv.FormatFloat(r.PlacementMetric, 'f', 4, 64),
+		strconv.FormatFloat(r.RTTMs, 'f', 3, 64),
+		r.Outcome,
+		r.ErrorMessage,
+	}
+}
+
+// WriteReservationCSV writes reservation lifecycle records to a CSV file.
+func WriteReservationCSV(dir, name string, records []ReservationRecord) error {
+	f, err := os.Create(filepath.Join(dir, name))
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	w := csv.NewWriter(f)
+	defer w.Flush()
+
+	if err := w.Write(reservationCSVHeader); err != nil {
+		return err
+	}
+	for _, r := range records {
+		if err := w.Write(reservationCSVRow(r)); err != nil {
+			return err
+		}
+	}
+	return w.Error()
 }
 
 // EnsureOutputDir creates the output directory for a test run.

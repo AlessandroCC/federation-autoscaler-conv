@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"math/rand"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -27,6 +28,37 @@ import (
 
 	"gopkg.in/yaml.v3"
 )
+
+// regionPool lists the 20 world regions available for auto-generation.
+// Each must have a corresponding entry in regionLocation (deploy.go).
+var regionPool = []string{
+	"QC", "CA", "NSW", "IDF", "ENG", "13", "HE", "SP",
+	"MH", "AB", "LOM", "SG", "VA", "TX", "OR", "IE",
+	"NL", "KR", "ZA", "AE",
+}
+
+func autoGenerateRegions(n int) []string {
+	pool := make([]string, len(regionPool))
+	copy(pool, regionPool)
+	rand.Shuffle(len(pool), func(i, j int) { pool[i], pool[j] = pool[j], pool[i] })
+	regions := make([]string, n)
+	for i := range regions {
+		regions[i] = pool[i%len(pool)]
+	}
+	return regions
+}
+
+func autoGenerateTCDelays(n int) []TCDelayAutoConfig {
+	delays := make([]TCDelayAutoConfig, n)
+	for i := range delays {
+		delays[i] = TCDelayAutoConfig{
+			ProviderIndex: i + 1,
+			DelayMs:       1 + rand.Intn(300),
+			Interface:     "eth0",
+		}
+	}
+	return delays
+}
 
 // AutoConfig is the fully automated YAML schema. The user specifies counts,
 // regions, and experiment parameters; everything else is computed at runtime.
@@ -192,10 +224,24 @@ func (c *AutoConfig) applyDefaults() {
 		t := true
 		c.Cleanup = &t
 	}
+	if len(c.ProviderRegions) == 0 {
+		c.ProviderRegions = autoGenerateRegions(c.Providers)
+		log.Printf("[config] auto-generated regions: %v", c.ProviderRegions)
+	}
+	if len(c.Experiment.TCDelaysAuto) == 0 {
+		c.Experiment.TCDelaysAuto = autoGenerateTCDelays(c.Providers)
+		for _, td := range c.Experiment.TCDelaysAuto {
+			log.Printf("[config] auto-generated tc delay: provider-%d → %dms", td.ProviderIndex, td.DelayMs)
+		}
+	}
 	for i := range c.Experiment.TCDelaysAuto {
 		if c.Experiment.TCDelaysAuto[i].Interface == "" {
 			c.Experiment.TCDelaysAuto[i].Interface = "eth0"
 		}
+	}
+	if c.Experiment.GreenRegion == "" && len(c.ProviderRegions) > 0 {
+		c.Experiment.GreenRegion = c.ProviderRegions[0]
+		log.Printf("[config] auto-selected green region: %s", c.Experiment.GreenRegion)
 	}
 }
 

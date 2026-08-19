@@ -1,9 +1,5 @@
-consumers: 1
-providers: 2
-
-providerRegions:
-  - QC
-  - LOM
+consumers: 2
+providers: 3
 
 experiment:
   mode: observe
@@ -11,16 +7,3 @@ experiment:
   phasePause: 15s
   policyPropagationWait: 15s
   advertisementLag: 15s
-
-  tcDelays:
-    - providerIndex: 2    # LOM — add 50ms delay
-      delayMs: 50
-
-infra:
-  readinessTimeout: 10m
-  liqoProvider: kind
-
-cleanup: true
-
-output:
-  dir: results
