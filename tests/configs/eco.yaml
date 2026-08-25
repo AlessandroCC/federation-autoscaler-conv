@@ -2,7 +2,7 @@ consumers: 2
 providers: 4
 
 providerRegions:
-  - QC      # Quebec — will be the "green" region
+  - QC      # Quebec
   - LOM     # Lombardy
   - CA      # California
   - IDF     # Île-de-France
