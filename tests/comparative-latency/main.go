@@ -28,9 +28,11 @@ import (
 	"fmt"
 	"log"
 	"math"
+	"math/rand"
 	"os"
 	"os/signal"
 	"sort"
+	"sync"
 	"time"
 
 	brokerv1alpha1 "github.com/netgroup-polito/federation-autoscaler/api/broker/v1alpha1"
@@ -95,40 +97,91 @@ func runExperiment(ctx context.Context, orch *testlib.Orchestrator) error {
 	// Apply tc delays BEFORE any phase so both phases run under identical
 	// network conditions — the only variable between them is the policy.
 	log.Println("=== APPLY TC DELAYS ===")
-	var tcDelays []*testlib.TCDelayKind
-	for _, tcd := range exp.TCDelaysAuto {
-		containerName := orch.ProviderContainerName(tcd.ProviderIndex)
-		iface := tcd.Interface
-		if iface == "" {
-			iface = "eth0"
-		}
-		tc := &testlib.TCDelayKind{
-			ContainerName: containerName,
-			Interface:     iface,
-			DelayMs:       tcd.DelayMs,
-		}
-		log.Printf("  tc: %s +%dms", containerName, tcd.DelayMs)
-		if err := tc.Apply(); err != nil {
-			for _, applied := range tcDelays {
-				_ = applied.Restore()
+	var consumerTCs []*testlib.TCConsumerDelay
+	var providerTCs []*testlib.TCDelayKind
+	if len(exp.ConsumerDelays) > 0 {
+		// Consumer-side tc: per-consumer × per-provider delay matrix.
+		for _, cd := range exp.ConsumerDelays {
+			containerName := orch.ConsumerContainerName(cd.ConsumerIndex)
+			var entries []testlib.ProviderDelayEntry
+			for _, pd := range cd.ProviderDelays {
+				provContainer := orch.ProviderContainerName(pd.ProviderIndex)
+				provIP, err := testlib.ContainerIP(ctx, provContainer)
+				if err != nil {
+					return fmt.Errorf("get IP for provider-%d (%s): %w", pd.ProviderIndex, provContainer, err)
+				}
+				entries = append(entries, testlib.ProviderDelayEntry{
+					ProviderIP: provIP,
+					DelayMs:    pd.DelayMs,
+					Label:      fmt.Sprintf("provider-%d", pd.ProviderIndex),
+				})
 			}
-			return fmt.Errorf("apply tc on %s: %w", containerName, err)
+			tc := &testlib.TCConsumerDelay{
+				ContainerName:  containerName,
+				Interface:      "eth0",
+				ProviderDelays: entries,
+			}
+			if err := tc.Apply(); err != nil {
+				for _, applied := range consumerTCs {
+					_ = applied.Restore()
+				}
+				return fmt.Errorf("apply consumer tc on %s: %w", containerName, err)
+			}
+			consumerTCs = append(consumerTCs, tc)
 		}
-		tcDelays = append(tcDelays, tc)
+		defer func() {
+			for _, tc := range consumerTCs {
+				log.Printf("  restoring consumer tc on %s", tc.ContainerName)
+				if err := tc.Restore(); err != nil {
+					log.Printf("  tc restore error on %s: %v", tc.ContainerName, err)
+				}
+			}
+		}()
+	} else {
+		// Provider-side tc: uniform delay per provider (legacy mode).
+		for _, tcd := range exp.TCDelaysAuto {
+			containerName := orch.ProviderContainerName(tcd.ProviderIndex)
+			iface := tcd.Interface
+			if iface == "" {
+				iface = "eth0"
+			}
+			tc := &testlib.TCDelayKind{
+				ContainerName: containerName,
+				Interface:     iface,
+				DelayMs:       tcd.DelayMs,
+			}
+			log.Printf("  tc: %s +%dms", containerName, tcd.DelayMs)
+			if err := tc.Apply(); err != nil {
+				for _, applied := range providerTCs {
+					_ = applied.Restore()
+				}
+				return fmt.Errorf("apply tc on %s: %w", containerName, err)
+			}
+			providerTCs = append(providerTCs, tc)
+		}
+		defer func() {
+			for _, tc := range providerTCs {
+				log.Printf("  restoring tc on %s", tc.ContainerName)
+				if err := tc.Restore(); err != nil {
+					log.Printf("  tc restore error on %s: %v", tc.ContainerName, err)
+				}
+			}
+		}()
 	}
-	defer func() {
-		for _, tc := range tcDelays {
-			log.Printf("  restoring tc on %s", tc.ContainerName)
-			if err := tc.Restore(); err != nil {
-				log.Printf("  tc restore error on %s: %v", tc.ContainerName, err)
-			}
-		}
-	}()
 
 	var allSelections []testlib.SelectionRecord
 	var allProbes []testlib.ProbeRecord
 	var allReservations []testlib.ReservationRecord
 	mode := exp.Mode
+
+	// Start latency refresh for both phases (same background jitter).
+	latencyRefreshCtx, cancelLatencyRefresh := context.WithCancel(ctx)
+	var latencyWG sync.WaitGroup
+	latencyWG.Add(1)
+	go func() {
+		defer latencyWG.Done()
+		refreshLatency(latencyRefreshCtx, exp, consumerTCs, providerTCs)
+	}()
 
 	// --- Phase A: Random ---
 	log.Println("=== PHASE A: Random ===")
@@ -169,6 +222,8 @@ func runExperiment(ctx context.Context, orch *testlib.Orchestrator) error {
 	} else {
 		phaseBSel, phaseBProbe, err = runLatencyPhase(ctx, orch, clients, probeEndpoints, testlib.PhaseB, "Latency")
 	}
+	cancelLatencyRefresh()
+	latencyWG.Wait()
 	if err != nil {
 		return fmt.Errorf("phase B: %w", err)
 	}
@@ -762,6 +817,64 @@ func printSummary(s testlib.ExperimentSummary) {
 		}
 		if ps.summary.MeanRTTMs > 0 {
 			log.Printf("  mean RTT: %.2fms  median RTT: %.2fms", ps.summary.MeanRTTMs, ps.summary.MedianRTTMs)
+		}
+	}
+}
+
+func refreshLatency(ctx context.Context, exp testlib.TestParams, consumerTCs []*testlib.TCConsumerDelay, providerTCs []*testlib.TCDelayKind) {
+	interval := exp.LatencyRefreshInterval
+	jitter := exp.LatencyJitterMs
+	log.Printf("[latency-refresh] started (interval=%s, jitter=±%dms)", interval, jitter)
+
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			log.Println("[latency-refresh] stopped")
+			return
+		case <-ticker.C:
+			for _, tc := range consumerTCs {
+				newDelays := make([]testlib.ProviderDelayEntry, len(tc.ProviderDelays))
+				for i, pd := range tc.ProviderDelays {
+					delta := rand.Intn(2*jitter+1) - jitter
+					newDelay := pd.DelayMs + delta
+					if newDelay < 1 {
+						newDelay = 1
+					}
+					newDelays[i] = testlib.ProviderDelayEntry{
+						ProviderIP: pd.ProviderIP,
+						DelayMs:    newDelay,
+						Label:      pd.Label,
+					}
+				}
+				if err := tc.UpdateDelays(newDelays); err != nil {
+					if ctx.Err() != nil {
+						return
+					}
+					log.Printf("[latency-refresh] error updating %s: %v", tc.ContainerName, err)
+					continue
+				}
+				for _, pd := range newDelays {
+					log.Printf("[latency-refresh]   %s → %s: %dms", tc.ContainerName, pd.Label, pd.DelayMs)
+				}
+			}
+			for _, tc := range providerTCs {
+				delta := rand.Intn(2*jitter+1) - jitter
+				newDelay := tc.DelayMs + delta
+				if newDelay < 1 {
+					newDelay = 1
+				}
+				if err := tc.UpdateDelay(newDelay); err != nil {
+					if ctx.Err() != nil {
+						return
+					}
+					log.Printf("[latency-refresh] error updating %s: %v", tc.ContainerName, err)
+					continue
+				}
+				log.Printf("[latency-refresh]   %s: %dms", tc.ContainerName, newDelay)
+			}
 		}
 	}
 }

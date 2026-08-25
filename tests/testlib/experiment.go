@@ -29,12 +29,16 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// regionPool lists the 20 world regions available for auto-generation.
+// regionPool lists the 50 world regions available for auto-generation.
 // Each must have a corresponding entry in regionLocation (deploy.go).
 var regionPool = []string{
 	"QC", "CA", "NSW", "IDF", "ENG", "13", "HE", "SP",
 	"MH", "AB", "LOM", "SG", "VA", "TX", "OR", "IE",
 	"NL", "KR", "ZA", "AE",
+	"IL", "OH", "GA", "BC", "BY", "RM", "CT", "AN",
+	"VIC", "NCL", "HK", "TW", "PH", "CL", "CO", "MX",
+	"FI", "NO", "DK", "PL", "CZ", "AT", "CH", "BE",
+	"PT", "GR", "RO", "IL2", "EG", "NG",
 }
 
 func autoGenerateRegions(n int) []string {
@@ -58,6 +62,24 @@ func autoGenerateTCDelays(n int) []TCDelayAutoConfig {
 		}
 	}
 	return delays
+}
+
+func autoGenerateConsumerDelays(consumers, providers int) []ConsumerDelayConfig {
+	configs := make([]ConsumerDelayConfig, consumers)
+	for c := range configs {
+		pds := make([]ProviderDelay, providers)
+		for p := range pds {
+			pds[p] = ProviderDelay{
+				ProviderIndex: p + 1,
+				DelayMs:       5 + rand.Intn(100),
+			}
+		}
+		configs[c] = ConsumerDelayConfig{
+			ConsumerIndex:  c + 1,
+			ProviderDelays: pds,
+		}
+	}
+	return configs
 }
 
 // AutoConfig is the fully automated YAML schema. The user specifies counts,
@@ -136,13 +158,18 @@ type TestParams struct {
 	ReservationTimeout    time.Duration `yaml:"reservationTimeout"`
 
 	// Eco-specific.
-	GreenRegion string `yaml:"greenRegion"`
-	GreenCarbon int    `yaml:"greenCarbon"`
-	OtherCarbon int    `yaml:"otherCarbon"`
+	CarbonLow              int           `yaml:"carbonLow"`
+	CarbonHigh             int           `yaml:"carbonHigh"`
+	CarbonGreenFractionMin float64       `yaml:"carbonGreenFractionMin"`
+	CarbonGreenFractionMax float64       `yaml:"carbonGreenFractionMax"`
+	CarbonRefreshInterval  time.Duration `yaml:"carbonRefreshInterval"`
 
 	// Latency-specific (automated Kind mode).
-	TCDelaysAuto []TCDelayAutoConfig `yaml:"tcDelays,omitempty"`
-	SSHKey       string              `yaml:"sshKey,omitempty"`
+	TCDelaysAuto           []TCDelayAutoConfig   `yaml:"tcDelays,omitempty"`
+	ConsumerDelays         []ConsumerDelayConfig `yaml:"consumerDelays,omitempty"`
+	SSHKey                 string                `yaml:"sshKey,omitempty"`
+	LatencyRefreshInterval time.Duration         `yaml:"latencyRefreshInterval"`
+	LatencyJitterMs        int                   `yaml:"latencyJitterMs"`
 }
 
 // TCDelayAutoConfig is the automated tc delay config (uses providerIndex).
@@ -150,6 +177,20 @@ type TCDelayAutoConfig struct {
 	ProviderIndex int    `yaml:"providerIndex"` // 1-based index
 	DelayMs       int    `yaml:"delayMs"`
 	Interface     string `yaml:"interface,omitempty"` // default "eth0"
+}
+
+// ConsumerDelayConfig specifies per-provider delays for one consumer.
+// When present, delays are applied on consumer containers (lato consumer)
+// instead of on provider containers, enabling per-consumer latency simulation.
+type ConsumerDelayConfig struct {
+	ConsumerIndex  int             `yaml:"consumerIndex"`
+	ProviderDelays []ProviderDelay `yaml:"providerDelays"`
+}
+
+// ProviderDelay is one entry in the consumer delay matrix.
+type ProviderDelay struct {
+	ProviderIndex int `yaml:"providerIndex"`
+	DelayMs       int `yaml:"delayMs"`
 }
 
 // TCDelayConfig is one per-provider netem delay entry (legacy SSH mode).
@@ -209,11 +250,26 @@ func (c *AutoConfig) applyDefaults() {
 	if c.Experiment.ReservationTimeout <= 0 {
 		c.Experiment.ReservationTimeout = 10 * time.Minute
 	}
-	if c.Experiment.GreenCarbon <= 0 {
-		c.Experiment.GreenCarbon = 10
+	if c.Experiment.CarbonLow <= 0 {
+		c.Experiment.CarbonLow = 50
 	}
-	if c.Experiment.OtherCarbon <= 0 {
-		c.Experiment.OtherCarbon = 800
+	if c.Experiment.CarbonHigh <= 0 {
+		c.Experiment.CarbonHigh = 800
+	}
+	if c.Experiment.CarbonGreenFractionMin <= 0 {
+		c.Experiment.CarbonGreenFractionMin = 0.3
+	}
+	if c.Experiment.CarbonGreenFractionMax <= 0 {
+		c.Experiment.CarbonGreenFractionMax = 0.7
+	}
+	if c.Experiment.CarbonRefreshInterval <= 0 {
+		c.Experiment.CarbonRefreshInterval = 3 * time.Minute
+	}
+	if c.Experiment.LatencyRefreshInterval <= 0 {
+		c.Experiment.LatencyRefreshInterval = 3 * time.Minute
+	}
+	if c.Experiment.LatencyJitterMs <= 0 {
+		c.Experiment.LatencyJitterMs = 20
 	}
 	if c.Output.Dir == "" {
 		c.Output.Dir = "results"
@@ -232,20 +288,19 @@ func (c *AutoConfig) applyDefaults() {
 		c.ProviderRegions = autoGenerateRegions(c.Providers)
 		log.Printf("[config] auto-generated regions: %v", c.ProviderRegions)
 	}
-	if len(c.Experiment.TCDelaysAuto) == 0 {
-		c.Experiment.TCDelaysAuto = autoGenerateTCDelays(c.Providers)
-		for _, td := range c.Experiment.TCDelaysAuto {
-			log.Printf("[config] auto-generated tc delay: provider-%d → %dms", td.ProviderIndex, td.DelayMs)
+	if len(c.Experiment.ConsumerDelays) == 0 && len(c.Experiment.TCDelaysAuto) == 0 {
+		c.Experiment.ConsumerDelays = autoGenerateConsumerDelays(c.Consumers, c.Providers)
+		for _, cd := range c.Experiment.ConsumerDelays {
+			for _, pd := range cd.ProviderDelays {
+				log.Printf("[config] auto-generated consumer delay: consumer-%d → provider-%d: %dms",
+					cd.ConsumerIndex, pd.ProviderIndex, pd.DelayMs)
+			}
 		}
 	}
 	for i := range c.Experiment.TCDelaysAuto {
 		if c.Experiment.TCDelaysAuto[i].Interface == "" {
 			c.Experiment.TCDelaysAuto[i].Interface = "eth0"
 		}
-	}
-	if c.Experiment.GreenRegion == "" && len(c.ProviderRegions) > 0 {
-		c.Experiment.GreenRegion = c.ProviderRegions[0]
-		log.Printf("[config] auto-selected green region: %s", c.Experiment.GreenRegion)
 	}
 }
 
@@ -266,6 +321,17 @@ func (c *AutoConfig) Validate() error {
 	for _, td := range c.Experiment.TCDelaysAuto {
 		if td.ProviderIndex < 1 || td.ProviderIndex > c.Providers {
 			return fmt.Errorf("tcDelays.providerIndex %d out of range [1, %d]", td.ProviderIndex, c.Providers)
+		}
+	}
+	for _, cd := range c.Experiment.ConsumerDelays {
+		if cd.ConsumerIndex < 1 || cd.ConsumerIndex > c.Consumers {
+			return fmt.Errorf("consumerDelays.consumerIndex %d out of range [1, %d]", cd.ConsumerIndex, c.Consumers)
+		}
+		for _, pd := range cd.ProviderDelays {
+			if pd.ProviderIndex < 1 || pd.ProviderIndex > c.Providers {
+				return fmt.Errorf("consumerDelays[consumer-%d].providerIndex %d out of range [1, %d]",
+					cd.ConsumerIndex, pd.ProviderIndex, c.Providers)
+			}
 		}
 	}
 	return nil
@@ -539,6 +605,11 @@ func (o *Orchestrator) MockEcoURL(ctx context.Context) (string, error) {
 	return fmt.Sprintf("http://%s:30081", centralIP), nil
 }
 
+// ConsumerContainerName returns the Docker container name for a consumer by 1-based index.
+func (o *Orchestrator) ConsumerContainerName(consumerIdx int) string {
+	return o.Specs[1+consumerIdx-1].Name + "-control-plane"
+}
+
 // ProviderContainerName returns the Docker container name for a provider by 1-based index.
 // For clusters with a worker node the agent (and its probe endpoint) lives on
 // the worker, so tc delays must target that container.
@@ -645,11 +716,26 @@ func (c *ExperimentConfig) applyDefaults() {
 	if c.Experiment.ReservationTimeout <= 0 {
 		c.Experiment.ReservationTimeout = 10 * time.Minute
 	}
-	if c.Experiment.GreenCarbon <= 0 {
-		c.Experiment.GreenCarbon = 10
+	if c.Experiment.CarbonLow <= 0 {
+		c.Experiment.CarbonLow = 50
 	}
-	if c.Experiment.OtherCarbon <= 0 {
-		c.Experiment.OtherCarbon = 800
+	if c.Experiment.CarbonHigh <= 0 {
+		c.Experiment.CarbonHigh = 800
+	}
+	if c.Experiment.CarbonGreenFractionMin <= 0 {
+		c.Experiment.CarbonGreenFractionMin = 0.3
+	}
+	if c.Experiment.CarbonGreenFractionMax <= 0 {
+		c.Experiment.CarbonGreenFractionMax = 0.7
+	}
+	if c.Experiment.CarbonRefreshInterval <= 0 {
+		c.Experiment.CarbonRefreshInterval = 3 * time.Minute
+	}
+	if c.Experiment.LatencyRefreshInterval <= 0 {
+		c.Experiment.LatencyRefreshInterval = 3 * time.Minute
+	}
+	if c.Experiment.LatencyJitterMs <= 0 {
+		c.Experiment.LatencyJitterMs = 20
 	}
 	if c.Output.Dir == "" {
 		c.Output.Dir = "results"

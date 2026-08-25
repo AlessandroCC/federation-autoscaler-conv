@@ -55,6 +55,16 @@ func (t *TCDelayKind) Apply() error {
 	return nil
 }
 
+// UpdateDelay changes the netem delay on the existing qdisc in place.
+func (t *TCDelayKind) UpdateDelay(newDelayMs int) error {
+	if err := t.dockerExec("tc", "qdisc", "change", "dev", t.Interface, "parent", "42:2",
+		"netem", "delay", fmt.Sprintf("%dms", newDelayMs)); err != nil {
+		return fmt.Errorf("update delay to %dms: %w", newDelayMs, err)
+	}
+	t.DelayMs = newDelayMs
+	return nil
+}
+
 // Restore removes the handle 42: qdisc tree.
 func (t *TCDelayKind) Restore() error {
 	err := t.dockerExec("tc", "qdisc", "del", "dev", t.Interface, "root", "handle", "42:")

@@ -27,9 +27,12 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"math"
+	"math/rand"
 	"os"
 	"os/signal"
 	"sort"
+	"sync"
 	"time"
 
 	brokerv1alpha1 "github.com/netgroup-polito/federation-autoscaler/api/broker/v1alpha1"
@@ -71,11 +74,6 @@ func runExperiment(ctx context.Context, orch *testlib.Orchestrator) error {
 	exp := cfg.Experiment
 	clients := orch.Clients
 
-	// Eco test requires mock-eco.
-	if exp.GreenRegion == "" {
-		return fmt.Errorf("experiment.greenRegion is required for the eco test")
-	}
-
 	// Build mock-eco client.
 	mockEcoURL, err := orch.MockEcoURL(ctx)
 	if err != nil {
@@ -91,7 +89,17 @@ func runExperiment(ctx context.Context, orch *testlib.Orchestrator) error {
 
 	var allRecords []testlib.SelectionRecord
 	var allReservations []testlib.ReservationRecord
+	var allSnapshots []testlib.NodeGroupSnapshotRecord
 	mode := exp.Mode
+
+	// Start carbon refresh for both phases (same background load).
+	carbonRefreshCtx, cancelCarbonRefresh := context.WithCancel(ctx)
+	var carbonWG sync.WaitGroup
+	carbonWG.Add(1)
+	go func() {
+		defer carbonWG.Done()
+		refreshCarbon(carbonRefreshCtx, mockEco, cfg, exp)
+	}()
 
 	// --- Phase A: Random ---
 	log.Println("=== PHASE A: Random ===")
@@ -102,10 +110,14 @@ func runExperiment(ctx context.Context, orch *testlib.Orchestrator) error {
 	var phaseARecords []testlib.SelectionRecord
 	if mode == "reserve" {
 		var phaseARes []testlib.ReservationRecord
-		phaseARecords, phaseARes, err = runReservePhase(ctx, orch, clients, testlib.PhaseA, "Random")
+		var phaseASnaps []testlib.NodeGroupSnapshotRecord
+		phaseARecords, phaseARes, phaseASnaps, err = runReservePhase(ctx, orch, clients, testlib.PhaseA, "Random")
 		allReservations = append(allReservations, phaseARes...)
+		allSnapshots = append(allSnapshots, phaseASnaps...)
 	} else {
-		phaseARecords, err = runObservePhase(ctx, orch, clients, testlib.PhaseA, "Random")
+		var phaseASnaps []testlib.NodeGroupSnapshotRecord
+		phaseARecords, phaseASnaps, err = runObservePhase(ctx, orch, clients, testlib.PhaseA, "Random")
+		allSnapshots = append(allSnapshots, phaseASnaps...)
 	}
 	if err != nil {
 		return fmt.Errorf("phase A: %w", err)
@@ -113,29 +125,10 @@ func runExperiment(ctx context.Context, orch *testlib.Orchestrator) error {
 	allRecords = append(allRecords, phaseARecords...)
 	log.Printf("phase A complete: %d samples", len(phaseARecords))
 
-	// --- Transition: set carbon values ---
+	// --- Transition: switch to Eco policy ---
 	log.Println("=== TRANSITION ===")
-	providerRegions := make(map[string]bool)
-	for _, r := range cfg.ProviderRegions {
-		if r != "" {
-			providerRegions[r] = true
-		}
-	}
-	if len(providerRegions) == 0 {
-		log.Println("WARNING: no provider regions set — mock-eco won't differentiate them")
-	}
-	for region := range providerRegions {
-		carbon := exp.OtherCarbon
-		if region == exp.GreenRegion {
-			carbon = exp.GreenCarbon
-		}
-		if err := mockEco.SetCarbon(ctx, region, carbon, nil); err != nil {
-			return fmt.Errorf("set carbon for region %s: %w", region, err)
-		}
-		log.Printf("  mock-eco: %s → %d gCO2eq/kWh", region, carbon)
-	}
 
-	// Switch to Eco.
+	// Switch to Eco (carbon values are already being refreshed by the goroutine).
 	if err := clients.SetPolicyAll(ctx, "Eco", 0); err != nil {
 		return fmt.Errorf("set Eco: %w", err)
 	}
@@ -153,11 +146,17 @@ func runExperiment(ctx context.Context, orch *testlib.Orchestrator) error {
 	var phaseBRecords []testlib.SelectionRecord
 	if mode == "reserve" {
 		var phaseBRes []testlib.ReservationRecord
-		phaseBRecords, phaseBRes, err = runReservePhase(ctx, orch, clients, testlib.PhaseB, "Eco")
+		var phaseBSnaps []testlib.NodeGroupSnapshotRecord
+		phaseBRecords, phaseBRes, phaseBSnaps, err = runReservePhase(ctx, orch, clients, testlib.PhaseB, "Eco")
 		allReservations = append(allReservations, phaseBRes...)
+		allSnapshots = append(allSnapshots, phaseBSnaps...)
 	} else {
-		phaseBRecords, err = runObservePhase(ctx, orch, clients, testlib.PhaseB, "Eco")
+		var phaseBSnaps []testlib.NodeGroupSnapshotRecord
+		phaseBRecords, phaseBSnaps, err = runObservePhase(ctx, orch, clients, testlib.PhaseB, "Eco")
+		allSnapshots = append(allSnapshots, phaseBSnaps...)
 	}
+	cancelCarbonRefresh()
+	carbonWG.Wait()
 	if err != nil {
 		return fmt.Errorf("phase B: %w", err)
 	}
@@ -182,6 +181,11 @@ func runExperiment(ctx context.Context, orch *testlib.Orchestrator) error {
 	if mode == "reserve" && len(allReservations) > 0 {
 		if err := testlib.WriteReservationCSV(outputDir, "reservations.csv", allReservations); err != nil {
 			return fmt.Errorf("write reservations CSV: %w", err)
+		}
+	}
+	if len(allSnapshots) > 0 {
+		if err := testlib.WriteNodeGroupCSV(outputDir, "nodegroups.csv", allSnapshots); err != nil {
+			return fmt.Errorf("write nodegroups CSV: %w", err)
 		}
 	}
 
@@ -216,9 +220,10 @@ func runExperiment(ctx context.Context, orch *testlib.Orchestrator) error {
 	return nil
 }
 
-func runObservePhase(ctx context.Context, orch *testlib.Orchestrator, clients *testlib.ExperimentClients, phase, policy string) ([]testlib.SelectionRecord, error) {
+func runObservePhase(ctx context.Context, orch *testlib.Orchestrator, clients *testlib.ExperimentClients, phase, policy string) ([]testlib.SelectionRecord, []testlib.NodeGroupSnapshotRecord, error) {
 	exp := orch.Config.Experiment
 	var records []testlib.SelectionRecord
+	var snapshots []testlib.NodeGroupSnapshotRecord
 
 	consumerIDs := make([]string, 0, len(clients.Consoles))
 	for id := range clients.Consoles {
@@ -228,7 +233,7 @@ func runObservePhase(ctx context.Context, orch *testlib.Orchestrator, clients *t
 
 	for i := 1; i <= exp.Iterations; i++ {
 		if ctx.Err() != nil {
-			return records, ctx.Err()
+			return records, snapshots, ctx.Err()
 		}
 
 		for _, consID := range consumerIDs {
@@ -252,6 +257,33 @@ func runObservePhase(ctx context.Context, orch *testlib.Orchestrator, clients *t
 			}
 
 			winner := testlib.FindWinner(ngResp.NodeGroups)
+
+			for _, ng := range ngResp.NodeGroups {
+				var carbon float64
+				var hasCarbon bool
+				if ng.CarbonIntensity != nil {
+					carbon = *ng.CarbonIntensity
+					hasCarbon = true
+				}
+				snapshots = append(snapshots, testlib.NodeGroupSnapshotRecord{
+					Timestamp:         start,
+					ConsumerID:        consID,
+					Phase:             phase,
+					Policy:            policy,
+					Iteration:         i,
+					ProviderClusterID: ng.ProviderClusterID,
+					NodeGroupID:       ng.ID,
+					PlacementMetric:   ng.PlacementMetric,
+					HasMetric:         ng.HasMetric,
+					CarbonIntensity:   carbon,
+					HasCarbon:         hasCarbon,
+					CurrentReserved:   ng.CurrentReserved,
+					MaxSize:           ng.MaxSize,
+					AppliedPlacement:  string(ngResp.AppliedPlacement),
+					IsSelected:        winner != nil && ng.ID == winner.ID,
+				})
+			}
+
 			if winner == nil {
 				growable := testlib.GrowableNodeGroups(ngResp.NodeGroups)
 				records = append(records, testlib.SelectionRecord{
@@ -290,20 +322,21 @@ func runObservePhase(ctx context.Context, orch *testlib.Orchestrator, clients *t
 
 		if i < exp.Iterations {
 			if err := testlib.SleepCtx(ctx, exp.PhasePause); err != nil {
-				return records, err
+				return records, snapshots, err
 			}
 		}
 	}
 
-	return records, nil
+	return records, snapshots, nil
 }
 
-func runReservePhase(ctx context.Context, orch *testlib.Orchestrator, clients *testlib.ExperimentClients, phase, policy string) ([]testlib.SelectionRecord, []testlib.ReservationRecord, error) {
+func runReservePhase(ctx context.Context, orch *testlib.Orchestrator, clients *testlib.ExperimentClients, phase, policy string) ([]testlib.SelectionRecord, []testlib.ReservationRecord, []testlib.NodeGroupSnapshotRecord, error) {
 	exp := orch.Config.Experiment
 	pollInterval := exp.ReservationPoll
 
 	var selections []testlib.SelectionRecord
 	var reservations []testlib.ReservationRecord
+	var snapshots []testlib.NodeGroupSnapshotRecord
 
 	consumerIDs := make([]string, 0, len(clients.Consoles))
 	for id := range clients.Consoles {
@@ -330,7 +363,7 @@ func runReservePhase(ctx context.Context, orch *testlib.Orchestrator, clients *t
 
 	for i := 1; i <= exp.Iterations; i++ {
 		if ctx.Err() != nil {
-			return selections, reservations, ctx.Err()
+			return selections, reservations, snapshots, ctx.Err()
 		}
 
 		for _, consID := range consumerIDs {
@@ -354,6 +387,33 @@ func runReservePhase(ctx context.Context, orch *testlib.Orchestrator, clients *t
 			}
 
 			winner := testlib.FindWinner(ngResp.NodeGroups)
+
+			for _, ng := range ngResp.NodeGroups {
+				var carbon float64
+				var hasCarbon bool
+				if ng.CarbonIntensity != nil {
+					carbon = *ng.CarbonIntensity
+					hasCarbon = true
+				}
+				snapshots = append(snapshots, testlib.NodeGroupSnapshotRecord{
+					Timestamp:         start,
+					ConsumerID:        consID,
+					Phase:             phase,
+					Policy:            policy,
+					Iteration:         i,
+					ProviderClusterID: ng.ProviderClusterID,
+					NodeGroupID:       ng.ID,
+					PlacementMetric:   ng.PlacementMetric,
+					HasMetric:         ng.HasMetric,
+					CarbonIntensity:   carbon,
+					HasCarbon:         hasCarbon,
+					CurrentReserved:   ng.CurrentReserved,
+					MaxSize:           ng.MaxSize,
+					AppliedPlacement:  string(ngResp.AppliedPlacement),
+					IsSelected:        winner != nil && ng.ID == winner.ID,
+				})
+			}
+
 			if winner == nil {
 				growable := testlib.GrowableNodeGroups(ngResp.NodeGroups)
 				selections = append(selections, testlib.SelectionRecord{
@@ -539,12 +599,12 @@ func runReservePhase(ctx context.Context, orch *testlib.Orchestrator, clients *t
 
 		if i < exp.Iterations {
 			if err := testlib.SleepCtx(ctx, exp.PhasePause); err != nil {
-				return selections, reservations, err
+				return selections, reservations, snapshots, err
 			}
 		}
 	}
 
-	return selections, reservations, nil
+	return selections, reservations, snapshots, nil
 }
 
 func summarizePhase(records []testlib.SelectionRecord) testlib.PhaseSummary {
@@ -587,6 +647,82 @@ func printSummary(s testlib.ExperimentSummary) {
 	if s.PhaseBSummary.MeanPlacementVal > 0 {
 		log.Printf("  mean eco metric: %.4f", s.PhaseBSummary.MeanPlacementVal)
 	}
+}
+
+func refreshCarbon(ctx context.Context, mockEco *testlib.MockEcoClient, cfg *testlib.AutoConfig, exp testlib.TestParams) {
+	interval := exp.CarbonRefreshInterval
+	log.Printf("[carbon-refresh] started (interval=%s, green fraction=%.0f%%–%.0f%%, low=%d high=%d)",
+		interval, exp.CarbonGreenFractionMin*100, exp.CarbonGreenFractionMax*100,
+		exp.CarbonLow, exp.CarbonHigh)
+
+	assignCarbon := func() {
+		unique := uniqueRegions(cfg.ProviderRegions)
+		n := len(unique)
+		if n == 0 {
+			return
+		}
+
+		frac := exp.CarbonGreenFractionMin +
+			rand.Float64()*(exp.CarbonGreenFractionMax-exp.CarbonGreenFractionMin)
+		greenCount := int(math.Round(frac * float64(n)))
+		if greenCount < 1 {
+			greenCount = 1
+		}
+		if greenCount > n-1 {
+			greenCount = n - 1
+		}
+
+		perm := rand.Perm(n)
+		greenSet := make(map[int]bool, greenCount)
+		for i := 0; i < greenCount; i++ {
+			greenSet[perm[i]] = true
+		}
+
+		for i, region := range unique {
+			var carbon int
+			if greenSet[i] {
+				jitter := 0.7 + rand.Float64()*0.6
+				carbon = max(1, int(float64(exp.CarbonLow)*jitter))
+			} else {
+				jitter := 0.7 + rand.Float64()*0.6
+				carbon = max(1, int(float64(exp.CarbonHigh)*jitter))
+			}
+			if err := mockEco.SetCarbon(ctx, region, carbon, nil); err != nil {
+				if ctx.Err() != nil {
+					return
+				}
+				log.Printf("[carbon-refresh] error setting %s: %v", region, err)
+			}
+		}
+		log.Printf("[carbon-refresh] assigned %d/%d green regions", greenCount, n)
+	}
+
+	assignCarbon()
+
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			log.Println("[carbon-refresh] stopped")
+			return
+		case <-ticker.C:
+			assignCarbon()
+		}
+	}
+}
+
+func uniqueRegions(regions []string) []string {
+	seen := make(map[string]bool, len(regions))
+	var result []string
+	for _, r := range regions {
+		if r != "" && !seen[r] {
+			seen[r] = true
+			result = append(result, r)
+		}
+	}
+	return result
 }
 
 func msSince(t time.Time) float64 {

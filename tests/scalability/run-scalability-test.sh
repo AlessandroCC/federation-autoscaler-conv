@@ -168,7 +168,7 @@ fi
 #  6. Start Broker
 # -----------------------------------------------------------
 if [[ -z "${OUTPUT_DIR:-}" ]]; then
-  OUTPUT_DIR="$SCRIPT_DIR/results/$(date -u +%Y%m%dT%H%M%SZ)"
+  OUTPUT_DIR="$REPO_ROOT/results/scalability/$(date -u +%Y%m%dT%H%M%SZ)"
 fi
 mkdir -p "$OUTPUT_DIR"
 

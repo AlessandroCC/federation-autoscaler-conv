@@ -13,6 +13,9 @@ experiment:
   phasePause: 30s
   policyPropagationWait: 20s
 
+  latencyRefreshInterval: 3m
+  latencyJitterMs: 20
+
   tcDelays:
     - providerIndex: 2    # LOM
       delayMs: 50

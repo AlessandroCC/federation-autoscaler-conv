@@ -14,9 +14,11 @@ experiment:
   policyPropagationWait: 20s
   advertisementLag: 20s
 
-  greenRegion: QC
-  greenCarbon: 10
-  otherCarbon: 800
+  carbonLow: 50
+  carbonHigh: 800
+  carbonGreenFractionMin: 0.3
+  carbonGreenFractionMax: 0.7
+  carbonRefreshInterval: 3m
 
 infra:
   readinessTimeout: 10m

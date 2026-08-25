@@ -310,6 +310,81 @@ func WriteReservationCSV(dir, name string, records []ReservationRecord) error {
 	return w.Error()
 }
 
+// NodeGroupSnapshotRecord captures one provider's nodegroup state at a given
+// iteration — used to log placement metrics and carbon intensity for all
+// providers, not just the selected winner.
+type NodeGroupSnapshotRecord struct {
+	Timestamp         time.Time `json:"timestamp"`
+	ConsumerID        string    `json:"consumerId"`
+	Phase             string    `json:"phase"`
+	Policy            string    `json:"policy"`
+	Iteration         int       `json:"iteration"`
+	ProviderClusterID string    `json:"providerClusterId"`
+	NodeGroupID       string    `json:"nodeGroupId"`
+	PlacementMetric   float64   `json:"placementMetric,omitempty"`
+	HasMetric         bool      `json:"hasMetric"`
+	CarbonIntensity   float64   `json:"carbonIntensity,omitempty"`
+	HasCarbon         bool      `json:"hasCarbon"`
+	CurrentReserved   int32     `json:"currentReserved"`
+	MaxSize           int32     `json:"maxSize"`
+	AppliedPlacement  string    `json:"appliedPlacement"`
+	IsSelected        bool      `json:"isSelected"`
+}
+
+var nodegroupCSVHeader = []string{
+	"timestamp", "consumer_id", "phase", "policy", "iteration",
+	"provider_id", "nodegroup_id",
+	"placement_metric", "has_metric",
+	"carbon_intensity", "has_carbon",
+	"current_reserved", "max_size",
+	"applied_placement", "is_selected",
+}
+
+func nodegroupCSVRow(r NodeGroupSnapshotRecord) []string {
+	carbonStr := ""
+	if r.HasCarbon {
+		carbonStr = strconv.FormatFloat(r.CarbonIntensity, 'f', 2, 64)
+	}
+	return []string{
+		r.Timestamp.UTC().Format(time.RFC3339Nano),
+		r.ConsumerID,
+		r.Phase,
+		r.Policy,
+		strconv.Itoa(r.Iteration),
+		r.ProviderClusterID,
+		r.NodeGroupID,
+		strconv.FormatFloat(r.PlacementMetric, 'f', 4, 64),
+		strconv.FormatBool(r.HasMetric),
+		carbonStr,
+		strconv.FormatBool(r.HasCarbon),
+		strconv.FormatInt(int64(r.CurrentReserved), 10),
+		strconv.FormatInt(int64(r.MaxSize), 10),
+		r.AppliedPlacement,
+		strconv.FormatBool(r.IsSelected),
+	}
+}
+
+// WriteNodeGroupCSV writes nodegroup snapshot records to a CSV file.
+func WriteNodeGroupCSV(dir, name string, records []NodeGroupSnapshotRecord) error {
+	f, err := os.Create(filepath.Join(dir, name))
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	w := csv.NewWriter(f)
+	defer w.Flush()
+
+	if err := w.Write(nodegroupCSVHeader); err != nil {
+		return err
+	}
+	for _, r := range records {
+		if err := w.Write(nodegroupCSVRow(r)); err != nil {
+			return err
+		}
+	}
+	return w.Error()
+}
+
 // EnsureOutputDir creates the output directory for a test run.
 func EnsureOutputDir(base, testType string) (string, error) {
 	dir := filepath.Join(base, testType, time.Now().UTC().Format("20060102T150405Z"))
