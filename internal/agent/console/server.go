@@ -66,6 +66,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 
 	autoscalingv1alpha1 "github.com/netgroup-polito/federation-autoscaler/api/autoscaling/v1alpha1"
+	"github.com/netgroup-polito/federation-autoscaler/internal/agent/consumer/latency"
 	"github.com/netgroup-polito/federation-autoscaler/internal/agent/geo"
 )
 
@@ -150,6 +151,11 @@ type Options struct {
 	AdvertisedIP string
 	MockGeoURL   string
 
+	// Prober is the shared latency prober (consumer role only, optional). When
+	// set, the console exposes POST /api/probe so test harnesses can trigger
+	// UDP RTT measurements from the agent's network namespace.
+	Prober *latency.Prober
+
 	// Logger is the structured logger every handler logs through. Defaults to
 	// controller-runtime's logger named "console".
 	Logger logr.Logger
@@ -171,6 +177,7 @@ type Server struct {
 	advertisedIP  string
 	mockGeoURL    string
 	geoClient     *geo.Client
+	prober        *latency.Prober
 	log           logr.Logger
 	shutdown      time.Duration
 
@@ -212,6 +219,7 @@ func New(opts Options) (*Server, error) {
 		advertisedIP:  opts.AdvertisedIP,
 		mockGeoURL:    opts.MockGeoURL,
 		geoClient:     geo.NewClient(),
+		prober:        opts.Prober,
 		log:           logger,
 		shutdown:      shutdown,
 	}
@@ -242,6 +250,9 @@ func (s *Server) handler() http.Handler {
 		mux.HandleFunc("POST /api/policy", s.handlePolicy)
 		mux.HandleFunc("POST /api/workload", s.handleWorkload)
 		mux.HandleFunc("POST /api/reservation", s.handleReservation)
+		if s.prober != nil {
+			mux.HandleFunc("POST /api/probe", s.handleProbe)
+		}
 	case RoleProvider:
 		mux.HandleFunc("POST /api/prices", s.handlePrices)
 		mux.HandleFunc("POST /api/capacity", s.handleCapacity)
@@ -430,6 +441,47 @@ func (s *Server) handleReservation(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.ok(w)
+}
+
+// handleProbe triggers UDP RTT measurement from this agent's network namespace
+// using the shared latency.Prober. Test harnesses call this so measurements
+// reflect the Consumer Agent's actual network perspective.
+func (s *Server) handleProbe(w http.ResponseWriter, r *http.Request) {
+	if s.prober == nil {
+		s.writeError(w, http.StatusServiceUnavailable, "prober not configured")
+		return
+	}
+	var body struct {
+		Candidates []struct {
+			ProviderClusterID string `json:"providerClusterId"`
+			Endpoint          string `json:"endpoint"`
+		} `json:"candidates"`
+	}
+	if !s.decode(w, r, &body) {
+		return
+	}
+	if len(body.Candidates) == 0 {
+		s.writeError(w, http.StatusBadRequest, "candidates list is empty")
+		return
+	}
+
+	cands := make([]latency.Candidate, len(body.Candidates))
+	for i, c := range body.Candidates {
+		cands[i] = latency.Candidate{
+			ProviderClusterID: c.ProviderClusterID,
+			Endpoint:          c.Endpoint,
+		}
+	}
+
+	start := time.Now()
+	result := s.prober.MeasureAndPick(r.Context(), cands)
+	durationMs := float64(time.Since(start).Microseconds()) / 1000.0
+
+	s.writeJSON(w, http.StatusOK, map[string]any{
+		"chosen":     result.Chosen,
+		"rtts":       result.RTTs,
+		"durationMs": durationMs,
+	})
 }
 
 // createManualReservation creates a new, uniquely-named, console-labelled

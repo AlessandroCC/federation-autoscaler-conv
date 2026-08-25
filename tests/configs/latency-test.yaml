@@ -1,0 +1,9 @@
+consumers: 2
+providers: 3
+
+experiment:
+  mode: reserve
+  iterations: 3
+  phasePause: 15s
+  policyPropagationWait: 15s
+  advertisementLag: 15s

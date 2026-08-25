@@ -261,6 +261,7 @@ func Run(ctx context.Context, opts Options) error {
 			NodeName:      opts.NodeName,
 			AdvertisedIP:  opts.AdvertisedIP,
 			MockGeoURL:    opts.MockGeoURL,
+			Prober:        prober,
 			Logger:        logger.WithName("console"),
 		})
 		if err != nil {
