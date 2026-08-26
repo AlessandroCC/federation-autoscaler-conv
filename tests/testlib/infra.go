@@ -81,12 +81,22 @@ func GenerateClusterSpecs(runID string, numConsumers, numProviders int) []Cluste
 	return specs
 }
 
+// cidr allocates a non-overlapping subnet for cluster index idx. Each /16 has
+// only one free octet (10.X.0.0/16), which caps a single-octet counter at
+// ~15 clusters starting from base 241 — observed as "invalid CIDR address:
+// 10.256.0.0/16" once idx overflows 255. Using /20 blocks instead spends two
+// octets (10.X.Y.0/20, Y in 16-wide steps), giving room for thousands of
+// clusters while still comfortably covering the 1-2 nodes per Kind cluster
+// this harness creates (a /20 is 4096 addresses; Calico's default per-node
+// block is /24 = 256 addresses).
 func cidr(idx int, kind string) string {
+	octet2Step := idx / 16
+	octet3 := (idx % 16) * 16
 	switch kind {
 	case "pod":
-		return fmt.Sprintf("10.%d.0.0/16", 241+idx)
+		return fmt.Sprintf("10.%d.%d.0/20", 241+octet2Step, octet3)
 	case "svc":
-		return fmt.Sprintf("10.%d.0.0/16", 96+idx)
+		return fmt.Sprintf("10.%d.%d.0/20", 96+octet2Step, octet3)
 	default:
 		panic("cidr: unknown kind " + kind)
 	}
