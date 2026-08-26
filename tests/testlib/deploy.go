@@ -515,24 +515,58 @@ func nodeContainerSuffixes(spec ClusterSpec) []string {
 	return []string{"-control-plane"}
 }
 
+// postGeoOverride POSTs one IP→region override to the controllable mock-geo.
+// Retries on connection errors for a short window: kubectl rollout status
+// reports the mock-geo Deployment Available as soon as the pod is Ready, but
+// the Service's NodePort routing (kube-proxy iptables) can lag a moment
+// behind that under load — observed as "connect: connection refused" on the
+// very first call right after rollout, especially with many Kind clusters
+// starting up concurrently.
 func postGeoOverride(ctx context.Context, client *http.Client, mockGeoURL, ip, region string, loc regionLoc) error {
 	body := fmt.Sprintf(`{"ip":"%s","region":"%s","city":"%s","lat":%f,"lon":%f}`,
 		ip, region, loc.City, loc.Lat, loc.Lon)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
-		mockGeoURL+"/admin/geo", strings.NewReader(body))
-	if err != nil {
-		return err
+
+	const maxAttempts = 15
+	const retryDelay = 2 * time.Second
+	var lastErr error
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+			mockGeoURL+"/admin/geo", strings.NewReader(body))
+		if err != nil {
+			return err
+		}
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := client.Do(req)
+		if err != nil {
+			lastErr = err
+			if attempt < maxAttempts {
+				log.Printf("[deploy] mock-geo: %s not yet reachable (attempt %d/%d): %v", mockGeoURL, attempt, maxAttempts, err)
+				if sleepErr := sleepOrCtx(ctx, retryDelay); sleepErr != nil {
+					return sleepErr
+				}
+				continue
+			}
+			return fmt.Errorf("after %d attempts: %w", maxAttempts, lastErr)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			return fmt.Errorf("admin/geo returned %d", resp.StatusCode)
+		}
+		return nil
 	}
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := client.Do(req)
-	if err != nil {
-		return err
+	return lastErr
+}
+
+// sleepOrCtx sleeps for d, or returns ctx.Err() early if ctx is cancelled first.
+func sleepOrCtx(ctx context.Context, d time.Duration) error {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-t.C:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("admin/geo returned %d", resp.StatusCode)
-	}
-	return nil
 }
 
 // deployControllableMockGeo builds the controllable mock-geo image, loads it

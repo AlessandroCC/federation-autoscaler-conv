@@ -41,11 +41,22 @@ import (
 )
 
 func main() {
+	if err := run(); err != nil {
+		log.Fatal(err)
+	}
+}
+
+// run holds the actual program body so orch.Teardown (deferred) always
+// executes on any error path, including a Setup failure — log.Fatal in main
+// calls os.Exit, which would otherwise skip deferred cleanup and leave Kind
+// clusters orphaned (observed: a transient setup error left 11 running Kind
+// clusters + a busy inotify budget behind).
+func run() error {
 	configPath, keepClusters, skipBuild, runID := parseFlags()
 
 	cfg, err := testlib.LoadAutoConfig(configPath)
 	if err != nil {
-		log.Fatalf("config: %v", err)
+		return fmt.Errorf("config: %w", err)
 	}
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
@@ -53,19 +64,21 @@ func main() {
 
 	orch, err := testlib.NewOrchestrator(cfg, "comparative-eco", keepClusters, skipBuild, runID)
 	if err != nil {
-		log.Fatalf("orchestrator: %v", err)
+		return fmt.Errorf("orchestrator: %w", err)
 	}
 
-	// Ensure cleanup runs on exit.
+	// Ensure cleanup runs on exit — now reachable on every return path below,
+	// since none of them calls os.Exit directly.
 	defer orch.Teardown(context.Background())
 
 	if err := orch.Setup(ctx); err != nil {
-		log.Fatalf("setup failed: %v", err)
+		return fmt.Errorf("setup failed: %w", err)
 	}
 
 	if err := runExperiment(ctx, orch); err != nil {
-		log.Fatalf("experiment failed: %v", err)
+		return fmt.Errorf("experiment failed: %w", err)
 	}
+	return nil
 }
 
 func runExperiment(ctx context.Context, orch *testlib.Orchestrator) error {
