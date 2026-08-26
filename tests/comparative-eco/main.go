@@ -233,8 +233,16 @@ func runExperiment(ctx context.Context, orch *testlib.Orchestrator) error {
 	return nil
 }
 
+// runObservePhase drives one consumer-poll cycle per iteration. Consumers are
+// dispatched concurrently (one goroutine each) within an iteration, mirroring
+// how independent real Consumer Agents behave in production — each polls the
+// Broker on its own, none waits in line behind another. All consumers in an
+// iteration are joined (awaited) before the next iteration's phasePause, so
+// the iteration cadence itself is unchanged; only the per-consumer work
+// inside each iteration is now parallel instead of serial.
 func runObservePhase(ctx context.Context, orch *testlib.Orchestrator, clients *testlib.ExperimentClients, phase, policy string) ([]testlib.SelectionRecord, []testlib.NodeGroupSnapshotRecord, error) {
 	exp := orch.Config.Experiment
+	var mu sync.Mutex
 	var records []testlib.SelectionRecord
 	var snapshots []testlib.NodeGroupSnapshotRecord
 
@@ -249,89 +257,15 @@ func runObservePhase(ctx context.Context, orch *testlib.Orchestrator, clients *t
 			return records, snapshots, ctx.Err()
 		}
 
+		var wg sync.WaitGroup
 		for _, consID := range consumerIDs {
-			start := time.Now()
-			broker := clients.BrokerFor(consID)
-
-			ngResp, err := broker.GetNodeGroups(ctx)
-			if err != nil {
-				records = append(records, testlib.SelectionRecord{
-					Timestamp:    start,
-					ConsumerID:   consID,
-					Phase:        phase,
-					Policy:       policy,
-					Iteration:    i,
-					Outcome:      "error",
-					ErrorMessage: fmt.Sprintf("get nodegroups: %v", err),
-					DurationMs:   msSince(start),
-				})
-				log.Printf("[%s] iter %d %s: nodegroups error: %v", phase, i, consID, err)
-				continue
-			}
-
-			winner := testlib.FindWinner(ngResp.NodeGroups)
-
-			for _, ng := range ngResp.NodeGroups {
-				var carbon float64
-				var hasCarbon bool
-				if ng.CarbonIntensity != nil {
-					carbon = *ng.CarbonIntensity
-					hasCarbon = true
-				}
-				snapshots = append(snapshots, testlib.NodeGroupSnapshotRecord{
-					Timestamp:         start,
-					ConsumerID:        consID,
-					Phase:             phase,
-					Policy:            policy,
-					Iteration:         i,
-					ProviderClusterID: ng.ProviderClusterID,
-					NodeGroupID:       ng.ID,
-					PlacementMetric:   ng.PlacementMetric,
-					HasMetric:         ng.HasMetric,
-					CarbonIntensity:   carbon,
-					HasCarbon:         hasCarbon,
-					CurrentReserved:   ng.CurrentReserved,
-					MaxSize:           ng.MaxSize,
-					AppliedPlacement:  string(ngResp.AppliedPlacement),
-					IsSelected:        winner != nil && ng.ID == winner.ID,
-				})
-			}
-
-			if winner == nil {
-				growable := testlib.GrowableNodeGroups(ngResp.NodeGroups)
-				records = append(records, testlib.SelectionRecord{
-					Timestamp:    start,
-					ConsumerID:   consID,
-					Phase:        phase,
-					Policy:       policy,
-					Iteration:    i,
-					Outcome:      "no-winner",
-					ErrorMessage: fmt.Sprintf("growable=%d applied=%s", len(growable), ngResp.AppliedPlacement),
-					DurationMs:   msSince(start),
-				})
-				log.Printf("[%s] iter %d %s: no single winner (growable=%d applied=%s)",
-					phase, i, consID, len(growable), ngResp.AppliedPlacement)
-				continue
-			}
-
-			rec := testlib.SelectionRecord{
-				Timestamp:      start,
-				ConsumerID:     consID,
-				Phase:          phase,
-				Policy:         policy,
-				Iteration:      i,
-				SelectedID:     winner.ProviderClusterID,
-				NodeGroupID:    winner.ID,
-				PlacementValue: winner.PlacementMetric,
-				HasMetric:      winner.HasMetric,
-				Outcome:        "success",
-				DurationMs:     msSince(start),
-			}
-			records = append(records, rec)
-
-			log.Printf("[%s] iter %02d %s: winner=%-20s metric=%8.2f applied=%s",
-				phase, i, consID, winner.ProviderClusterID, winner.PlacementMetric, ngResp.AppliedPlacement)
+			wg.Add(1)
+			go func(consID string) {
+				defer wg.Done()
+				runObserveConsumerIteration(ctx, clients, phase, policy, i, consID, &mu, &records, &snapshots)
+			}(consID)
 		}
+		wg.Wait()
 
 		if i < exp.Iterations {
 			if err := testlib.SleepCtx(ctx, exp.PhasePause); err != nil {
@@ -343,13 +277,181 @@ func runObservePhase(ctx context.Context, orch *testlib.Orchestrator, clients *t
 	return records, snapshots, nil
 }
 
+// runObserveConsumerIteration is the per-consumer, per-iteration body of
+// runObservePhase, safe to run concurrently with other consumers' calls: it
+// only touches shared state (records, snapshots) behind mu, and everything
+// else is function-local.
+func runObserveConsumerIteration(ctx context.Context, clients *testlib.ExperimentClients, phase, policy string, i int, consID string, mu *sync.Mutex, records *[]testlib.SelectionRecord, snapshots *[]testlib.NodeGroupSnapshotRecord) {
+	start := time.Now()
+	broker := clients.BrokerFor(consID)
+
+	ngResp, err := broker.GetNodeGroups(ctx)
+	if err != nil {
+		mu.Lock()
+		*records = append(*records, testlib.SelectionRecord{
+			Timestamp:    start,
+			ConsumerID:   consID,
+			Phase:        phase,
+			Policy:       policy,
+			Iteration:    i,
+			Outcome:      "error",
+			ErrorMessage: fmt.Sprintf("get nodegroups: %v", err),
+			DurationMs:   msSince(start),
+		})
+		mu.Unlock()
+		log.Printf("[%s] iter %d %s: nodegroups error: %v", phase, i, consID, err)
+		return
+	}
+
+	winner := testlib.FindWinner(ngResp.NodeGroups)
+
+	snaps := make([]testlib.NodeGroupSnapshotRecord, 0, len(ngResp.NodeGroups))
+	for _, ng := range ngResp.NodeGroups {
+		var carbon float64
+		var hasCarbon bool
+		if ng.CarbonIntensity != nil {
+			carbon = *ng.CarbonIntensity
+			hasCarbon = true
+		}
+		snaps = append(snaps, testlib.NodeGroupSnapshotRecord{
+			Timestamp:         start,
+			ConsumerID:        consID,
+			Phase:             phase,
+			Policy:            policy,
+			Iteration:         i,
+			ProviderClusterID: ng.ProviderClusterID,
+			NodeGroupID:       ng.ID,
+			PlacementMetric:   ng.PlacementMetric,
+			HasMetric:         ng.HasMetric,
+			CarbonIntensity:   carbon,
+			HasCarbon:         hasCarbon,
+			CurrentReserved:   ng.CurrentReserved,
+			MaxSize:           ng.MaxSize,
+			AppliedPlacement:  string(ngResp.AppliedPlacement),
+			IsSelected:        winner != nil && ng.ID == winner.ID,
+		})
+	}
+	mu.Lock()
+	*snapshots = append(*snapshots, snaps...)
+	mu.Unlock()
+
+	if winner == nil {
+		growable := testlib.GrowableNodeGroups(ngResp.NodeGroups)
+		mu.Lock()
+		*records = append(*records, testlib.SelectionRecord{
+			Timestamp:    start,
+			ConsumerID:   consID,
+			Phase:        phase,
+			Policy:       policy,
+			Iteration:    i,
+			Outcome:      "no-winner",
+			ErrorMessage: fmt.Sprintf("growable=%d applied=%s", len(growable), ngResp.AppliedPlacement),
+			DurationMs:   msSince(start),
+		})
+		mu.Unlock()
+		log.Printf("[%s] iter %d %s: no single winner (growable=%d applied=%s)",
+			phase, i, consID, len(growable), ngResp.AppliedPlacement)
+		return
+	}
+
+	rec := testlib.SelectionRecord{
+		Timestamp:      start,
+		ConsumerID:     consID,
+		Phase:          phase,
+		Policy:         policy,
+		Iteration:      i,
+		SelectedID:     winner.ProviderClusterID,
+		NodeGroupID:    winner.ID,
+		PlacementValue: winner.PlacementMetric,
+		HasMetric:      winner.HasMetric,
+		Outcome:        "success",
+		DurationMs:     msSince(start),
+	}
+	mu.Lock()
+	*records = append(*records, rec)
+	mu.Unlock()
+
+	log.Printf("[%s] iter %02d %s: winner=%-20s metric=%8.2f applied=%s",
+		phase, i, consID, winner.ProviderClusterID, winner.PlacementMetric, ngResp.AppliedPlacement)
+}
+
+// reservePhaseState is the shared, mutex-protected state one runReservePhase
+// call accumulates across all consumers and iterations. Every consumer's own
+// entries in active/seqNo are only ever touched by that consumer's own
+// goroutine, but Go maps are not safe for concurrent access from multiple
+// goroutines even across disjoint keys, so every access — reads included —
+// goes through mu.
+type reservePhaseState struct {
+	mu           sync.Mutex
+	selections   []testlib.SelectionRecord
+	reservations []testlib.ReservationRecord
+	snapshots    []testlib.NodeGroupSnapshotRecord
+	active       map[string]*testlib.ConsumerReservation
+	seqNo        map[string]int
+}
+
+func newReservePhaseState() *reservePhaseState {
+	return &reservePhaseState{
+		active: make(map[string]*testlib.ConsumerReservation),
+		seqNo:  make(map[string]int),
+	}
+}
+
+func (s *reservePhaseState) addSnapshots(snaps []testlib.NodeGroupSnapshotRecord) {
+	s.mu.Lock()
+	s.snapshots = append(s.snapshots, snaps...)
+	s.mu.Unlock()
+}
+
+func (s *reservePhaseState) addSelection(sel testlib.SelectionRecord) {
+	s.mu.Lock()
+	s.selections = append(s.selections, sel)
+	s.mu.Unlock()
+}
+
+func (s *reservePhaseState) addReservation(res testlib.ReservationRecord) {
+	s.mu.Lock()
+	s.reservations = append(s.reservations, res)
+	s.mu.Unlock()
+}
+
+func (s *reservePhaseState) getActive(consID string) *testlib.ConsumerReservation {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.active[consID]
+}
+
+func (s *reservePhaseState) setActive(consID string, res *testlib.ConsumerReservation) {
+	s.mu.Lock()
+	s.active[consID] = res
+	s.mu.Unlock()
+}
+
+func (s *reservePhaseState) deleteActive(consID string) {
+	s.mu.Lock()
+	delete(s.active, consID)
+	s.mu.Unlock()
+}
+
+func (s *reservePhaseState) nextSeq(consID string) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	seq := s.seqNo[consID]
+	s.seqNo[consID] = seq + 1
+	return seq
+}
+
+// runReservePhase drives one reserve/keep/switch cycle per iteration.
+// Consumers are dispatched concurrently (one goroutine each) within an
+// iteration, mirroring how independent real Consumer Agents behave in
+// production — each reserves/releases on its own timeline, none blocks
+// behind another's Liqo peering. All consumers in an iteration are joined
+// before the next iteration's phasePause, so the iteration cadence is
+// unchanged; only the per-consumer work inside each iteration is now
+// parallel instead of serial.
 func runReservePhase(ctx context.Context, orch *testlib.Orchestrator, clients *testlib.ExperimentClients, phase, policy string) ([]testlib.SelectionRecord, []testlib.ReservationRecord, []testlib.NodeGroupSnapshotRecord, error) {
 	exp := orch.Config.Experiment
 	pollInterval := exp.ReservationPoll
-
-	var selections []testlib.SelectionRecord
-	var reservations []testlib.ReservationRecord
-	var snapshots []testlib.NodeGroupSnapshotRecord
 
 	consumerIDs := make([]string, 0, len(clients.Consoles))
 	for id := range clients.Consoles {
@@ -357,11 +459,10 @@ func runReservePhase(ctx context.Context, orch *testlib.Orchestrator, clients *t
 	}
 	sort.Strings(consumerIDs)
 
-	active := make(map[string]*testlib.ConsumerReservation)
-	seqNo := make(map[string]int)
+	state := newReservePhaseState()
 
 	defer func() {
-		for consID, res := range active {
+		for consID, res := range state.active {
 			if res == nil {
 				continue
 			}
@@ -376,248 +477,262 @@ func runReservePhase(ctx context.Context, orch *testlib.Orchestrator, clients *t
 
 	for i := 1; i <= exp.Iterations; i++ {
 		if ctx.Err() != nil {
-			return selections, reservations, snapshots, ctx.Err()
+			return state.selections, state.reservations, state.snapshots, ctx.Err()
 		}
 
+		var wg sync.WaitGroup
 		for _, consID := range consumerIDs {
-			start := time.Now()
-			broker := clients.BrokerFor(consID)
-
-			ngResp, err := broker.GetNodeGroups(ctx)
-			if err != nil {
-				selections = append(selections, testlib.SelectionRecord{
-					Timestamp:    start,
-					ConsumerID:   consID,
-					Phase:        phase,
-					Policy:       policy,
-					Iteration:    i,
-					Outcome:      "error",
-					ErrorMessage: fmt.Sprintf("get nodegroups: %v", err),
-					DurationMs:   msSince(start),
-				})
-				log.Printf("[%s] iter %d %s: nodegroups error: %v", phase, i, consID, err)
-				continue
-			}
-
-			winner := testlib.FindWinner(ngResp.NodeGroups)
-
-			for _, ng := range ngResp.NodeGroups {
-				var carbon float64
-				var hasCarbon bool
-				if ng.CarbonIntensity != nil {
-					carbon = *ng.CarbonIntensity
-					hasCarbon = true
-				}
-				snapshots = append(snapshots, testlib.NodeGroupSnapshotRecord{
-					Timestamp:         start,
-					ConsumerID:        consID,
-					Phase:             phase,
-					Policy:            policy,
-					Iteration:         i,
-					ProviderClusterID: ng.ProviderClusterID,
-					NodeGroupID:       ng.ID,
-					PlacementMetric:   ng.PlacementMetric,
-					HasMetric:         ng.HasMetric,
-					CarbonIntensity:   carbon,
-					HasCarbon:         hasCarbon,
-					CurrentReserved:   ng.CurrentReserved,
-					MaxSize:           ng.MaxSize,
-					AppliedPlacement:  string(ngResp.AppliedPlacement),
-					IsSelected:        winner != nil && ng.ID == winner.ID,
-				})
-			}
-
-			if winner == nil {
-				growable := testlib.GrowableNodeGroups(ngResp.NodeGroups)
-				selections = append(selections, testlib.SelectionRecord{
-					Timestamp:    start,
-					ConsumerID:   consID,
-					Phase:        phase,
-					Policy:       policy,
-					Iteration:    i,
-					Outcome:      "no-winner",
-					ErrorMessage: fmt.Sprintf("growable=%d applied=%s", len(growable), ngResp.AppliedPlacement),
-					DurationMs:   msSince(start),
-				})
-				log.Printf("[%s] iter %d %s: no single winner (growable=%d)", phase, i, consID, len(growable))
-				continue
-			}
-
-			cur := active[consID]
-
-			if !testlib.ShouldSwitch(cur, winner.ProviderClusterID, ngResp.NodeGroups) {
-				curNG := testlib.FindNodeGroupByProvider(ngResp.NodeGroups, cur.ProviderClusterID)
-				var curMetric float64
-				var curHasMetric bool
-				if curNG != nil {
-					curMetric = curNG.PlacementMetric
-					curHasMetric = curNG.HasMetric
-				}
-
-				selections = append(selections, testlib.SelectionRecord{
-					Timestamp:      start,
-					ConsumerID:     consID,
-					Phase:          phase,
-					Policy:         policy,
-					Iteration:      i,
-					SelectedID:     cur.ProviderClusterID,
-					NodeGroupID:    cur.NodeGroupID,
-					ReservationID:  cur.ReservationID,
-					PlacementValue: curMetric,
-					HasMetric:      curHasMetric,
-					Outcome:        "success",
-					DurationMs:     msSince(start),
-				})
-				reservations = append(reservations, testlib.ReservationRecord{
-					Timestamp:         start,
-					ConsumerID:        consID,
-					Phase:             phase,
-					Policy:            policy,
-					Iteration:         i,
-					ReservationID:     cur.ReservationID,
-					ProviderClusterID: cur.ProviderClusterID,
-					NodeGroupID:       cur.NodeGroupID,
-					Action:            "keep",
-					FinalPhase:        "Peered",
-					PlacementMetric:   curMetric,
-					Outcome:           "success",
-					TotalMs:           msSince(start),
-				})
-				log.Printf("[%s] iter %02d %s: keep  %-20s (metric=%.2f)", phase, i, consID, cur.ProviderClusterID, curMetric)
-				continue
-			}
-
-			var prevProvider string
-			var releaseMs float64
-
-			if cur != nil {
-				prevProvider = cur.ProviderClusterID
-				releaseStart := time.Now()
-				releaseCtx, releaseCancel := context.WithTimeout(ctx, exp.ReservationTimeout)
-				if err := broker.ReleaseAndWait(releaseCtx, cur.ReservationID, cur.Request, pollInterval); err != nil {
-					log.Printf("[%s] iter %d %s: release error for %s: %v", phase, i, consID, cur.ReservationID, err)
-				}
-				releaseCancel()
-				releaseMs = msSince(releaseStart)
-				delete(active, consID)
-			}
-
-			seq := seqNo[consID]
-			seqNo[consID] = seq + 1
-			resID := testlib.MakeReservationID(orch.RunID, phase, consID, seq)
-
-			req := &brokerapi.ReservationRequest{
-				ProviderClusterID: winner.ProviderClusterID,
-				NodeGroupID:       winner.ID,
-				ChunkCount:        1,
-				ChunkType:         brokerv1alpha1.ChunkTypeStandard,
-			}
-
-			peerStart := time.Now()
-			peerCtx, peerCancel := context.WithTimeout(ctx, exp.ReservationTimeout)
-			resp, peerErr := broker.ReserveAndWait(peerCtx, resID, req, pollInterval)
-			peerCancel()
-			peerMs := msSince(peerStart)
-
-			action := "create"
-			if prevProvider != "" {
-				action = "switch"
-			}
-
-			if peerErr != nil {
-				finalPhase := ""
-				if resp != nil {
-					finalPhase = string(resp.Status)
-				}
-				selections = append(selections, testlib.SelectionRecord{
-					Timestamp:      start,
-					ConsumerID:     consID,
-					Phase:          phase,
-					Policy:         policy,
-					Iteration:      i,
-					SelectedID:     winner.ProviderClusterID,
-					NodeGroupID:    winner.ID,
-					ReservationID:  resID,
-					PlacementValue: winner.PlacementMetric,
-					HasMetric:      winner.HasMetric,
-					Outcome:        "reserve-error",
-					ErrorMessage:   peerErr.Error(),
-					DurationMs:     msSince(start),
-				})
-				reservations = append(reservations, testlib.ReservationRecord{
-					Timestamp:         start,
-					ConsumerID:        consID,
-					Phase:             phase,
-					Policy:            policy,
-					Iteration:         i,
-					ReservationID:     resID,
-					ProviderClusterID: winner.ProviderClusterID,
-					NodeGroupID:       winner.ID,
-					Action:            action,
-					PrevProviderID:    prevProvider,
-					PeerMs:            peerMs,
-					ReleaseMs:         releaseMs,
-					TotalMs:           msSince(start),
-					FinalPhase:        finalPhase,
-					PlacementMetric:   winner.PlacementMetric,
-					Outcome:           "error",
-					ErrorMessage:      peerErr.Error(),
-				})
-				log.Printf("[%s] iter %d %s: %s error → %s: %v", phase, i, consID, action, winner.ProviderClusterID, peerErr)
-				continue
-			}
-
-			active[consID] = &testlib.ConsumerReservation{
-				ReservationID:     resID,
-				ProviderClusterID: winner.ProviderClusterID,
-				NodeGroupID:       winner.ID,
-				Request:           req,
-			}
-
-			selections = append(selections, testlib.SelectionRecord{
-				Timestamp:      start,
-				ConsumerID:     consID,
-				Phase:          phase,
-				Policy:         policy,
-				Iteration:      i,
-				SelectedID:     winner.ProviderClusterID,
-				NodeGroupID:    winner.ID,
-				ReservationID:  resID,
-				PlacementValue: winner.PlacementMetric,
-				HasMetric:      winner.HasMetric,
-				Outcome:        "success",
-				DurationMs:     msSince(start),
-			})
-			reservations = append(reservations, testlib.ReservationRecord{
-				Timestamp:         start,
-				ConsumerID:        consID,
-				Phase:             phase,
-				Policy:            policy,
-				Iteration:         i,
-				ReservationID:     resID,
-				ProviderClusterID: winner.ProviderClusterID,
-				NodeGroupID:       winner.ID,
-				Action:            action,
-				PrevProviderID:    prevProvider,
-				PeerMs:            peerMs,
-				ReleaseMs:         releaseMs,
-				TotalMs:           msSince(start),
-				FinalPhase:        string(resp.Status),
-				PlacementMetric:   winner.PlacementMetric,
-				Outcome:           "success",
-			})
-			log.Printf("[%s] iter %02d %s: %s %-20s (res=%s peer=%.0fms rel=%.0fms metric=%.2f)",
-				phase, i, consID, action, winner.ProviderClusterID, resID, peerMs, releaseMs, winner.PlacementMetric)
+			wg.Add(1)
+			go func(consID string) {
+				defer wg.Done()
+				runReserveConsumerIteration(ctx, orch, clients, phase, policy, i, consID, pollInterval, exp, state)
+			}(consID)
 		}
+		wg.Wait()
 
 		if i < exp.Iterations {
 			if err := testlib.SleepCtx(ctx, exp.PhasePause); err != nil {
-				return selections, reservations, snapshots, err
+				return state.selections, state.reservations, state.snapshots, err
 			}
 		}
 	}
 
-	return selections, reservations, snapshots, nil
+	return state.selections, state.reservations, state.snapshots, nil
+}
+
+// runReserveConsumerIteration is the per-consumer, per-iteration body of
+// runReservePhase, safe to run concurrently with other consumers' calls:
+// every access to shared state goes through state's own locking.
+func runReserveConsumerIteration(ctx context.Context, orch *testlib.Orchestrator, clients *testlib.ExperimentClients, phase, policy string, i int, consID string, pollInterval time.Duration, exp testlib.TestParams, state *reservePhaseState) {
+	start := time.Now()
+	broker := clients.BrokerFor(consID)
+
+	ngResp, err := broker.GetNodeGroups(ctx)
+	if err != nil {
+		state.addSelection(testlib.SelectionRecord{
+			Timestamp:    start,
+			ConsumerID:   consID,
+			Phase:        phase,
+			Policy:       policy,
+			Iteration:    i,
+			Outcome:      "error",
+			ErrorMessage: fmt.Sprintf("get nodegroups: %v", err),
+			DurationMs:   msSince(start),
+		})
+		log.Printf("[%s] iter %d %s: nodegroups error: %v", phase, i, consID, err)
+		return
+	}
+
+	winner := testlib.FindWinner(ngResp.NodeGroups)
+
+	snaps := make([]testlib.NodeGroupSnapshotRecord, 0, len(ngResp.NodeGroups))
+	for _, ng := range ngResp.NodeGroups {
+		var carbon float64
+		var hasCarbon bool
+		if ng.CarbonIntensity != nil {
+			carbon = *ng.CarbonIntensity
+			hasCarbon = true
+		}
+		snaps = append(snaps, testlib.NodeGroupSnapshotRecord{
+			Timestamp:         start,
+			ConsumerID:        consID,
+			Phase:             phase,
+			Policy:            policy,
+			Iteration:         i,
+			ProviderClusterID: ng.ProviderClusterID,
+			NodeGroupID:       ng.ID,
+			PlacementMetric:   ng.PlacementMetric,
+			HasMetric:         ng.HasMetric,
+			CarbonIntensity:   carbon,
+			HasCarbon:         hasCarbon,
+			CurrentReserved:   ng.CurrentReserved,
+			MaxSize:           ng.MaxSize,
+			AppliedPlacement:  string(ngResp.AppliedPlacement),
+			IsSelected:        winner != nil && ng.ID == winner.ID,
+		})
+	}
+	state.addSnapshots(snaps)
+
+	if winner == nil {
+		growable := testlib.GrowableNodeGroups(ngResp.NodeGroups)
+		state.addSelection(testlib.SelectionRecord{
+			Timestamp:    start,
+			ConsumerID:   consID,
+			Phase:        phase,
+			Policy:       policy,
+			Iteration:    i,
+			Outcome:      "no-winner",
+			ErrorMessage: fmt.Sprintf("growable=%d applied=%s", len(growable), ngResp.AppliedPlacement),
+			DurationMs:   msSince(start),
+		})
+		log.Printf("[%s] iter %d %s: no single winner (growable=%d)", phase, i, consID, len(growable))
+		return
+	}
+
+	cur := state.getActive(consID)
+
+	if !testlib.ShouldSwitch(cur, winner.ProviderClusterID, ngResp.NodeGroups) {
+		curNG := testlib.FindNodeGroupByProvider(ngResp.NodeGroups, cur.ProviderClusterID)
+		var curMetric float64
+		var curHasMetric bool
+		if curNG != nil {
+			curMetric = curNG.PlacementMetric
+			curHasMetric = curNG.HasMetric
+		}
+
+		state.addSelection(testlib.SelectionRecord{
+			Timestamp:      start,
+			ConsumerID:     consID,
+			Phase:          phase,
+			Policy:         policy,
+			Iteration:      i,
+			SelectedID:     cur.ProviderClusterID,
+			NodeGroupID:    cur.NodeGroupID,
+			ReservationID:  cur.ReservationID,
+			PlacementValue: curMetric,
+			HasMetric:      curHasMetric,
+			Outcome:        "success",
+			DurationMs:     msSince(start),
+		})
+		state.addReservation(testlib.ReservationRecord{
+			Timestamp:         start,
+			ConsumerID:        consID,
+			Phase:             phase,
+			Policy:            policy,
+			Iteration:         i,
+			ReservationID:     cur.ReservationID,
+			ProviderClusterID: cur.ProviderClusterID,
+			NodeGroupID:       cur.NodeGroupID,
+			Action:            "keep",
+			FinalPhase:        "Peered",
+			PlacementMetric:   curMetric,
+			Outcome:           "success",
+			TotalMs:           msSince(start),
+		})
+		log.Printf("[%s] iter %02d %s: keep  %-20s (metric=%.2f)", phase, i, consID, cur.ProviderClusterID, curMetric)
+		return
+	}
+
+	var prevProvider string
+	var releaseMs float64
+
+	if cur != nil {
+		prevProvider = cur.ProviderClusterID
+		releaseStart := time.Now()
+		releaseCtx, releaseCancel := context.WithTimeout(ctx, exp.ReservationTimeout)
+		if err := broker.ReleaseAndWait(releaseCtx, cur.ReservationID, cur.Request, pollInterval); err != nil {
+			log.Printf("[%s] iter %d %s: release error for %s: %v", phase, i, consID, cur.ReservationID, err)
+		}
+		releaseCancel()
+		releaseMs = msSince(releaseStart)
+		state.deleteActive(consID)
+	}
+
+	seq := state.nextSeq(consID)
+	resID := testlib.MakeReservationID(orch.RunID, phase, consID, seq)
+
+	req := &brokerapi.ReservationRequest{
+		ProviderClusterID: winner.ProviderClusterID,
+		NodeGroupID:       winner.ID,
+		ChunkCount:        1,
+		ChunkType:         brokerv1alpha1.ChunkTypeStandard,
+	}
+
+	peerStart := time.Now()
+	peerCtx, peerCancel := context.WithTimeout(ctx, exp.ReservationTimeout)
+	resp, peerErr := broker.ReserveAndWait(peerCtx, resID, req, pollInterval)
+	peerCancel()
+	peerMs := msSince(peerStart)
+
+	action := "create"
+	if prevProvider != "" {
+		action = "switch"
+	}
+
+	if peerErr != nil {
+		finalPhase := ""
+		if resp != nil {
+			finalPhase = string(resp.Status)
+		}
+		state.addSelection(testlib.SelectionRecord{
+			Timestamp:      start,
+			ConsumerID:     consID,
+			Phase:          phase,
+			Policy:         policy,
+			Iteration:      i,
+			SelectedID:     winner.ProviderClusterID,
+			NodeGroupID:    winner.ID,
+			ReservationID:  resID,
+			PlacementValue: winner.PlacementMetric,
+			HasMetric:      winner.HasMetric,
+			Outcome:        "reserve-error",
+			ErrorMessage:   peerErr.Error(),
+			DurationMs:     msSince(start),
+		})
+		state.addReservation(testlib.ReservationRecord{
+			Timestamp:         start,
+			ConsumerID:        consID,
+			Phase:             phase,
+			Policy:            policy,
+			Iteration:         i,
+			ReservationID:     resID,
+			ProviderClusterID: winner.ProviderClusterID,
+			NodeGroupID:       winner.ID,
+			Action:            action,
+			PrevProviderID:    prevProvider,
+			PeerMs:            peerMs,
+			ReleaseMs:         releaseMs,
+			TotalMs:           msSince(start),
+			FinalPhase:        finalPhase,
+			PlacementMetric:   winner.PlacementMetric,
+			Outcome:           "error",
+			ErrorMessage:      peerErr.Error(),
+		})
+		log.Printf("[%s] iter %d %s: %s error → %s: %v", phase, i, consID, action, winner.ProviderClusterID, peerErr)
+		return
+	}
+
+	state.setActive(consID, &testlib.ConsumerReservation{
+		ReservationID:     resID,
+		ProviderClusterID: winner.ProviderClusterID,
+		NodeGroupID:       winner.ID,
+		Request:           req,
+	})
+
+	state.addSelection(testlib.SelectionRecord{
+		Timestamp:      start,
+		ConsumerID:     consID,
+		Phase:          phase,
+		Policy:         policy,
+		Iteration:      i,
+		SelectedID:     winner.ProviderClusterID,
+		NodeGroupID:    winner.ID,
+		ReservationID:  resID,
+		PlacementValue: winner.PlacementMetric,
+		HasMetric:      winner.HasMetric,
+		Outcome:        "success",
+		DurationMs:     msSince(start),
+	})
+	state.addReservation(testlib.ReservationRecord{
+		Timestamp:         start,
+		ConsumerID:        consID,
+		Phase:             phase,
+		Policy:            policy,
+		Iteration:         i,
+		ReservationID:     resID,
+		ProviderClusterID: winner.ProviderClusterID,
+		NodeGroupID:       winner.ID,
+		Action:            action,
+		PrevProviderID:    prevProvider,
+		PeerMs:            peerMs,
+		ReleaseMs:         releaseMs,
+		TotalMs:           msSince(start),
+		FinalPhase:        string(resp.Status),
+		PlacementMetric:   winner.PlacementMetric,
+		Outcome:           "success",
+	})
+	log.Printf("[%s] iter %02d %s: %s %-20s (res=%s peer=%.0fms rel=%.0fms metric=%.2f)",
+		phase, i, consID, action, winner.ProviderClusterID, resID, peerMs, releaseMs, winner.PlacementMetric)
 }
 
 func summarizePhase(records []testlib.SelectionRecord) testlib.PhaseSummary {

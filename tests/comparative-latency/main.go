@@ -294,8 +294,15 @@ func runExperiment(ctx context.Context, orch *testlib.Orchestrator) error {
 	return nil
 }
 
+// runLatencyPhase drives one probe/select cycle per iteration. Consumers are
+// dispatched concurrently (one goroutine each) within an iteration, mirroring
+// how independent real Consumer Agents behave in production. All consumers
+// in an iteration are joined before the next iteration's phasePause, so the
+// iteration cadence is unchanged; only the per-consumer work inside each
+// iteration is now parallel instead of serial.
 func runLatencyPhase(ctx context.Context, orch *testlib.Orchestrator, clients *testlib.ExperimentClients, endpoints map[string]string, phase, policy string) ([]testlib.SelectionRecord, []testlib.ProbeRecord, error) {
 	exp := orch.Config.Experiment
+	var mu sync.Mutex
 	var selections []testlib.SelectionRecord
 	var probes []testlib.ProbeRecord
 
@@ -310,119 +317,15 @@ func runLatencyPhase(ctx context.Context, orch *testlib.Orchestrator, clients *t
 			return selections, probes, ctx.Err()
 		}
 
+		var wg sync.WaitGroup
 		for _, consID := range consumerIDs {
-			console := clients.Consoles[consID]
-			broker := clients.BrokerFor(consID)
-			start := time.Now()
-			rec := testlib.SelectionRecord{
-				Timestamp:  start,
-				ConsumerID: consID,
-				Phase:      phase,
-				Policy:     policy,
-				Iteration:  i,
-			}
-
-			ngResp, err := broker.GetNodeGroups(ctx)
-			if err != nil {
-				rec.Outcome = "error"
-				rec.ErrorMessage = fmt.Sprintf("get nodegroups: %v", err)
-				rec.DurationMs = msSince(start)
-				selections = append(selections, rec)
-				log.Printf("[%s] iter %d %s: nodegroups error: %v", phase, i, consID, err)
-				continue
-			}
-
-			if ngResp.LatencyShortlist {
-				growable := testlib.GrowableNodeGroups(ngResp.NodeGroups)
-				var candidates []testlib.ProbeCandidate
-				for _, ng := range growable {
-					if ep, ok := endpoints[ng.ProviderClusterID]; ok {
-						candidates = append(candidates, testlib.ProbeCandidate{
-							ProviderClusterID: ng.ProviderClusterID,
-							Endpoint:          ep,
-						})
-					}
-				}
-				if len(candidates) == 0 {
-					rec.Outcome = "no-candidates"
-					rec.ErrorMessage = "no growable with ProbeEndpoint"
-					rec.DurationMs = msSince(start)
-					selections = append(selections, rec)
-					continue
-				}
-
-				probeResp, err := console.Probe(ctx, candidates)
-				if err != nil {
-					rec.Outcome = "probe-error"
-					rec.ErrorMessage = err.Error()
-					rec.DurationMs = msSince(start)
-					selections = append(selections, rec)
-					continue
-				}
-
-				rec.SelectedID = probeResp.Chosen
-				if ng := testlib.FindNodeGroupByProvider(ngResp.NodeGroups, probeResp.Chosen); ng != nil {
-					rec.NodeGroupID = ng.ID
-				}
-				if rtt, ok := probeResp.RTTs[probeResp.Chosen]; ok {
-					rec.RTTMs = rtt
-				}
-				rec.Outcome = "success"
-				rec.DurationMs = msSince(start)
-				selections = append(selections, rec)
-
-				probes = append(probes, testlib.ProbeRecord{
-					Timestamp:  start,
-					ConsumerID: consID,
-					Phase:      phase,
-					Policy:     policy,
-					Iteration:  i,
-					Chosen:     probeResp.Chosen,
-					RTTs:       probeResp.RTTs,
-					DurationMs: probeResp.Duration,
-				})
-			} else {
-				winner := testlib.FindWinner(ngResp.NodeGroups)
-				if winner == nil {
-					rec.Outcome = "no-winner"
-					rec.DurationMs = msSince(start)
-					selections = append(selections, rec)
-					continue
-				}
-
-				rec.SelectedID = winner.ProviderClusterID
-				rec.NodeGroupID = winner.ID
-
-				if ep, ok := endpoints[winner.ProviderClusterID]; ok {
-					probeResp, err := console.Probe(ctx, []testlib.ProbeCandidate{{
-						ProviderClusterID: winner.ProviderClusterID,
-						Endpoint:          ep,
-					}})
-					if err == nil {
-						if rtt, ok := probeResp.RTTs[winner.ProviderClusterID]; ok {
-							rec.RTTMs = rtt
-						}
-						probes = append(probes, testlib.ProbeRecord{
-							Timestamp:  start,
-							ConsumerID: consID,
-							Phase:      phase,
-							Policy:     policy,
-							Iteration:  i,
-							Chosen:     winner.ProviderClusterID,
-							RTTs:       probeResp.RTTs,
-							DurationMs: probeResp.Duration,
-						})
-					}
-				}
-
-				rec.Outcome = "success"
-				rec.DurationMs = msSince(start)
-				selections = append(selections, rec)
-			}
-
-			log.Printf("[%s] iter %02d %s: winner=%-20s rtt=%8.2fms shortlist=%v",
-				phase, i, consID, rec.SelectedID, rec.RTTMs, ngResp.LatencyShortlist)
+			wg.Add(1)
+			go func(consID string) {
+				defer wg.Done()
+				runLatencyConsumerIteration(ctx, clients, endpoints, phase, policy, i, consID, &mu, &selections, &probes)
+			}(consID)
 		}
+		wg.Wait()
 
 		if i < exp.Iterations {
 			if err := testlib.SleepCtx(ctx, exp.PhasePause); err != nil {
@@ -434,13 +337,210 @@ func runLatencyPhase(ctx context.Context, orch *testlib.Orchestrator, clients *t
 	return selections, probes, nil
 }
 
+// runLatencyConsumerIteration is the per-consumer, per-iteration body of
+// runLatencyPhase, safe to run concurrently with other consumers' calls: it
+// only touches shared state (selections, probes) behind mu.
+func runLatencyConsumerIteration(ctx context.Context, clients *testlib.ExperimentClients, endpoints map[string]string, phase, policy string, i int, consID string, mu *sync.Mutex, selections *[]testlib.SelectionRecord, probes *[]testlib.ProbeRecord) {
+	console := clients.Consoles[consID]
+	broker := clients.BrokerFor(consID)
+	start := time.Now()
+	rec := testlib.SelectionRecord{
+		Timestamp:  start,
+		ConsumerID: consID,
+		Phase:      phase,
+		Policy:     policy,
+		Iteration:  i,
+	}
+	appendSel := func(r testlib.SelectionRecord) {
+		mu.Lock()
+		*selections = append(*selections, r)
+		mu.Unlock()
+	}
+	appendProbe := func(p testlib.ProbeRecord) {
+		mu.Lock()
+		*probes = append(*probes, p)
+		mu.Unlock()
+	}
+
+	ngResp, err := broker.GetNodeGroups(ctx)
+	if err != nil {
+		rec.Outcome = "error"
+		rec.ErrorMessage = fmt.Sprintf("get nodegroups: %v", err)
+		rec.DurationMs = msSince(start)
+		appendSel(rec)
+		log.Printf("[%s] iter %d %s: nodegroups error: %v", phase, i, consID, err)
+		return
+	}
+
+	if ngResp.LatencyShortlist {
+		growable := testlib.GrowableNodeGroups(ngResp.NodeGroups)
+		var candidates []testlib.ProbeCandidate
+		for _, ng := range growable {
+			if ep, ok := endpoints[ng.ProviderClusterID]; ok {
+				candidates = append(candidates, testlib.ProbeCandidate{
+					ProviderClusterID: ng.ProviderClusterID,
+					Endpoint:          ep,
+				})
+			}
+		}
+		if len(candidates) == 0 {
+			rec.Outcome = "no-candidates"
+			rec.ErrorMessage = "no growable with ProbeEndpoint"
+			rec.DurationMs = msSince(start)
+			appendSel(rec)
+			return
+		}
+
+		probeResp, err := console.Probe(ctx, candidates)
+		if err != nil {
+			rec.Outcome = "probe-error"
+			rec.ErrorMessage = err.Error()
+			rec.DurationMs = msSince(start)
+			appendSel(rec)
+			return
+		}
+
+		rec.SelectedID = probeResp.Chosen
+		if ng := testlib.FindNodeGroupByProvider(ngResp.NodeGroups, probeResp.Chosen); ng != nil {
+			rec.NodeGroupID = ng.ID
+		}
+		if rtt, ok := probeResp.RTTs[probeResp.Chosen]; ok {
+			rec.RTTMs = rtt
+		}
+		rec.Outcome = "success"
+		rec.DurationMs = msSince(start)
+		appendSel(rec)
+
+		appendProbe(testlib.ProbeRecord{
+			Timestamp:  start,
+			ConsumerID: consID,
+			Phase:      phase,
+			Policy:     policy,
+			Iteration:  i,
+			Chosen:     probeResp.Chosen,
+			RTTs:       probeResp.RTTs,
+			DurationMs: probeResp.Duration,
+		})
+	} else {
+		winner := testlib.FindWinner(ngResp.NodeGroups)
+		if winner == nil {
+			rec.Outcome = "no-winner"
+			rec.DurationMs = msSince(start)
+			appendSel(rec)
+			return
+		}
+
+		rec.SelectedID = winner.ProviderClusterID
+		rec.NodeGroupID = winner.ID
+
+		if ep, ok := endpoints[winner.ProviderClusterID]; ok {
+			probeResp, err := console.Probe(ctx, []testlib.ProbeCandidate{{
+				ProviderClusterID: winner.ProviderClusterID,
+				Endpoint:          ep,
+			}})
+			if err == nil {
+				if rtt, ok := probeResp.RTTs[winner.ProviderClusterID]; ok {
+					rec.RTTMs = rtt
+				}
+				appendProbe(testlib.ProbeRecord{
+					Timestamp:  start,
+					ConsumerID: consID,
+					Phase:      phase,
+					Policy:     policy,
+					Iteration:  i,
+					Chosen:     winner.ProviderClusterID,
+					RTTs:       probeResp.RTTs,
+					DurationMs: probeResp.Duration,
+				})
+			}
+		}
+
+		rec.Outcome = "success"
+		rec.DurationMs = msSince(start)
+		appendSel(rec)
+	}
+
+	log.Printf("[%s] iter %02d %s: winner=%-20s rtt=%8.2fms shortlist=%v",
+		phase, i, consID, rec.SelectedID, rec.RTTMs, ngResp.LatencyShortlist)
+}
+
+// latencyReservePhaseState is the shared, mutex-protected state one
+// runReservePhase call accumulates across all consumers and iterations. Every
+// consumer's own entries in active/seqNo are only ever touched by that
+// consumer's own goroutine, but Go maps are not safe for concurrent access
+// from multiple goroutines even across disjoint keys, so every access —
+// reads included — goes through mu.
+type latencyReservePhaseState struct {
+	mu           sync.Mutex
+	selections   []testlib.SelectionRecord
+	probes       []testlib.ProbeRecord
+	reservations []testlib.ReservationRecord
+	active       map[string]*testlib.ConsumerReservation
+	seqNo        map[string]int
+}
+
+func newLatencyReservePhaseState() *latencyReservePhaseState {
+	return &latencyReservePhaseState{
+		active: make(map[string]*testlib.ConsumerReservation),
+		seqNo:  make(map[string]int),
+	}
+}
+
+func (s *latencyReservePhaseState) addSelection(sel testlib.SelectionRecord) {
+	s.mu.Lock()
+	s.selections = append(s.selections, sel)
+	s.mu.Unlock()
+}
+
+func (s *latencyReservePhaseState) addProbe(p testlib.ProbeRecord) {
+	s.mu.Lock()
+	s.probes = append(s.probes, p)
+	s.mu.Unlock()
+}
+
+func (s *latencyReservePhaseState) addReservation(res testlib.ReservationRecord) {
+	s.mu.Lock()
+	s.reservations = append(s.reservations, res)
+	s.mu.Unlock()
+}
+
+func (s *latencyReservePhaseState) getActive(consID string) *testlib.ConsumerReservation {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.active[consID]
+}
+
+func (s *latencyReservePhaseState) setActive(consID string, res *testlib.ConsumerReservation) {
+	s.mu.Lock()
+	s.active[consID] = res
+	s.mu.Unlock()
+}
+
+func (s *latencyReservePhaseState) deleteActive(consID string) {
+	s.mu.Lock()
+	delete(s.active, consID)
+	s.mu.Unlock()
+}
+
+func (s *latencyReservePhaseState) nextSeq(consID string) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	seq := s.seqNo[consID]
+	s.seqNo[consID] = seq + 1
+	return seq
+}
+
+// runReservePhase drives one reserve/keep/switch cycle per iteration.
+// Consumers are dispatched concurrently (one goroutine each) within an
+// iteration, mirroring how independent real Consumer Agents behave in
+// production — each probes/reserves/releases on its own timeline, none
+// blocks behind another's Liqo peering. All consumers in an iteration are
+// joined before the next iteration's phasePause, so the iteration cadence is
+// unchanged; only the per-consumer work inside each iteration is now
+// parallel instead of serial.
 func runReservePhase(ctx context.Context, orch *testlib.Orchestrator, clients *testlib.ExperimentClients, endpoints map[string]string, phase, policy string) ([]testlib.SelectionRecord, []testlib.ProbeRecord, []testlib.ReservationRecord, error) {
 	exp := orch.Config.Experiment
 	pollInterval := exp.ReservationPoll
-
-	var selections []testlib.SelectionRecord
-	var probes []testlib.ProbeRecord
-	var reservations []testlib.ReservationRecord
 
 	consumerIDs := make([]string, 0, len(clients.Consoles))
 	for id := range clients.Consoles {
@@ -448,11 +548,10 @@ func runReservePhase(ctx context.Context, orch *testlib.Orchestrator, clients *t
 	}
 	sort.Strings(consumerIDs)
 
-	active := make(map[string]*testlib.ConsumerReservation)
-	seqNo := make(map[string]int)
+	state := newLatencyReservePhaseState()
 
 	defer func() {
-		for consID, res := range active {
+		for consID, res := range state.active {
 			if res == nil {
 				continue
 			}
@@ -467,80 +566,139 @@ func runReservePhase(ctx context.Context, orch *testlib.Orchestrator, clients *t
 
 	for i := 1; i <= exp.Iterations; i++ {
 		if ctx.Err() != nil {
-			return selections, probes, reservations, ctx.Err()
+			return state.selections, state.probes, state.reservations, ctx.Err()
 		}
 
+		var wg sync.WaitGroup
 		for _, consID := range consumerIDs {
-			console := clients.Consoles[consID]
-			broker := clients.BrokerFor(consID)
-			start := time.Now()
+			wg.Add(1)
+			go func(consID string) {
+				defer wg.Done()
+				runLatencyReserveConsumerIteration(ctx, orch, clients, endpoints, phase, policy, i, consID, pollInterval, exp, state)
+			}(consID)
+		}
+		wg.Wait()
 
-			ngResp, err := broker.GetNodeGroups(ctx)
-			if err != nil {
-				selections = append(selections, testlib.SelectionRecord{
-					Timestamp:    start,
-					ConsumerID:   consID,
-					Phase:        phase,
-					Policy:       policy,
-					Iteration:    i,
-					Outcome:      "error",
-					ErrorMessage: fmt.Sprintf("get nodegroups: %v", err),
-					DurationMs:   msSince(start),
-				})
-				log.Printf("[%s] iter %d %s: nodegroups error: %v", phase, i, consID, err)
-				continue
+		if i < exp.Iterations {
+			if err := testlib.SleepCtx(ctx, exp.PhasePause); err != nil {
+				return state.selections, state.probes, state.reservations, err
 			}
+		}
+	}
 
-			// Determine winner via probing (latency shortlist) or single winner.
-			var chosenProviderID, chosenNodeGroupID string
-			var chosenRTT float64
-			var probeRec *testlib.ProbeRecord
+	return state.selections, state.probes, state.reservations, nil
+}
 
-			if ngResp.LatencyShortlist {
-				growable := testlib.GrowableNodeGroups(ngResp.NodeGroups)
-				var candidates []testlib.ProbeCandidate
-				for _, ng := range growable {
-					if ep, ok := endpoints[ng.ProviderClusterID]; ok {
-						candidates = append(candidates, testlib.ProbeCandidate{
-							ProviderClusterID: ng.ProviderClusterID,
-							Endpoint:          ep,
-						})
-					}
-				}
-				if len(candidates) == 0 {
-					selections = append(selections, testlib.SelectionRecord{
-						Timestamp:    start,
-						ConsumerID:   consID,
-						Phase:        phase,
-						Policy:       policy,
-						Iteration:    i,
-						Outcome:      "no-candidates",
-						ErrorMessage: "no growable with ProbeEndpoint",
-						DurationMs:   msSince(start),
-					})
-					continue
-				}
+// runLatencyReserveConsumerIteration is the per-consumer, per-iteration body
+// of runReservePhase, safe to run concurrently with other consumers' calls:
+// every access to shared state goes through state's own locking.
+func runLatencyReserveConsumerIteration(ctx context.Context, orch *testlib.Orchestrator, clients *testlib.ExperimentClients, endpoints map[string]string, phase, policy string, i int, consID string, pollInterval time.Duration, exp testlib.TestParams, state *latencyReservePhaseState) {
+	console := clients.Consoles[consID]
+	broker := clients.BrokerFor(consID)
+	start := time.Now()
 
-				probeResp, err := console.Probe(ctx, candidates)
-				if err != nil {
-					selections = append(selections, testlib.SelectionRecord{
-						Timestamp:    start,
-						ConsumerID:   consID,
-						Phase:        phase,
-						Policy:       policy,
-						Iteration:    i,
-						Outcome:      "probe-error",
-						ErrorMessage: err.Error(),
-						DurationMs:   msSince(start),
-					})
-					continue
-				}
+	ngResp, err := broker.GetNodeGroups(ctx)
+	if err != nil {
+		state.addSelection(testlib.SelectionRecord{
+			Timestamp:    start,
+			ConsumerID:   consID,
+			Phase:        phase,
+			Policy:       policy,
+			Iteration:    i,
+			Outcome:      "error",
+			ErrorMessage: fmt.Sprintf("get nodegroups: %v", err),
+			DurationMs:   msSince(start),
+		})
+		log.Printf("[%s] iter %d %s: nodegroups error: %v", phase, i, consID, err)
+		return
+	}
 
-				chosenProviderID = probeResp.Chosen
-				if ng := testlib.FindNodeGroupByProvider(ngResp.NodeGroups, probeResp.Chosen); ng != nil {
-					chosenNodeGroupID = ng.ID
-				}
-				if rtt, ok := probeResp.RTTs[probeResp.Chosen]; ok {
+	// Determine winner via probing (latency shortlist) or single winner.
+	var chosenProviderID, chosenNodeGroupID string
+	var chosenRTT float64
+	var probeRec *testlib.ProbeRecord
+
+	if ngResp.LatencyShortlist {
+		growable := testlib.GrowableNodeGroups(ngResp.NodeGroups)
+		var candidates []testlib.ProbeCandidate
+		for _, ng := range growable {
+			if ep, ok := endpoints[ng.ProviderClusterID]; ok {
+				candidates = append(candidates, testlib.ProbeCandidate{
+					ProviderClusterID: ng.ProviderClusterID,
+					Endpoint:          ep,
+				})
+			}
+		}
+		if len(candidates) == 0 {
+			state.addSelection(testlib.SelectionRecord{
+				Timestamp:    start,
+				ConsumerID:   consID,
+				Phase:        phase,
+				Policy:       policy,
+				Iteration:    i,
+				Outcome:      "no-candidates",
+				ErrorMessage: "no growable with ProbeEndpoint",
+				DurationMs:   msSince(start),
+			})
+			return
+		}
+
+		probeResp, err := console.Probe(ctx, candidates)
+		if err != nil {
+			state.addSelection(testlib.SelectionRecord{
+				Timestamp:    start,
+				ConsumerID:   consID,
+				Phase:        phase,
+				Policy:       policy,
+				Iteration:    i,
+				Outcome:      "probe-error",
+				ErrorMessage: err.Error(),
+				DurationMs:   msSince(start),
+			})
+			return
+		}
+
+		chosenProviderID = probeResp.Chosen
+		if ng := testlib.FindNodeGroupByProvider(ngResp.NodeGroups, probeResp.Chosen); ng != nil {
+			chosenNodeGroupID = ng.ID
+		}
+		if rtt, ok := probeResp.RTTs[probeResp.Chosen]; ok {
+			chosenRTT = rtt
+		}
+		probeRec = &testlib.ProbeRecord{
+			Timestamp:  start,
+			ConsumerID: consID,
+			Phase:      phase,
+			Policy:     policy,
+			Iteration:  i,
+			Chosen:     probeResp.Chosen,
+			RTTs:       probeResp.RTTs,
+			DurationMs: probeResp.Duration,
+		}
+	} else {
+		winner := testlib.FindWinner(ngResp.NodeGroups)
+		if winner == nil {
+			state.addSelection(testlib.SelectionRecord{
+				Timestamp:  start,
+				ConsumerID: consID,
+				Phase:      phase,
+				Policy:     policy,
+				Iteration:  i,
+				Outcome:    "no-winner",
+				DurationMs: msSince(start),
+			})
+			return
+		}
+		chosenProviderID = winner.ProviderClusterID
+		chosenNodeGroupID = winner.ID
+
+		if ep, ok := endpoints[winner.ProviderClusterID]; ok {
+			probeResp, err := console.Probe(ctx, []testlib.ProbeCandidate{{
+				ProviderClusterID: winner.ProviderClusterID,
+				Endpoint:          ep,
+			}})
+			if err == nil {
+				if rtt, ok := probeResp.RTTs[winner.ProviderClusterID]; ok {
 					chosenRTT = rtt
 				}
 				probeRec = &testlib.ProbeRecord{
@@ -549,238 +707,191 @@ func runReservePhase(ctx context.Context, orch *testlib.Orchestrator, clients *t
 					Phase:      phase,
 					Policy:     policy,
 					Iteration:  i,
-					Chosen:     probeResp.Chosen,
+					Chosen:     winner.ProviderClusterID,
 					RTTs:       probeResp.RTTs,
 					DurationMs: probeResp.Duration,
 				}
-			} else {
-				winner := testlib.FindWinner(ngResp.NodeGroups)
-				if winner == nil {
-					selections = append(selections, testlib.SelectionRecord{
-						Timestamp:  start,
-						ConsumerID: consID,
-						Phase:      phase,
-						Policy:     policy,
-						Iteration:  i,
-						Outcome:    "no-winner",
-						DurationMs: msSince(start),
-					})
-					continue
-				}
-				chosenProviderID = winner.ProviderClusterID
-				chosenNodeGroupID = winner.ID
-
-				if ep, ok := endpoints[winner.ProviderClusterID]; ok {
-					probeResp, err := console.Probe(ctx, []testlib.ProbeCandidate{{
-						ProviderClusterID: winner.ProviderClusterID,
-						Endpoint:          ep,
-					}})
-					if err == nil {
-						if rtt, ok := probeResp.RTTs[winner.ProviderClusterID]; ok {
-							chosenRTT = rtt
-						}
-						probeRec = &testlib.ProbeRecord{
-							Timestamp:  start,
-							ConsumerID: consID,
-							Phase:      phase,
-							Policy:     policy,
-							Iteration:  i,
-							Chosen:     winner.ProviderClusterID,
-							RTTs:       probeResp.RTTs,
-							DurationMs: probeResp.Duration,
-						}
-					}
-				}
-			}
-
-			cur := active[consID]
-
-			// For latency: if current provider was probed and not chosen, switch.
-			// If current provider was NOT probed (not in shortlist), keep.
-			shouldSwitch := cur == nil
-			if cur != nil && chosenProviderID != cur.ProviderClusterID {
-				if probeRec != nil {
-					_, curProbed := probeRec.RTTs[cur.ProviderClusterID]
-					shouldSwitch = curProbed
-				} else {
-					shouldSwitch = true
-				}
-			}
-
-			if !shouldSwitch {
-				if probeRec != nil {
-					probes = append(probes, *probeRec)
-				}
-				selections = append(selections, testlib.SelectionRecord{
-					Timestamp:     start,
-					ConsumerID:    consID,
-					Phase:         phase,
-					Policy:        policy,
-					Iteration:     i,
-					SelectedID:    cur.ProviderClusterID,
-					NodeGroupID:   cur.NodeGroupID,
-					ReservationID: cur.ReservationID,
-					RTTMs:         chosenRTT,
-					Outcome:       "success",
-					DurationMs:    msSince(start),
-				})
-				reservations = append(reservations, testlib.ReservationRecord{
-					Timestamp:         start,
-					ConsumerID:        consID,
-					Phase:             phase,
-					Policy:            policy,
-					Iteration:         i,
-					ReservationID:     cur.ReservationID,
-					ProviderClusterID: cur.ProviderClusterID,
-					NodeGroupID:       cur.NodeGroupID,
-					Action:            "keep",
-					FinalPhase:        "Peered",
-					RTTMs:             chosenRTT,
-					Outcome:           "success",
-					TotalMs:           msSince(start),
-				})
-				log.Printf("[%s] iter %02d %s: keep  %-20s (rtt=%.2fms)", phase, i, consID, cur.ProviderClusterID, chosenRTT)
-				continue
-			}
-
-			if probeRec != nil {
-				probes = append(probes, *probeRec)
-			}
-
-			var prevProvider string
-			var releaseMs float64
-			if cur != nil {
-				prevProvider = cur.ProviderClusterID
-				releaseStart := time.Now()
-				releaseCtx, releaseCancel := context.WithTimeout(ctx, exp.ReservationTimeout)
-				if err := broker.ReleaseAndWait(releaseCtx, cur.ReservationID, cur.Request, pollInterval); err != nil {
-					log.Printf("[%s] iter %d %s: release error for %s: %v", phase, i, consID, cur.ReservationID, err)
-				}
-				releaseCancel()
-				releaseMs = msSince(releaseStart)
-				delete(active, consID)
-			}
-
-			seq := seqNo[consID]
-			seqNo[consID] = seq + 1
-			resID := testlib.MakeReservationID(orch.RunID, phase, consID, seq)
-
-			if chosenNodeGroupID == "" {
-				if ng := testlib.FindNodeGroupByProvider(ngResp.NodeGroups, chosenProviderID); ng != nil {
-					chosenNodeGroupID = ng.ID
-				}
-			}
-
-			req := &brokerapi.ReservationRequest{
-				ProviderClusterID: chosenProviderID,
-				NodeGroupID:       chosenNodeGroupID,
-				ChunkCount:        1,
-				ChunkType:         brokerv1alpha1.ChunkTypeStandard,
-			}
-
-			peerStart := time.Now()
-			peerCtx, peerCancel := context.WithTimeout(ctx, exp.ReservationTimeout)
-			resp, peerErr := broker.ReserveAndWait(peerCtx, resID, req, pollInterval)
-			peerCancel()
-			peerMs := msSince(peerStart)
-
-			action := "create"
-			if prevProvider != "" {
-				action = "switch"
-			}
-
-			if peerErr != nil {
-				finalPhase := ""
-				if resp != nil {
-					finalPhase = string(resp.Status)
-				}
-				selections = append(selections, testlib.SelectionRecord{
-					Timestamp:    start,
-					ConsumerID:   consID,
-					Phase:        phase,
-					Policy:       policy,
-					Iteration:    i,
-					SelectedID:   chosenProviderID,
-					NodeGroupID:  chosenNodeGroupID,
-					ReservationID: resID,
-					RTTMs:        chosenRTT,
-					Outcome:      "reserve-error",
-					ErrorMessage: peerErr.Error(),
-					DurationMs:   msSince(start),
-				})
-				reservations = append(reservations, testlib.ReservationRecord{
-					Timestamp:         start,
-					ConsumerID:        consID,
-					Phase:             phase,
-					Policy:            policy,
-					Iteration:         i,
-					ReservationID:     resID,
-					ProviderClusterID: chosenProviderID,
-					NodeGroupID:       chosenNodeGroupID,
-					Action:            action,
-					PrevProviderID:    prevProvider,
-					PeerMs:            peerMs,
-					ReleaseMs:         releaseMs,
-					TotalMs:           msSince(start),
-					FinalPhase:        finalPhase,
-					RTTMs:             chosenRTT,
-					Outcome:           "error",
-					ErrorMessage:      peerErr.Error(),
-				})
-				log.Printf("[%s] iter %d %s: %s error → %s: %v", phase, i, consID, action, chosenProviderID, peerErr)
-				continue
-			}
-
-			active[consID] = &testlib.ConsumerReservation{
-				ReservationID:     resID,
-				ProviderClusterID: chosenProviderID,
-				NodeGroupID:       chosenNodeGroupID,
-				Request:           req,
-			}
-
-			selections = append(selections, testlib.SelectionRecord{
-				Timestamp:     start,
-				ConsumerID:    consID,
-				Phase:         phase,
-				Policy:        policy,
-				Iteration:     i,
-				SelectedID:    chosenProviderID,
-				NodeGroupID:   chosenNodeGroupID,
-				ReservationID: resID,
-				RTTMs:         chosenRTT,
-				Outcome:       "success",
-				DurationMs:    msSince(start),
-			})
-			reservations = append(reservations, testlib.ReservationRecord{
-				Timestamp:         start,
-				ConsumerID:        consID,
-				Phase:             phase,
-				Policy:            policy,
-				Iteration:         i,
-				ReservationID:     resID,
-				ProviderClusterID: chosenProviderID,
-				NodeGroupID:       chosenNodeGroupID,
-				Action:            action,
-				PrevProviderID:    prevProvider,
-				PeerMs:            peerMs,
-				ReleaseMs:         releaseMs,
-				TotalMs:           msSince(start),
-				FinalPhase:        string(resp.Status),
-				RTTMs:             chosenRTT,
-				Outcome:           "success",
-			})
-			log.Printf("[%s] iter %02d %s: %s %-20s (res=%s peer=%.0fms rel=%.0fms rtt=%.2fms)",
-				phase, i, consID, action, chosenProviderID, resID, peerMs, releaseMs, chosenRTT)
-		}
-
-		if i < exp.Iterations {
-			if err := testlib.SleepCtx(ctx, exp.PhasePause); err != nil {
-				return selections, probes, reservations, err
 			}
 		}
 	}
 
-	return selections, probes, reservations, nil
+	cur := state.getActive(consID)
+
+	// For latency: if current provider was probed and not chosen, switch.
+	// If current provider was NOT probed (not in shortlist), keep.
+	shouldSwitch := cur == nil
+	if cur != nil && chosenProviderID != cur.ProviderClusterID {
+		if probeRec != nil {
+			_, curProbed := probeRec.RTTs[cur.ProviderClusterID]
+			shouldSwitch = curProbed
+		} else {
+			shouldSwitch = true
+		}
+	}
+
+	if !shouldSwitch {
+		if probeRec != nil {
+			state.addProbe(*probeRec)
+		}
+		state.addSelection(testlib.SelectionRecord{
+			Timestamp:     start,
+			ConsumerID:    consID,
+			Phase:         phase,
+			Policy:        policy,
+			Iteration:     i,
+			SelectedID:    cur.ProviderClusterID,
+			NodeGroupID:   cur.NodeGroupID,
+			ReservationID: cur.ReservationID,
+			RTTMs:         chosenRTT,
+			Outcome:       "success",
+			DurationMs:    msSince(start),
+		})
+		state.addReservation(testlib.ReservationRecord{
+			Timestamp:         start,
+			ConsumerID:        consID,
+			Phase:             phase,
+			Policy:            policy,
+			Iteration:         i,
+			ReservationID:     cur.ReservationID,
+			ProviderClusterID: cur.ProviderClusterID,
+			NodeGroupID:       cur.NodeGroupID,
+			Action:            "keep",
+			FinalPhase:        "Peered",
+			RTTMs:             chosenRTT,
+			Outcome:           "success",
+			TotalMs:           msSince(start),
+		})
+		log.Printf("[%s] iter %02d %s: keep  %-20s (rtt=%.2fms)", phase, i, consID, cur.ProviderClusterID, chosenRTT)
+		return
+	}
+
+	if probeRec != nil {
+		state.addProbe(*probeRec)
+	}
+
+	var prevProvider string
+	var releaseMs float64
+	if cur != nil {
+		prevProvider = cur.ProviderClusterID
+		releaseStart := time.Now()
+		releaseCtx, releaseCancel := context.WithTimeout(ctx, exp.ReservationTimeout)
+		if err := broker.ReleaseAndWait(releaseCtx, cur.ReservationID, cur.Request, pollInterval); err != nil {
+			log.Printf("[%s] iter %d %s: release error for %s: %v", phase, i, consID, cur.ReservationID, err)
+		}
+		releaseCancel()
+		releaseMs = msSince(releaseStart)
+		state.deleteActive(consID)
+	}
+
+	seq := state.nextSeq(consID)
+	resID := testlib.MakeReservationID(orch.RunID, phase, consID, seq)
+
+	if chosenNodeGroupID == "" {
+		if ng := testlib.FindNodeGroupByProvider(ngResp.NodeGroups, chosenProviderID); ng != nil {
+			chosenNodeGroupID = ng.ID
+		}
+	}
+
+	req := &brokerapi.ReservationRequest{
+		ProviderClusterID: chosenProviderID,
+		NodeGroupID:       chosenNodeGroupID,
+		ChunkCount:        1,
+		ChunkType:         brokerv1alpha1.ChunkTypeStandard,
+	}
+
+	peerStart := time.Now()
+	peerCtx, peerCancel := context.WithTimeout(ctx, exp.ReservationTimeout)
+	resp, peerErr := broker.ReserveAndWait(peerCtx, resID, req, pollInterval)
+	peerCancel()
+	peerMs := msSince(peerStart)
+
+	action := "create"
+	if prevProvider != "" {
+		action = "switch"
+	}
+
+	if peerErr != nil {
+		finalPhase := ""
+		if resp != nil {
+			finalPhase = string(resp.Status)
+		}
+		state.addSelection(testlib.SelectionRecord{
+			Timestamp:     start,
+			ConsumerID:    consID,
+			Phase:         phase,
+			Policy:        policy,
+			Iteration:     i,
+			SelectedID:    chosenProviderID,
+			NodeGroupID:   chosenNodeGroupID,
+			ReservationID: resID,
+			RTTMs:         chosenRTT,
+			Outcome:       "reserve-error",
+			ErrorMessage:  peerErr.Error(),
+			DurationMs:    msSince(start),
+		})
+		state.addReservation(testlib.ReservationRecord{
+			Timestamp:         start,
+			ConsumerID:        consID,
+			Phase:             phase,
+			Policy:            policy,
+			Iteration:         i,
+			ReservationID:     resID,
+			ProviderClusterID: chosenProviderID,
+			NodeGroupID:       chosenNodeGroupID,
+			Action:            action,
+			PrevProviderID:    prevProvider,
+			PeerMs:            peerMs,
+			ReleaseMs:         releaseMs,
+			TotalMs:           msSince(start),
+			FinalPhase:        finalPhase,
+			RTTMs:             chosenRTT,
+			Outcome:           "error",
+			ErrorMessage:      peerErr.Error(),
+		})
+		log.Printf("[%s] iter %d %s: %s error → %s: %v", phase, i, consID, action, chosenProviderID, peerErr)
+		return
+	}
+
+	state.setActive(consID, &testlib.ConsumerReservation{
+		ReservationID:     resID,
+		ProviderClusterID: chosenProviderID,
+		NodeGroupID:       chosenNodeGroupID,
+		Request:           req,
+	})
+
+	state.addSelection(testlib.SelectionRecord{
+		Timestamp:     start,
+		ConsumerID:    consID,
+		Phase:         phase,
+		Policy:        policy,
+		Iteration:     i,
+		SelectedID:    chosenProviderID,
+		NodeGroupID:   chosenNodeGroupID,
+		ReservationID: resID,
+		RTTMs:         chosenRTT,
+		Outcome:       "success",
+		DurationMs:    msSince(start),
+	})
+	state.addReservation(testlib.ReservationRecord{
+		Timestamp:         start,
+		ConsumerID:        consID,
+		Phase:             phase,
+		Policy:            policy,
+		Iteration:         i,
+		ReservationID:     resID,
+		ProviderClusterID: chosenProviderID,
+		NodeGroupID:       chosenNodeGroupID,
+		Action:            action,
+		PrevProviderID:    prevProvider,
+		PeerMs:            peerMs,
+		ReleaseMs:         releaseMs,
+		TotalMs:           msSince(start),
+		FinalPhase:        string(resp.Status),
+		RTTMs:             chosenRTT,
+		Outcome:           "success",
+	})
+	log.Printf("[%s] iter %02d %s: %s %-20s (res=%s peer=%.0fms rel=%.0fms rtt=%.2fms)",
+		phase, i, consID, action, chosenProviderID, resID, peerMs, releaseMs, chosenRTT)
 }
 
 func summarizeLatencyPhase(selections []testlib.SelectionRecord, _ []testlib.ProbeRecord) testlib.PhaseSummary {
