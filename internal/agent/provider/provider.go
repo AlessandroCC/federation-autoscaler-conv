@@ -31,6 +31,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/go-logr/logr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -105,6 +106,11 @@ type Options struct {
 	// lookup.
 	MockEcoURL string
 	MockGeoURL string
+
+	// EcoCacheTTL overrides how long a region's carbon intensity is cached
+	// before re-fetching from MockEcoURL (see advertise.Options). <= 0 ⇒ the
+	// 1h production default.
+	EcoCacheTTL time.Duration
 
 	// ProbeUDPPort is the always-on UDP NodePort the udpecho responder is exposed
 	// on; the provider advertises <nodeIP>:ProbeUDPPort as its measured-latency
@@ -181,6 +187,7 @@ func Run(ctx context.Context, opts Options) error {
 		AdvertisedIP:  opts.AdvertisedIP,
 		MockEcoURL:    opts.MockEcoURL,
 		MockGeoURL:    opts.MockGeoURL,
+		EcoCacheTTL:   opts.EcoCacheTTL,
 		ProbeUDPPort:  opts.ProbeUDPPort,
 		Logger:        logger.WithName("advertise"),
 		// The probe's poll-staleness gate is a "broker reachability"

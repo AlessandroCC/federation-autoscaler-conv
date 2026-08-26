@@ -457,6 +457,7 @@ func (o *Orchestrator) Setup(ctx context.Context) error {
 		ImgPrefix:       registry,
 		ImgTag:          imgTag,
 		LiqoProvider:    o.Config.Infra.LiqoProvider,
+		EcoCacheTTL:     o.Config.Experiment.CarbonRefreshInterval,
 	}
 	if err := DeployAll(ctx, deployOpts); err != nil {
 		return fmt.Errorf("deploy: %w", err)

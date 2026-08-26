@@ -96,6 +96,7 @@ func main() {
 		renewableFile   string
 		advertisedIP    string
 		mockEcoURL      string
+		ecoCacheTTL     time.Duration
 		mockGeoURL      string
 		probeUDPPort    int
 		ollamaURL       string
@@ -155,6 +156,12 @@ func main() {
 		"(provider role only) Base URL of the carbon-intensity service, e.g. "+
 			"http://mock-eco:8081. Keyed by the discovered region code. Empty ⇒ "+
 			"advertise no carbon intensity.")
+	flag.DurationVar(&ecoCacheTTL, "eco-cache-ttl", time.Hour,
+		"(provider role only) How long a region's carbon intensity/forecast is "+
+			"cached before re-fetching from --mock-eco-url. Production carbon data "+
+			"changes at most hourly, hence the 1h default; comparative-eco test runs "+
+			"lower this to match their carbonRefreshInterval so providers actually "+
+			"observe the periodic mock-eco re-randomization within a phase.")
 	flag.StringVar(&mockGeoURL, "mock-geo-url", "",
 		"Base URL of the geo-IP service, e.g. http://mock-geo:8080. Used by both "+
 			"roles to resolve this cluster's node IP to a region + coordinates. "+
@@ -312,6 +319,7 @@ func main() {
 			NodeName:      nodeName,
 			AdvertisedIP:  advertisedIP,
 			MockEcoURL:    mockEcoURL,
+			EcoCacheTTL:   ecoCacheTTL,
 			MockGeoURL:    mockGeoURL,
 			ProbeUDPPort:  probeUDPPort,
 			ConsoleAddr:   consoleAddr,

@@ -41,6 +41,14 @@ type DeployOpts struct {
 	ImgPrefix      string
 	ImgTag         string
 	LiqoProvider   string // "kind", "k3s", "kubeadm"
+
+	// EcoCacheTTL overrides the provider's carbon-intensity cache TTL (Go
+	// duration, e.g. "3m"). comparative-eco sets this to match its
+	// carbonRefreshInterval so deployed providers actually observe the
+	// harness's periodic mock-eco re-randomization within a phase, instead
+	// of serving their first-fetched value for the agent's 1h default. Zero
+	// ⇒ leave the agent's default untouched.
+	EcoCacheTTL time.Duration
 }
 
 // DeployAll deploys the full federation topology onto the Kind clusters.
@@ -210,6 +218,9 @@ func deployProvider(ctx context.Context, standaloneDir string, spec ClusterSpec,
 		"--mock-eco-url", mockEcoURL,
 		"--mock-geo-url", mockGeoURL,
 		"--liqo-provider", opts.LiqoProvider,
+	}
+	if opts.EcoCacheTTL > 0 {
+		args = append(args, "--eco-cache-ttl", opts.EcoCacheTTL.String())
 	}
 	if opts.LiqoProvider != "kind" {
 		args = append(args, "--pod-cidr", spec.PodCIDR, "--service-cidr", spec.SvcCIDR)
