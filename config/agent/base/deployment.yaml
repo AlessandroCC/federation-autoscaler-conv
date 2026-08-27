@@ -49,10 +49,25 @@ spec:
         - --client-key=/etc/federation-autoscaler/tls/tls.key
         - --broker-ca=/etc/federation-autoscaler/tls/ca.crt
         - --health-probe-bind-address=:8081
+        # Timing knobs, env-backed so they can be retuned with
+        # `kubectl set env deploy/agent FA_POLL_INTERVAL=2s` — which rolls the
+        # Deployment automatically — instead of editing args and redeploying.
+        #
+        # --poll-interval is the dominant latency knob: a work order waits on
+        # average half of it before an agent picks it up, and a cold scale-up
+        # pays that twice (provider hop, then consumer hop).
+        #
+        # The heartbeat and advertisement cadences also size the readiness
+        # window (2x and 3x respectively). Raising FA_ADVERTISEMENT_INTERVAL
+        # above 30s additionally needs the Broker's 90s advertisement-staleness
+        # threshold raised, or providers flip unavailable between publishes.
+        - --poll-interval=$(FA_POLL_INTERVAL)
+        - --heartbeat-interval=$(FA_HEARTBEAT_INTERVAL)
+        - --advertisement-interval=$(FA_ADVERTISEMENT_INTERVAL)
         # Sub-second log timestamps. zap's dev encoder writes whole seconds by
-        # default, which is coarser than the phases being measured — the poll
-        # wait this agent contributes to a scale-up is 0-5 s, and the steps
-        # around `liqoctl peer` are milliseconds. deploy/bench merges these
+        # default, which is coarser than the phases being measured — at the
+        # tuned 1 s poll this agent's contribution to a scale-up is 0-1 s, and
+        # the steps around `liqoctl peer` are milliseconds. The harness merges these
         # lines with the broker's to reconstruct the scale-up / scale-down
         # timeline, so the resolution has to beat the thing being timed.
         - --zap-time-encoding=rfc3339nano
@@ -72,6 +87,14 @@ spec:
         # --role and (for consumer) --local-api-bind-address are appended
         # by the per-role overlays.
         env:
+        # Defaults match the binary's own flag defaults; override per cluster
+        # with `kubectl set env deploy/agent FA_POLL_INTERVAL=…`.
+        - name: FA_POLL_INTERVAL
+          value: "1s"
+        - name: FA_HEARTBEAT_INTERVAL
+          value: "15s"
+        - name: FA_ADVERTISEMENT_INTERVAL
+          value: "30s"
         - name: POD_NAMESPACE
           valueFrom:
             fieldRef:

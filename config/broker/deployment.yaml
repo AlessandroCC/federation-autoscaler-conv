@@ -72,9 +72,16 @@ spec:
         # only createdAt / terminatedAt, and Conditions is never written), and
         # zap's dev encoder writes whole seconds by default — coarser than the
         # transitions themselves, which are milliseconds apart. See
-        # deploy/bench.
+        # the benchmark harness.
         - --zap-time-encoding=rfc3339nano
+        # Fan-out knob, env-backed for the same reason as the agent's:
+        # `kubectl set env deploy/broker FA_GK_RESYNC_INTERVAL=2s` rolls it
+        # without a redeploy. Only affects sibling reservations parked in
+        # GeneratingKubeconfig; also floors the terminal-GC requeue.
+        - --gk-resync-interval=$(FA_GK_RESYNC_INTERVAL)
         env:
+        - name: FA_GK_RESYNC_INTERVAL
+          value: "5s"
         - name: POD_NAMESPACE
           valueFrom:
             fieldRef:

@@ -31,6 +31,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/go-logr/logr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -80,6 +81,12 @@ type Options struct {
 	// Peer / Unpeer handlers shell out to. Empty falls back to
 	// "liqoctl" (resolved via $PATH).
 	LiqoctlPath string
+
+	// HeartbeatInterval overrides heartbeat.DefaultInterval (15 s). Exposed so
+	// the cadence can be swept without a rebuild; note that the agent's
+	// readiness window is sized off it in cmd/agent, so the two move together.
+	// Zero uses the package default.
+	HeartbeatInterval time.Duration
 
 	// NodeName is the node this agent pod runs on (NODE_NAME downward API); its IP
 	// is auto-discovered and geolocated (see heartbeat.Options). AdvertisedIP
@@ -201,6 +208,7 @@ func Run(ctx context.Context, opts Options) error {
 		AdvertisedIP:  opts.AdvertisedIP,
 		MockGeoURL:    opts.MockGeoURL,
 		Prober:        prober,
+		Interval:      opts.HeartbeatInterval,
 		Logger:        logger.WithName("heartbeat"),
 		// Same semantics as the provider's advertisement publisher:
 		// any successful broker contact refreshes the readiness gate.
