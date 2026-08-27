@@ -24,9 +24,8 @@ resources:
 
 labels:
 - pairs:
-    app.kubernetes.io/name: federation-autoscaler
     app.kubernetes.io/component: broker
-  includeSelectors: false
+    app.kubernetes.io/name: federation-autoscaler
 
 # CRDs are intentionally not included here — they are cluster-scoped and
 # shared across all three overlays. Consumers compose ../crd/ at the meta
