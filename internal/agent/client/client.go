@@ -28,10 +28,21 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
-// Default knobs for the request-layer retry / timeout policy. Substep 7a
-// keeps these conservative: the poller in 7c is what drives the actual
-// call cadence, so the per-call timeout has to be shorter than the poll
-// interval (5 s) but long enough to cover a Broker reconcile under load.
+// Default knobs for the request-layer retry / timeout policy.
+//
+// RequestTimeout is deliberately LONGER than the poll interval (10 s vs the
+// tuned 1 s), and an earlier version of this comment claimed the opposite was
+// required. It is not: the poll loop is a ticker, so a slow request delays the
+// next poll rather than queueing work behind it, and the readiness gate is
+// sized off the heartbeat/advertisement cadence rather than the poll.
+//
+// The timeout is kept at 10 s rather than tightened to match the poll, because
+// it exists for WAN conditions. Measured broker handler time is sub-millisecond
+// on a 0.4 ms-RTT lab LAN, but agents are expected to sit behind NAT across the
+// internet; sizing this from lab latency would make real deployments flaky for
+// no measured benefit. The cost of a stalled request is that the agent skips
+// polls for up to RequestTimeout — 10 at a 1 s cadence — which the 30 s / 90 s
+// readiness windows absorb.
 const (
 	DefaultRequestTimeout    = 10 * time.Second
 	DefaultMaxRetries        = 3
