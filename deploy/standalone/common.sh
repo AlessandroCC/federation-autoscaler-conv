@@ -58,6 +58,30 @@ retry() {
   done
 }
 
+# retry_liqo_install <liqoctl install args...> — like retry(), but purges any
+# partial install between attempts. A `liqoctl install` that times out (e.g.
+# under the resource pressure of many already-running Kind clusters) can
+# leave the 'liqo' namespace populated with objects no Helm release tracks
+# anymore (liqoctl's own auto-rollback removes the release but not every
+# object). Without a purge, every subsequent `liqoctl install` fails
+# instantly with `"liqo" has no deployed releases` instead of getting a real
+# fresh attempt, so the retry loop burns its whole budget doing nothing —
+# observed at ~50-cluster scale where the first install alone timed out.
+retry_liqo_install() {
+  local max=3 sleep_s=15
+  local attempt=1
+  until liqoctl "$@"; do
+    if (( attempt >= max )); then
+      return 1
+    fi
+    warn "liqoctl install failed (attempt ${attempt}/${max}) — purging the partial install, retrying in ${sleep_s}s"
+    liqoctl uninstall --skip-confirm >/dev/null 2>&1 || true
+    kubectl delete namespace liqo --ignore-not-found --wait=true --timeout=120s >/dev/null 2>&1 || true
+    sleep "$sleep_s"
+    attempt=$((attempt + 1))
+  done
+}
+
 # ----------------------------------------------------------------------------
 # Environment / tools
 # ----------------------------------------------------------------------------
