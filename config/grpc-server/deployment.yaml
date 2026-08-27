@@ -56,7 +56,7 @@ spec:
         - --re-eval-interval=$(FA_REEVAL_INTERVAL)
         # Sub-second log timestamps — this is where Cluster Autoscaler's
         # scale-up / scale-down calls first enter the system, so these lines
-        # bound the measured window at both ends. See deploy/bench.
+        # bound the measured window at both ends. See the benchmark harness.
         - --zap-time-encoding=rfc3339nano
         env:
         - name: FA_REEVAL_INTERVAL
