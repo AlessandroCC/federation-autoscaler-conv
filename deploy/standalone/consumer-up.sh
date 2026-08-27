@@ -153,10 +153,18 @@ BROKER_URL="$(cat "$work/broker-url")"
 log "Consumer deploy — cluster-id ${CLUSTER_ID}, broker ${BROKER_URL}"
 
 # 2. Liqo control plane (peering itself is on-demand at reservation time).
+# The readiness check (not just existence) matters: a liqoctl install that
+# timed out mid-way can leave the liqo-controller-manager Deployment object
+# created but never Available (its pods never come up, Helm's own release
+# tracking may even show "no deployed releases"). An existence-only check
+# would see that broken object, call it "already installed", and skip
+# retrying liqoctl forever — burning every retry attempt on a cluster that
+# can never recover on its own.
 if [[ -n "$SKIP_LIQO" ]]; then
   warn "skipping Liqo install (--skip-liqo)"
-elif kubectl get deploy liqo-controller-manager -n liqo >/dev/null 2>&1; then
-  ok "Liqo already installed — skipping"
+elif kubectl get deploy liqo-controller-manager -n liqo >/dev/null 2>&1 && \
+     kubectl -n liqo wait --for=condition=Available deploy/liqo-controller-manager --timeout=10s >/dev/null 2>&1; then
+  ok "Liqo already installed and healthy — skipping"
 else
   ensure_tools liqoctl
   log "Installing Liqo (cluster-id ${CLUSTER_ID})"
