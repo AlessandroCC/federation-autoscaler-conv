@@ -87,14 +87,14 @@ Three kinds of cluster take part, plus an optional fourth for demo mock services
 | --- | --- | --- |
 | CA ↔ gRPC server | CA | gRPC (mTLS), in-cluster |
 | gRPC server ↔ Consumer Agent | gRPC server | REST, cluster-local, synchronous |
-| Consumer Agent → Broker | Consumer Agent only | REST over mTLS: 5 s instruction poll, 15 s heartbeat, synchronous reservation calls |
-| Provider Agent → Broker | Provider Agent only | REST over mTLS: 5 s instruction poll, 30 s advertisement (doubles as heartbeat) |
+| Consumer Agent → Broker | Consumer Agent only | REST over mTLS: 1 s instruction poll, 15 s heartbeat, synchronous reservation calls |
+| Provider Agent → Broker | Provider Agent only | REST over mTLS: 1 s instruction poll, 30 s advertisement (doubles as heartbeat) |
 | Agents → mock services | Agents only | plain HTTP GETs (geo by IP, carbon by region); the Broker never calls the mocks |
 | Broker → any agent | **never happens** | |
 
 **A scale-up in one paragraph.** Applications pile up unscheduled on the consumer. CA asks its cloud provider (our gRPC server) what node groups exist; the answer comes from the Broker, which has already narrowed the list to the provider the consumer's policy prefers. CA asks to grow that group. The request travels gRPC server → Consumer Agent → Broker, which records a reservation and queues work orders. The Provider Agent picks up its order on its next poll and generates a scoped credential; the Consumer Agent picks up its order, uses that credential to run Liqo peering, and asks Liqo for exactly one chunk-sized virtual node. Once the node joins the consumer cluster, the waiting applications schedule onto it. Scale-down runs the same loop in reverse.
 
-**Deploying it.** Two supported paths, both documented in the repo: an Ansible playbook suite that brings up a full multi-VM k3s demo in one command (`deploy/ansible/`, `scripts/demo-up.sh`), and per-cluster standalone scripts for clusters owned by different people (`deploy/standalone/`). A four-cluster Kind e2e suite (`test/e2e/`, run locally via `make test-e2e`; CI runs only the unit and envtest suites) exercises the whole flow.
+**Deploying it.** Two supported paths, both documented in the repo: an Ansible playbook suite that brings up a full multi-VM k3s demo in one command (`deploy/ansible/`, `scripts/demo-up.sh`), and per-cluster standalone scripts for clusters owned by different people (`deploy/standalone/`). A four-cluster Kind e2e suite (`test/e2e/`, run locally via `make test-e2e`; CI runs only the unit and envtest suites) exercises the whole flow. The timing harness the numbers in §10 come from lives outside this repo, at `~/projects/federation-autoscaler-evaluation/`: `run-benchmark.sh` drives N scale-up/scale-down cycles (cold or warm), `collect-run.sh` merges every cluster's logs into one time-ordered file, and `phases.py` / `fanout.py` split a run into the Cluster-Autoscaler, Liqo and control-plane shares.
 
 > **Implemented in:** repo layout `cmd/{broker,agent,grpc-server,mock-eco,mock-geo}/`, `internal/`, `api/`, `config/`, `deploy/`, `test/e2e/`.
 
@@ -114,7 +114,7 @@ Three kinds of cluster take part, plus an optional fourth for demo mock services
 | Placement | Builds each consumer's node-group view and **masks** it according to the consumer's policy, so the Broker chooses the provider while CA stays metric-blind (see below). |
 | Reservation commit | `POST /api/v1/reservations` validates capacity synchronously and returns the record inline. Exactly **one chunk per reservation**; multi-chunk requests are rejected. |
 | Phase machine | Drives each `Reservation` through `Pending → GeneratingKubeconfig → KubeconfigReady → Peering → Peered → Unpeering → Released`, with `Expired` and `Failed` as the other terminal phases. |
-| Instruction generation | On phase transitions, creates `ProviderInstruction` and `ReservationInstruction` records that agents fetch on their 5 s `GET /api/v1/instructions` polls. The advertisement response also piggybacks pending provider instructions, though the current Provider Agent deliberately ignores the piggyback and relies on the poll as its single dispatch point. |
+| Instruction generation | On phase transitions, creates `ProviderInstruction` and `ReservationInstruction` records that agents fetch on their 1 s `GET /api/v1/instructions` polls. The advertisement response also piggybacks pending provider instructions, though the current Provider Agent deliberately ignores the piggyback and relies on the poll as its single dispatch point. |
 | Result ingestion | `POST /api/v1/instructions/{id}/result` marks instructions enforced and advances the reservation (kubeconfig received → `KubeconfigReady`; peer result → `Peered`; unpeer result → `Released`; failures → `Failed`). |
 | Freshness | A provider not heard from for **90 s** (three missed advertisements) is flagged `available: false`, its free chunks drop to zero in every view, and non-terminal reservations on it are failed with consumer-side cleanup. |
 | Garbage collection | Enforced instructions are deleted after 5 min; undelivered instructions past their expiry fail their reservation; terminal reservations are deleted 15 min after termination. |
@@ -180,7 +180,7 @@ One replica, `strategy: Recreate`, no leader election. The consumer cluster's **
 | GET | `/local/virtual-nodes` | Lists the local `VirtualNodeState` resources as views (node name falls back to the CR name while still `Creating`). |
 | GET | `/healthz` | Liveness. |
 
-**Broker-facing loops:** a 5 s `GET /api/v1/instructions` poll dispatching to instruction handlers, and a 15 s `POST /api/v1/heartbeat` carrying the current `ConsumerPolicy` (re-read every beat, so a policy change takes effect within ~15 s), the auto-discovered location (node IP resolved from `NODE_NAME` or `--advertised-ip`, geolocated via mock-geo when configured), and the latest measured RTTs plus chosen provider for the dashboard.
+**Broker-facing loops:** a 1 s `GET /api/v1/instructions` poll dispatching to instruction handlers, and a 15 s `POST /api/v1/heartbeat` carrying the current `ConsumerPolicy` (re-read every beat, so a policy change takes effect within ~15 s), the auto-discovered location (node IP resolved from `NODE_NAME` or `--advertised-ip`, geolocated via mock-geo when configured), and the latest measured RTTs plus chosen provider for the dashboard.
 
 **Instruction handlers** (all idempotent by construction; re-runs tolerate already-existing or already-deleted objects):
 
@@ -378,7 +378,7 @@ One per reservation, created by the Consumer Agent's Peer handler, projected by 
 
 ### 6.6 ProviderInstruction and ReservationInstruction (central)
 
-The Broker's work orders, fetched by agents on their 5 s polls. Both share the same shape: spec holds `reservationId`, `kind`, the target cluster, chunk info, `lastChunk`, and `expiresAt`; status holds `enforced`, `issuedAt`, `attempts`, and `message`. Kinds: `GenerateKubeconfig | Cleanup | Reconcile` (provider) and `Peer | Unpeer | Cleanup | Reconcile` (consumer). Naming encodes scope: per-reservation instructions are `peer-<res>`, `unpeer-<res>`, `cleanup-<res>`; per-(consumer, provider) **shared** instructions are `gk-<consumer>-<provider>` and `pcleanup-<consumer>-<provider>`, matching the fact that the Liqo peering user is a per-pair singleton. A stale already-enforced shared instruction is **re-armed** (enforced reset) when a new reservation needs it again. `Peer` carries a `kubeconfigRef` naming a Broker-cluster Secret; the bytes are inlined into the poll response and never stored in CRD status.
+The Broker's work orders, fetched by agents on their 1 s polls. Both share the same shape: spec holds `reservationId`, `kind`, the target cluster, chunk info, `lastChunk`, and `expiresAt`; status holds `enforced`, `issuedAt`, `attempts`, and `message`. Kinds: `GenerateKubeconfig | Cleanup | Reconcile` (provider) and `Peer | Unpeer | Cleanup | Reconcile` (consumer). Naming encodes scope: per-reservation instructions are `peer-<res>`, `unpeer-<res>`, `cleanup-<res>`; per-(consumer, provider) **shared** instructions are `gk-<consumer>-<provider>` and `pcleanup-<consumer>-<provider>`, matching the fact that the Liqo peering user is a per-pair singleton. A stale already-enforced shared instruction is **re-armed** (enforced reset) when a new reservation needs it again. `Peer` carries a `kubeconfigRef` naming a Broker-cluster Secret; the bytes are inlined into the poll response and never stored in CRD status.
 
 > **Implemented in:** `api/broker/v1alpha1/` and `api/autoscaling/v1alpha1/` (types + `zz_generated.deepcopy.go`), generated CRDs in `config/crd/bases/`. Controllers as per §4.1, §4.2, §5.
 
@@ -392,7 +392,7 @@ The Broker's work orders, fetched by agents on their 5 s polls. Both share the s
 
 **gRPC server flags:** `--grpc-bind-address` (`:8443`), cert path/names, `--agent-local-api-url` (default `http://127.0.0.1:9090`), `--re-eval-interval` (1 h).
 
-**Agent flags:** `--role` (consumer|provider), `--cluster-id` (must equal the certificate CN), `--liqo-cluster-id`, `--broker-url`, client cert/key/CA, `--poll-interval` (5 s), `--local-api-bind-address` (consumer, `127.0.0.1:9090`), `--console-bind-address` (empty disables), `--price-file` / `--capacity-file` / `--renewable-file` (provider, re-read every cycle), `--advertised-ip`, `--mock-geo-url` / `--mock-eco-url`, `--probe-udp-port` (provider).
+**Agent flags:** `--role` (consumer|provider), `--cluster-id` (must equal the certificate CN), `--liqo-cluster-id`, `--broker-url`, client cert/key/CA, `--poll-interval` (**1 s**, env `FA_POLL_INTERVAL`), `--heartbeat-interval` (15 s, env `FA_HEARTBEAT_INTERVAL`), `--advertisement-interval` (30 s, env `FA_ADVERTISEMENT_INTERVAL`), `--local-api-bind-address` (consumer, `127.0.0.1:9090`), `--console-bind-address` (empty disables), `--price-file` / `--capacity-file` / `--renewable-file` (provider, re-read every cycle), `--advertised-ip`, `--mock-geo-url` / `--mock-eco-url`, `--probe-udp-port` (provider).
 
 **Per-cluster agent ConfigMaps.** The three provider input maps are mounted as optional volumes, re-read every advertisement cycle (so they are live-editable), and are exactly what the provider console writes. `agent-config` is different: it feeds environment variables at pod start (cluster IDs, broker URL, mock URLs, advertised IP), so changing it requires a restart and no console writes it.
 
@@ -405,9 +405,11 @@ The Broker's work orders, fetched by agents on their 5 s polls. Both share the s
 
 Location is never configured by hand: it is discovered from the node IP (§4.7).
 
-**Timing constants (hardcoded):** consumer heartbeat 15 s; provider advertisement 30 s; advertisement staleness 90 s; enforced-instruction GC 5 min; terminal-reservation GC 15 min; node-groups cache 2 s; `liqoctl peer` timeout 10 min; unpeer/generate 60 s; provider cleanup 30 s; agent HTTP timeout 10 s with 3 retries (100 ms → 2 s backoff); latency probe 5 × 300 ms, cached 15 s; broker rate limit 10 burst / 5 rps per cluster.
+**Timing constants.** Runtime-settable (flag + env, so a cluster can be retuned with `kubectl set env` and no rebuild): instruction poll **1 s**; consumer heartbeat 15 s; provider advertisement 30 s; fan-out resync `--gk-resync-interval` 5 s; `--reservation-timeout` 24 h; `--re-eval-interval` 1 h. Still compile-time: advertisement staleness 90 s; enforced-instruction GC 5 min; terminal-reservation GC 15 min; node-groups cache 2 s; `liqoctl peer` timeout 10 min; unpeer/generate 60 s; provider cleanup 30 s; agent HTTP timeout 10 s with 3 retries (100 ms → 2 s backoff); LastDeliveredAt refresh 30 s; latency probe 5 × 300 ms, cached 15 s; broker rate limit 10 burst / 5 rps per cluster.
 
-> **Implemented in:** `cmd/{broker,agent,grpc-server}/main.go` (flags), `internal/broker/chunk/chunk.go`, `config/agent/provider/*-configmap.yaml`, `deploy/ansible/samples/`.
+The poll interval is the **measured knee** of the latency-vs-request-rate curve, not a convention: a 100-run sweep over 5s/2s/1s/500ms/250ms (`sweep.sh` in the benchmark harness, which lives outside this repo at `~/projects/federation-autoscaler-evaluation/`) shows marginal value collapsing by an order of magnitude at each step past 1 s — 5s→2s returns 5.04 s of control-plane latency per extra req/s, 2s→1s returns 0.98, 1s→500ms returns 0.10. The rate limiter never engaged anywhere in that range (no 429 in 115 runs, including 250 ms where an agent draws 4 req/s of its 5 req/s budget); it binds at roughly 200 ms.
+
+> **Implemented in:** `cmd/{broker,agent,grpc-server}/main.go` (flags), `internal/broker/chunk/chunk.go`, `config/agent/provider/*-configmap.yaml`, `deploy/ansible/samples/`. Timing values measured with the benchmark harness at `~/projects/federation-autoscaler-evaluation/` (see `sweep.sh` for the poll-interval sweep and `fanout-sweep.sh` for the fan-out cells).
 
 ---
 
@@ -495,7 +497,7 @@ The upstream `externalgrpc.proto` contract, 14 of 15 RPCs implemented (§4.2), p
 
 > **Source-of-truth diagram:** [`diagrams/registration.mmd`](diagrams/registration.mmd).
 
-A provider exists for the Broker as soon as its first advertisement lands (and disappears from placement 90 s after its last one). A consumer exists as soon as its first heartbeat lands; the heartbeat also delivers its policy and location. Both agents poll `GET /api/v1/instructions` every 5 s from the start; the response is empty until there is work. The Broker dials no one.
+A provider exists for the Broker as soon as its first advertisement lands (and disappears from placement 90 s after its last one). A consumer exists as soon as its first heartbeat lands; the heartbeat also delivers its policy and location. Both agents poll `GET /api/v1/instructions` every 1 s from the start; the response is empty until there is work. The Broker dials no one.
 
 ### 9.2 Scale-Up
 
@@ -508,12 +510,18 @@ A provider exists for the Broker as soon as its first advertisement lands (and d
 3. The gRPC server fans out **N single-chunk reservations** (`POST /local/reservations`, each with a fresh `res-<uuid>` id) and returns. It does not wait for peering; each reservation independently runs the steps below.
 4. The Consumer Agent forwards each to `POST /api/v1/reservations`. The Broker checks the consumer has heartbeated (else 412), checks capacity (else 409), creates the `Reservation` (phase `Pending`, `expiresAt` = now + 24 h), bumps `reservedChunks`, and answers 201 synchronously.
 5. The reservation controller emits the **shared** `ProviderInstruction{GenerateKubeconfig}` (`gk-<consumer>-<provider>`) and moves the phase to `GeneratingKubeconfig`. If the credential Secret for this (consumer, provider) pair already exists, the phase fast-forwards straight to `KubeconfigReady`: the peering user is a singleton, so siblings reuse it instead of re-generating (which would fail with "already exists").
-6. The Provider Agent's next 5 s poll delivers the instruction; it runs `liqoctl generate peering-user` and posts the kubeconfig back. The Broker stores it in a Broker-cluster Secret (`kubeconfig-<consumer>-<provider>`), marks the instruction enforced, and advances the phase.
+6. The Provider Agent's next 1 s poll delivers the instruction; it runs `liqoctl generate peering-user` and posts the kubeconfig back. The Broker stores it in a Broker-cluster Secret (`kubeconfig-<consumer>-<provider>`), marks the instruction enforced, and advances the phase.
 7. At `KubeconfigReady` the controller emits `ReservationInstruction{Peer}` (`peer-<res>`) and the phase becomes `Peering`. The consumer's next poll delivers it with the kubeconfig inlined.
 8. The Consumer Agent's Peer handler: Secret, `liqoctl peer` (the expensive step), `ResourceSlice rs-<res>`, `VirtualNodeState vns-<res>`, then posts success. The Broker marks the reservation `Peered`.
 9. Liqo materialises the virtual node (named after the slice). The VirtualNodeState reconciler projects it to `Running` with its providerID; `NodeGroupNodes` starts reporting the instance; the scheduler places the waiting pods. During the whole peering window `NodeGroupTargetSize` already reported the reserved chunk, which is what stops CA from over-requesting.
 
-**Measured timing** (4-VM k3s demo, defaults): about **107 s** end to end from workload apply to pods scheduled. `liqoctl peer` dominates at 40-90 s cold (gateway pod start, WireGuard handshake, identity exchange), and can reach minutes on constrained hosts, hence its 10 min exec timeout. A **warm** re-peer to an already-peered provider takes about 1 s. Each poll hop adds up to 5 s; the Broker decision itself is synchronous milliseconds. The old "15-30 s" figure from earlier revisions of this document was never achieved and should not be quoted.
+**Measured timing.** On a 5-VM KVM lab (bare-metal host, one SSD per guest, chrony-synced), 100+ instrumented runs give: **cold scale-up ~61 s**, **warm scale-up ~21 s** (an already-peered provider), scale-down ~77 s. Scale-down is dominated by Cluster Autoscaler's `scale-down-unneeded-time`, not by this system.
+
+The federation control plane — the part this project owns, i.e. poll waits plus broker reconciles — accounts for **0.74 s cold and 0.57 s warm** at the tuned 1 s poll (it was 5.64 s / 2.44 s at a 5 s poll). The broker's own decision time is **80 ms**, flat across every configuration measured.
+
+`liqoctl peer` costs **~11 s cold** and **~1 s warm**. The "40-90 s" figure quoted in earlier revisions was a *cold-image-cache* measurement: the first peer on a fresh cluster took 48 s here because Liqo pulls ~250 MB of gateway images (`gateway/wireguard` alone is 183 MB) on both sides; every subsequent peer took 11-13 s. Quote 48 s for first-federation-formation and ~11 s for steady-state scale-up — they are different regimes.
+
+Note that tuning the poll interval does **not** materially change end-to-end scale-up (59.6 s → 60.9 s cold, within the 44-63 s run-to-run spread). It reduces this project's own contribution by ~87%; CA's scan interval, Liqo's peering and node materialisation dominate the total and none of them are ours.
 
 ### 9.3 Scale-Down
 
@@ -539,7 +547,7 @@ Measured on the demo: about **84 s** from workload delete to node gone, dominate
 | Reservation timeout | A non-terminal reservation past `expiresAt` (default **24 h**) flips to `Expired`; chunks are released and cleanup instructions are emitted. There is no renewal in v1, so the timeout must outlast any workload holding borrowed capacity (see §11). |
 | Provider goes silent | After 90 s without an advertisement the provider is `available: false`: hidden from placement, free chunks zeroed. Reservations in `Peering`/`Peered` on it are failed with a consumer-side `Cleanup` (no `liqoctl`, the provider may be unreachable). A returning advertisement restores availability. |
 | Instruction never picked up | An un-enforced instruction past its `expiresAt` fails its parent reservation and is deleted. Enforced instructions are GC'd after 5 min. |
-| Agent crash | `replicas: 1, strategy: Recreate`; the replacement pod's first 5 s poll re-receives anything un-enforced and re-executes idempotently (handlers tolerate already-existing / already-deleted objects). In-memory caches rebuild from the next polls. |
+| Agent crash | `replicas: 1, strategy: Recreate`; the replacement pod's first 1 s poll re-receives anything un-enforced and re-executes idempotently (handlers tolerate already-existing / already-deleted objects). In-memory caches rebuild from the next polls. |
 | Broker restart | The API is leader-served and stateless, and v1 runs a single replica, so a crash means a pod replacement plus lease re-acquisition rather than a hot-standby switch. Agents just keep retrying (3-attempt backoff per call, then the next poll); CRDs carry all durable state, so nothing is lost. |
 | Health probes | Every binary serves `/healthz`; the agents' `/readyz` stays green while any Broker contact happened within the staleness window (30 s consumer, 90 s provider) **or** an instruction handler is still legitimately running (up to 15 min, above the 10 min peer timeout), so a long peer does not flap readiness. |
 
@@ -573,7 +581,7 @@ Measured on the demo: about **84 s** from workload delete to node gone, dominate
 
 ## 11. Origins and Known Gaps
 
-**Origins.** The Broker and the agent grew out of **k8s-resource-brokering** https://github.com/netgroup-polito/k8s-resource-brokering, which contributed the advertisement/reservation/instruction pattern, the 5 s poll, the mTLS client shape, and the CRD lineage; this project added chunking, the Liqo execution path, the placement policies, and the phase machine. The gRPC server was rebuilt from **Multi-Cluster-Autoscaler** https://github.com/netgroup-polito/Multi-Cluster-Autoscaler, keeping the externalgrpc contract but replacing in-memory state with CRDs and direct Liqo calls with agent-mediated instructions. Both sibling repos sit next to this one and carry their own docs.
+**Origins.** The Broker and the agent grew out of **k8s-resource-brokering** https://github.com/netgroup-polito/k8s-resource-brokering, which contributed the advertisement/reservation/instruction pattern, the poll-based dispatch, the mTLS client shape, and the CRD lineage; this project added chunking, the Liqo execution path, the placement policies, and the phase machine. The gRPC server was rebuilt from **Multi-Cluster-Autoscaler** https://github.com/netgroup-polito/Multi-Cluster-Autoscaler, keeping the externalgrpc contract but replacing in-memory state with CRDs and direct Liqo calls with agent-mediated instructions. Both sibling repos sit next to this one and carry their own docs.
 
 **Known gaps (v2 candidates):**
 
@@ -586,6 +594,8 @@ Measured on the demo: about **84 s** from workload delete to node gone, dominate
 - **CA-driven reservations never re-evaluate**; migration is manual-reservation-only (§5).
 - **No per-endpoint authorization** and unauthenticated consoles (§10).
 - **`duration`/`priority` on ResourceRequest are recorded, not enforced.**
+- **Advertised chunks ignore the provider's resident load.** Chunk counts come from node `allocatable` with nothing subtracted for what the provider is already running, so a provider advertises capacity it cannot schedule. Measured: a 4 CPU node with 260 m resident has 3.74 CPU free — one usable 2 CPU chunk — while advertising two. The failure mode is misleading: every virtual node materialises with a correct 2 CPU / 4 GiB quota and a pod then sits `Pending` with "Insufficient cpu" against the **provider's** scheduler, so nothing in the Broker's accounting looks wrong. Only reachable under fan-out, since a single-chunk scale-up never touches the over-advertised chunk. Fix: subtract requested-on-node from allocatable in `internal/agent/provider/snapshot/` before dividing into chunks.
+- **Instruction dispatch is serial, and it bounds fan-out latency.** Handlers run synchronously on the agent's single poll goroutine (`internal/agent/poller/poller.go`), so an agent that receives N `Peer` instructions in one poll response executes them one after another and does not poll again until the batch finishes. Measured on a 3-chunk fan-out: a 13.1 s span that decomposes as one cold peer (~11 s) plus two warm re-peers (~1 s each). No broker-side interval can shorten this — sweeping `--gk-resync-interval` 5× moved it 0.31 s, inside the noise. Concurrent dispatch would collapse the span toward the single cold peer.
 
 ---
 
