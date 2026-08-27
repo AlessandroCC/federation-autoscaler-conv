@@ -120,7 +120,7 @@ kubectl -n "$NAMESPACE" patch configmap agent-config --type merge -p \
       "$CLUSTER_ID" "$CLUSTER_ID" "$BROKER_URL" "$MOCK_ECO_URL" "$MOCK_GEO_URL" \
       "${ECO_CACHE_TTL:+,\"ecoCacheTtl\":\"$ECO_CACHE_TTL\"}")" >/dev/null
 kubectl -n "$NAMESPACE" rollout restart deploy/agent
-kubectl -n "$NAMESPACE" rollout status deploy/agent --timeout=120s
+kubectl -n "$NAMESPACE" rollout status deploy/agent --timeout=300s
 
 # ----------------------------------------------------------------------------
 # Done

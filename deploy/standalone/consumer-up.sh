@@ -208,9 +208,9 @@ kubectl apply -f "${FA_STANDALONE_DIR}/manifests/namespaceoffloading.yaml"
 # 9. Restart the agent (to pick up agent-config) and wait for everything.
 kubectl -n "$NAMESPACE" rollout restart deploy/agent
 log "Waiting for agent / gRPC server / Cluster Autoscaler to become Available"
-kubectl -n "$NAMESPACE" rollout status deploy/agent --timeout=120s
-kubectl -n "$NAMESPACE" rollout status deploy/grpc-server --timeout=120s
-kubectl -n "$NAMESPACE" rollout status deploy/cluster-autoscaler --timeout=120s
+kubectl -n "$NAMESPACE" rollout status deploy/agent --timeout=300s
+kubectl -n "$NAMESPACE" rollout status deploy/grpc-server --timeout=300s
+kubectl -n "$NAMESPACE" rollout status deploy/cluster-autoscaler --timeout=300s
 
 # 10. Liqo dashboard (peerings / virtual nodes / offloaded pods) — as the Ansible
 #     liqo_dashboard role installs it on consumers.
