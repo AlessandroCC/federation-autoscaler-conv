@@ -163,7 +163,11 @@ else
   liqo_args=(install "$LIQO_PROVIDER" --cluster-id "$CLUSTER_ID" --timeout 10m)
   [[ -n "$POD_CIDR"     ]] && liqo_args+=(--pod-cidr "$POD_CIDR")
   [[ -n "$SERVICE_CIDR" ]] && liqo_args+=(--service-cidr "$SERVICE_CIDR")
-  liqoctl "${liqo_args[@]}"
+  # Retries transient network hiccups (e.g. DNS lookup timeouts to GitHub for
+  # release assets) instead of failing the whole run — observed under the
+  # background load of a large comparative-eco/latency run with many
+  # already-running Kind clusters.
+  retry 3 15 liqoctl "${liqo_args[@]}"
 fi
 
 # 3. CRDs (VirtualNodeState + ConsumerPolicy are used on the consumer) + namespace.

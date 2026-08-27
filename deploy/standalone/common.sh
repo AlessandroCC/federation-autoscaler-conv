@@ -38,6 +38,26 @@ ok()   { printf '\033[1;32m  ✔\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m  ! \033[0m %s\n' "$*"; }
 die()  { printf '\033[1;31mERROR:\033[0m %s\n' "$*" >&2; exit 1; }
 
+# retry <max_attempts> <sleep_seconds> <cmd...> — run cmd, retrying on
+# failure up to max_attempts times with a fixed sleep between attempts.
+# Meant for steps that touch external network resources (e.g. `liqoctl
+# install` pulling release assets from GitHub), which can transiently fail —
+# especially under the background load a large comparative-eco/latency run
+# with many already-running Kind clusters generates on the host's own DNS
+# resolver / outbound network.
+retry() {
+  local max="$1" sleep_s="$2"; shift 2
+  local attempt=1
+  until "$@"; do
+    if (( attempt >= max )); then
+      return 1
+    fi
+    warn "command failed (attempt ${attempt}/${max}), retrying in ${sleep_s}s: $*"
+    sleep "$sleep_s"
+    attempt=$((attempt + 1))
+  done
+}
+
 # ----------------------------------------------------------------------------
 # Environment / tools
 # ----------------------------------------------------------------------------
