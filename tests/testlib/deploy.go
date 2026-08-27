@@ -64,12 +64,16 @@ func DeployAll(ctx context.Context, opts DeployOpts) error {
 	log.Printf("[deploy] central cluster IP: %s", centralIP)
 
 	// --- Deploy broker on central ---
-	if err := deployCentral(ctx, standaloneDir, centralSpec, centralIP, opts); err != nil {
+	if err := retryDeploy(ctx, "deploy central", func() error {
+		return deployCentral(ctx, standaloneDir, centralSpec, centralIP, opts)
+	}); err != nil {
 		return fmt.Errorf("deploy central: %w", err)
 	}
 
 	// --- Deploy mocks on central ---
-	if err := deployMocks(ctx, standaloneDir, centralSpec, opts); err != nil {
+	if err := retryDeploy(ctx, "deploy mocks", func() error {
+		return deployMocks(ctx, standaloneDir, centralSpec, opts)
+	}); err != nil {
 		return fmt.Errorf("deploy mocks: %w", err)
 	}
 
@@ -114,7 +118,9 @@ func DeployAll(ctx context.Context, opts DeployOpts) error {
 		if err != nil {
 			return fmt.Errorf("get consumer-%d IP: %w", i+1, err)
 		}
-		if err := deployConsumer(ctx, standaloneDir, spec, cid, bundlePath, consumerIP, mockGeoURL, opts); err != nil {
+		if err := retryDeploy(ctx, fmt.Sprintf("deploy consumer-%d", i+1), func() error {
+			return deployConsumer(ctx, standaloneDir, spec, cid, bundlePath, consumerIP, mockGeoURL, opts)
+		}); err != nil {
 			return fmt.Errorf("deploy consumer-%d: %w", i+1, err)
 		}
 	}
@@ -124,12 +130,46 @@ func DeployAll(ctx context.Context, opts DeployOpts) error {
 		spec := opts.Specs[1+opts.NumConsumers+i]
 		cid := fmt.Sprintf("provider-%d", i+1)
 		bundlePath := filepath.Join(bundleDir, cid+"-bundle.tgz")
-		if err := deployProvider(ctx, standaloneDir, spec, cid, bundlePath, mockEcoURL, mockGeoURL, opts); err != nil {
+		if err := retryDeploy(ctx, fmt.Sprintf("deploy provider-%d", i+1), func() error {
+			return deployProvider(ctx, standaloneDir, spec, cid, bundlePath, mockEcoURL, mockGeoURL, opts)
+		}); err != nil {
 			return fmt.Errorf("deploy provider-%d: %w", i+1, err)
 		}
 	}
 
 	return nil
+}
+
+// deployMaxAttempts / deployRetryDelay bound retryDeploy below.
+const deployMaxAttempts = 3
+const deployRetryDelay = 15 * time.Second
+
+// retryDeploy runs fn up to deployMaxAttempts times, sleeping deployRetryDelay
+// between attempts. The per-cluster deploy scripts (provider-up.sh /
+// consumer-up.sh / central-up.sh / mock-up.sh) are largely idempotent — Liqo
+// install checks-then-skips, every kubectl step is `apply` — so re-running one
+// after a transient failure is safe. This absorbs the class of intermittent
+// network errors (DNS lookup timeouts, an internal etcd port going briefly
+// unreachable, IPv6 routes that don't exist on the host) observed once many
+// Kind clusters are running concurrently, without forcing a full teardown and
+// rebuild of the whole topology over a blip that usually clears in seconds.
+func retryDeploy(ctx context.Context, label string, fn func() error) error {
+	var lastErr error
+	for attempt := 1; attempt <= deployMaxAttempts; attempt++ {
+		lastErr = fn()
+		if lastErr == nil {
+			return nil
+		}
+		if attempt < deployMaxAttempts {
+			log.Printf("[deploy] %s failed (attempt %d/%d): %v — retrying in %s", label, attempt, deployMaxAttempts, lastErr, deployRetryDelay)
+			select {
+			case <-time.After(deployRetryDelay):
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}
+	}
+	return fmt.Errorf("%s: giving up after %d attempts: %w", label, deployMaxAttempts, lastErr)
 }
 
 func allClusterIDs(opts DeployOpts) []string {
