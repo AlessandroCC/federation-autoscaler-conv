@@ -1,0 +1,18 @@
+---
+# Only meaningful on a node where k3s is ALREADY running: containerd reads
+# registries.yaml at startup, so an existing cluster needs a restart to pick up
+# a change. On a fresh node the unit does not exist yet and this is a no-op,
+# which is why the role is ordered before k3s_install in 01-bootstrap.
+- name: Restart k3s if running
+  become: true
+  ansible.builtin.shell:
+    cmd: |
+      if systemctl is-active --quiet k3s; then
+        systemctl restart k3s
+        echo restarted
+      else
+        echo "k3s not running yet; it will read registries.yaml at first start"
+      fi
+    executable: /bin/bash
+  register: k3s_registry_restart
+  changed_when: "'restarted' in k3s_registry_restart.stdout"

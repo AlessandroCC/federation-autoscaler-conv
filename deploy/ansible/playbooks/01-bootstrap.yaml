@@ -13,7 +13,7 @@
 # and the federation-autoscaler CRDs are intentionally skipped for it.
 
 # Clocks first, before anything starts producing timestamps. Every
-# cross-cluster duration the benchmark measures (deploy/bench) is the
+# cross-cluster duration the benchmark measures is the
 # difference between a stamp written by one VM's apiserver and one written by
 # another's, so unsynchronised clocks do not add noise — they add a constant
 # error, sometimes a negative one.
@@ -29,6 +29,10 @@
   gather_facts: true
   become: true
   roles:
+    # Before k3s_install, deliberately: containerd reads registries.yaml only
+    # at startup, so writing it first means a fresh node needs no restart.
+    # No-op unless k3s_registry_mirror is set.
+    - k3s_registry
     - k3s_install
 
 - name: Install cert-manager on every cluster
