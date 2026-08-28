@@ -657,3 +657,28 @@ func deployControllableMockGeo(ctx context.Context, repoRoot string, centralSpec
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
 }
+
+// SetProviderCapacity patches a provider's agent-capacity ConfigMap to a
+// fixed cpu/memory cap (see config/agent/provider/capacity-configmap.yaml),
+// which the broker's chunk sizer floor-divides into standard 2-CPU/4-GiB
+// chunks. Without this, a provider's advertised capacity defaults to its
+// Kind node's real allocatable — on a shared host that's the host's own
+// (large, unthrottled) CPU/RAM, so every provider ends up with far more
+// chunks than a handful of test consumers could ever exhaust, and the
+// cheapest/greenest provider never actually runs out of room for everyone
+// to land on it. Capping it small enough to be exhausted lets Eco/Latency's
+// second- and third-best choices actually get exercised.
+func SetProviderCapacity(ctx context.Context, kubeconfig string, cpu, memory string) error {
+	capacityYAML := fmt.Sprintf("cpu: %q\nmemory: %q\n", cpu, memory)
+	patch := fmt.Sprintf(`{"data":{"capacity.yaml":%q}}`, capacityYAML)
+	cmd := exec.CommandContext(ctx, "kubectl",
+		"--kubeconfig", kubeconfig,
+		"-n", "federation-autoscaler-system",
+		"patch", "configmap", "agent-capacity",
+		"--type", "merge",
+		"-p", patch,
+	)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
+}

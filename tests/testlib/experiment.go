@@ -476,6 +476,23 @@ func (o *Orchestrator) Setup(ctx context.Context) error {
 		return fmt.Errorf("deploy: %w", err)
 	}
 
+	// Cap each provider's advertised capacity to 2 standard chunks (4 CPU /
+	// 8 GiB). Left at the default, a provider advertises its Kind node's
+	// real allocatable — the shared host's full CPU/RAM — so every provider
+	// has far more room than this many consumers could ever fill, and the
+	// single cheapest/greenest provider never actually saturates. Capping it
+	// this low means only 2 consumers fit on any one provider before the
+	// policy has to move on to the next-best, which is the point: without
+	// it, every consumer piling onto the same provider is a test-environment
+	// artifact, not a property of the placement policy being compared.
+	log.Println("=== CAP PROVIDER CAPACITY ===")
+	for i := 0; i < o.Config.Providers; i++ {
+		spec := o.Specs[1+o.Config.Consumers+i]
+		if err := SetProviderCapacity(ctx, spec.Kubeconfig, "4000m", "8Gi"); err != nil {
+			return fmt.Errorf("cap capacity on provider-%d: %w", i+1, err)
+		}
+	}
+
 	// Resolve identities from all consumer join bundles.
 	log.Println("=== WAIT FOR READINESS ===")
 	identities, caFile, err := o.resolveIdentities()
