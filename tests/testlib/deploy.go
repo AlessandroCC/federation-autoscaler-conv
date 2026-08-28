@@ -41,6 +41,14 @@ type DeployOpts struct {
 	ImgPrefix      string
 	ImgTag         string
 	LiqoProvider   string // "kind", "k3s", "kubeadm"
+
+	// EcoCacheTTL overrides the provider's carbon-intensity cache TTL (Go
+	// duration, e.g. "3m"). comparative-eco sets this to match its
+	// carbonRefreshInterval so deployed providers actually observe the
+	// harness's periodic mock-eco re-randomization within a phase, instead
+	// of serving their first-fetched value for the agent's 1h default. Zero
+	// ⇒ leave the agent's default untouched.
+	EcoCacheTTL time.Duration
 }
 
 // DeployAll deploys the full federation topology onto the Kind clusters.
@@ -56,12 +64,16 @@ func DeployAll(ctx context.Context, opts DeployOpts) error {
 	log.Printf("[deploy] central cluster IP: %s", centralIP)
 
 	// --- Deploy broker on central ---
-	if err := deployCentral(ctx, standaloneDir, centralSpec, centralIP, opts); err != nil {
+	if err := retryDeploy(ctx, "deploy central", func() error {
+		return deployCentral(ctx, standaloneDir, centralSpec, centralIP, opts)
+	}); err != nil {
 		return fmt.Errorf("deploy central: %w", err)
 	}
 
 	// --- Deploy mocks on central ---
-	if err := deployMocks(ctx, standaloneDir, centralSpec, opts); err != nil {
+	if err := retryDeploy(ctx, "deploy mocks", func() error {
+		return deployMocks(ctx, standaloneDir, centralSpec, opts)
+	}); err != nil {
 		return fmt.Errorf("deploy mocks: %w", err)
 	}
 
@@ -106,7 +118,9 @@ func DeployAll(ctx context.Context, opts DeployOpts) error {
 		if err != nil {
 			return fmt.Errorf("get consumer-%d IP: %w", i+1, err)
 		}
-		if err := deployConsumer(ctx, standaloneDir, spec, cid, bundlePath, consumerIP, mockGeoURL, opts); err != nil {
+		if err := retryDeploy(ctx, fmt.Sprintf("deploy consumer-%d", i+1), func() error {
+			return deployConsumer(ctx, standaloneDir, spec, cid, bundlePath, consumerIP, mockGeoURL, opts)
+		}); err != nil {
 			return fmt.Errorf("deploy consumer-%d: %w", i+1, err)
 		}
 	}
@@ -116,12 +130,46 @@ func DeployAll(ctx context.Context, opts DeployOpts) error {
 		spec := opts.Specs[1+opts.NumConsumers+i]
 		cid := fmt.Sprintf("provider-%d", i+1)
 		bundlePath := filepath.Join(bundleDir, cid+"-bundle.tgz")
-		if err := deployProvider(ctx, standaloneDir, spec, cid, bundlePath, mockEcoURL, mockGeoURL, opts); err != nil {
+		if err := retryDeploy(ctx, fmt.Sprintf("deploy provider-%d", i+1), func() error {
+			return deployProvider(ctx, standaloneDir, spec, cid, bundlePath, mockEcoURL, mockGeoURL, opts)
+		}); err != nil {
 			return fmt.Errorf("deploy provider-%d: %w", i+1, err)
 		}
 	}
 
 	return nil
+}
+
+// deployMaxAttempts / deployRetryDelay bound retryDeploy below.
+const deployMaxAttempts = 3
+const deployRetryDelay = 15 * time.Second
+
+// retryDeploy runs fn up to deployMaxAttempts times, sleeping deployRetryDelay
+// between attempts. The per-cluster deploy scripts (provider-up.sh /
+// consumer-up.sh / central-up.sh / mock-up.sh) are largely idempotent — Liqo
+// install checks-then-skips, every kubectl step is `apply` — so re-running one
+// after a transient failure is safe. This absorbs the class of intermittent
+// network errors (DNS lookup timeouts, an internal etcd port going briefly
+// unreachable, IPv6 routes that don't exist on the host) observed once many
+// Kind clusters are running concurrently, without forcing a full teardown and
+// rebuild of the whole topology over a blip that usually clears in seconds.
+func retryDeploy(ctx context.Context, label string, fn func() error) error {
+	var lastErr error
+	for attempt := 1; attempt <= deployMaxAttempts; attempt++ {
+		lastErr = fn()
+		if lastErr == nil {
+			return nil
+		}
+		if attempt < deployMaxAttempts {
+			log.Printf("[deploy] %s failed (attempt %d/%d): %v — retrying in %s", label, attempt, deployMaxAttempts, lastErr, deployRetryDelay)
+			select {
+			case <-time.After(deployRetryDelay):
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}
+	}
+	return fmt.Errorf("%s: giving up after %d attempts: %w", label, deployMaxAttempts, lastErr)
 }
 
 func allClusterIDs(opts DeployOpts) []string {
@@ -210,6 +258,9 @@ func deployProvider(ctx context.Context, standaloneDir string, spec ClusterSpec,
 		"--mock-eco-url", mockEcoURL,
 		"--mock-geo-url", mockGeoURL,
 		"--liqo-provider", opts.LiqoProvider,
+	}
+	if opts.EcoCacheTTL > 0 {
+		args = append(args, "--eco-cache-ttl", opts.EcoCacheTTL.String())
 	}
 	if opts.LiqoProvider != "kind" {
 		args = append(args, "--pod-cidr", spec.PodCIDR, "--service-cidr", spec.SvcCIDR)
@@ -504,24 +555,58 @@ func nodeContainerSuffixes(spec ClusterSpec) []string {
 	return []string{"-control-plane"}
 }
 
+// postGeoOverride POSTs one IP→region override to the controllable mock-geo.
+// Retries on connection errors for a short window: kubectl rollout status
+// reports the mock-geo Deployment Available as soon as the pod is Ready, but
+// the Service's NodePort routing (kube-proxy iptables) can lag a moment
+// behind that under load — observed as "connect: connection refused" on the
+// very first call right after rollout, especially with many Kind clusters
+// starting up concurrently.
 func postGeoOverride(ctx context.Context, client *http.Client, mockGeoURL, ip, region string, loc regionLoc) error {
 	body := fmt.Sprintf(`{"ip":"%s","region":"%s","city":"%s","lat":%f,"lon":%f}`,
 		ip, region, loc.City, loc.Lat, loc.Lon)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
-		mockGeoURL+"/admin/geo", strings.NewReader(body))
-	if err != nil {
-		return err
+
+	const maxAttempts = 15
+	const retryDelay = 2 * time.Second
+	var lastErr error
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+			mockGeoURL+"/admin/geo", strings.NewReader(body))
+		if err != nil {
+			return err
+		}
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := client.Do(req)
+		if err != nil {
+			lastErr = err
+			if attempt < maxAttempts {
+				log.Printf("[deploy] mock-geo: %s not yet reachable (attempt %d/%d): %v", mockGeoURL, attempt, maxAttempts, err)
+				if sleepErr := sleepOrCtx(ctx, retryDelay); sleepErr != nil {
+					return sleepErr
+				}
+				continue
+			}
+			return fmt.Errorf("after %d attempts: %w", maxAttempts, lastErr)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			return fmt.Errorf("admin/geo returned %d", resp.StatusCode)
+		}
+		return nil
 	}
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := client.Do(req)
-	if err != nil {
-		return err
+	return lastErr
+}
+
+// sleepOrCtx sleeps for d, or returns ctx.Err() early if ctx is cancelled first.
+func sleepOrCtx(ctx context.Context, d time.Duration) error {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-t.C:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("admin/geo returned %d", resp.StatusCode)
-	}
-	return nil
 }
 
 // deployControllableMockGeo builds the controllable mock-geo image, loads it

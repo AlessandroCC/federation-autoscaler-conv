@@ -81,12 +81,22 @@ func GenerateClusterSpecs(runID string, numConsumers, numProviders int) []Cluste
 	return specs
 }
 
+// cidr allocates a non-overlapping subnet for cluster index idx. Each /16 has
+// only one free octet (10.X.0.0/16), which caps a single-octet counter at
+// ~15 clusters starting from base 241 — observed as "invalid CIDR address:
+// 10.256.0.0/16" once idx overflows 255. Using /20 blocks instead spends two
+// octets (10.X.Y.0/20, Y in 16-wide steps), giving room for thousands of
+// clusters while still comfortably covering the 1-2 nodes per Kind cluster
+// this harness creates (a /20 is 4096 addresses; Calico's default per-node
+// block is /24 = 256 addresses).
 func cidr(idx int, kind string) string {
+	octet2Step := idx / 16
+	octet3 := (idx % 16) * 16
 	switch kind {
 	case "pod":
-		return fmt.Sprintf("10.%d.0.0/16", 241+idx)
+		return fmt.Sprintf("10.%d.%d.0/20", 241+octet2Step, octet3)
 	case "svc":
-		return fmt.Sprintf("10.%d.0.0/16", 96+idx)
+		return fmt.Sprintf("10.%d.%d.0/20", 96+octet2Step, octet3)
 	default:
 		panic("cidr: unknown kind " + kind)
 	}
@@ -165,6 +175,113 @@ func KindLoadImages(ctx context.Context, clusterName string, images []string) er
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
+}
+
+// LiqoImages is the full set of container images `liqoctl install` (Liqo
+// v1.1.2, matching LIQOCTL_VERSION in deploy/standalone/common.sh) pulls for
+// a fresh install, plus the uninstaller image its `uninstall` path uses
+// (retry_liqo_install's purge calls `liqoctl uninstall` on a failed
+// attempt). Preloading them once and `kind load`-ing them into every
+// provider/consumer cluster avoids each of the ~50 concurrent clusters
+// independently pulling the same images from ghcr.io / k8s.gcr.io.
+var LiqoImages = []string{
+	"ghcr.io/liqotech/gateway:v1.1.2",
+	"ghcr.io/liqotech/gateway/wireguard:v1.1.2",
+	"ghcr.io/liqotech/gateway/geneve:v1.1.2",
+	"ghcr.io/liqotech/fabric:v1.1.2",
+	"ghcr.io/liqotech/liqo-controller-manager:v1.1.2",
+	"ghcr.io/liqotech/webhook:v1.1.2",
+	"ghcr.io/liqotech/ipam:v1.1.2",
+	"ghcr.io/liqotech/crd-replicator:v1.1.2",
+	"ghcr.io/liqotech/metric-agent:v1.1.2",
+	"ghcr.io/liqotech/cert-creator:v1.1.2",
+	"ghcr.io/liqotech/telemetry:v1.1.2",
+	"ghcr.io/liqotech/virtual-kubelet:v1.1.2",
+	"ghcr.io/liqotech/proxy:v1.1.2",
+	"ghcr.io/liqotech/uninstaller:v1.1.2",
+	"k8s.gcr.io/ingress-nginx/kube-webhook-certgen:v1.1.1",
+}
+
+// craneVersion pins the crane (go-containerregistry) release ensureCrane
+// installs when the tool isn't already on PATH.
+const craneVersion = "v0.21.9"
+
+// ensureCrane returns a path to a working `crane` binary, downloading the
+// pinned release into a cache dir under os.TempDir if it isn't already on
+// PATH. Idempotent: a second call in the same run (or a later run, since the
+// cache dir isn't wiped) finds the binary and skips the download.
+func ensureCrane(ctx context.Context) (string, error) {
+	if p, err := exec.LookPath("crane"); err == nil {
+		return p, nil
+	}
+	toolsDir := filepath.Join(os.TempDir(), "fa-tools")
+	cranePath := filepath.Join(toolsDir, "crane")
+	if _, err := os.Stat(cranePath); err == nil {
+		return cranePath, nil
+	}
+	if err := os.MkdirAll(toolsDir, 0o755); err != nil {
+		return "", fmt.Errorf("create tools dir: %w", err)
+	}
+	log.Printf("[infra] crane not found — installing %s", craneVersion)
+	url := fmt.Sprintf("https://github.com/google/go-containerregistry/releases/download/%s/go-containerregistry_Linux_x86_64.tar.gz", craneVersion)
+	sh := fmt.Sprintf("curl -fsSL %q | tar -xz -C %q crane", url, toolsDir)
+	cmd := exec.CommandContext(ctx, "sh", "-c", sh)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return "", fmt.Errorf("install crane: %w", err)
+	}
+	if err := os.Chmod(cranePath, 0o755); err != nil {
+		return "", fmt.Errorf("chmod crane: %w", err)
+	}
+	return cranePath, nil
+}
+
+// DockerPullImages pulls each image for linux/amd64 into the host's local
+// Docker image store, so later `kind load docker-image` calls (KindLoadImages)
+// never re-download per cluster.
+//
+// This goes through crane, not `docker pull`, because of a documented kind
+// bug (https://github.com/kubernetes-sigs/kind/issues/3845 and others):
+// when Docker uses the containerd-snapshotter storage backend, an image
+// pulled from a multi-platform manifest list stays associated with that full
+// index locally even after `docker pull --platform`, which only limits which
+// blobs get downloaded. `kind load docker-image` (`docker save | ctr images
+// import --all-platforms`) then tries to import every platform the index
+// lists, and fails with "ctr: content digest ... not found" for the
+// platforms whose blobs were never fetched. `crane pull --platform` resolves
+// the index down to a single concrete manifest before ever touching Docker,
+// so the tar loaded into Docker's store has no lingering multi-platform
+// index to trip over.
+func DockerPullImages(ctx context.Context, images []string) error {
+	cranePath, err := ensureCrane(ctx)
+	if err != nil {
+		return fmt.Errorf("ensure crane: %w", err)
+	}
+	tmpDir, err := os.MkdirTemp("", "fa-image-pull-")
+	if err != nil {
+		return fmt.Errorf("create temp dir: %w", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	for i, img := range images {
+		log.Printf("[infra] pulling %s (linux/amd64, via crane)", img)
+		tarPath := filepath.Join(tmpDir, fmt.Sprintf("img-%d.tar", i))
+		pull := exec.CommandContext(ctx, cranePath, "pull", "--platform=linux/amd64", img, tarPath)
+		pull.Stdout = os.Stdout
+		pull.Stderr = os.Stderr
+		if err := pull.Run(); err != nil {
+			return fmt.Errorf("crane pull %s: %w", img, err)
+		}
+		load := exec.CommandContext(ctx, "docker", "load", "-i", tarPath)
+		load.Stdout = os.Stdout
+		load.Stderr = os.Stderr
+		if err := load.Run(); err != nil {
+			return fmt.Errorf("docker load %s: %w", img, err)
+		}
+		os.Remove(tarPath)
+	}
+	return nil
 }
 
 // DockerBuild runs `make docker-build` in the repo root.

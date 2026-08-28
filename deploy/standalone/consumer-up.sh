@@ -153,17 +153,30 @@ BROKER_URL="$(cat "$work/broker-url")"
 log "Consumer deploy — cluster-id ${CLUSTER_ID}, broker ${BROKER_URL}"
 
 # 2. Liqo control plane (peering itself is on-demand at reservation time).
+# The readiness check (not just existence) matters: a liqoctl install that
+# timed out mid-way can leave the liqo-controller-manager Deployment object
+# created but never Available (its pods never come up, Helm's own release
+# tracking may even show "no deployed releases"). An existence-only check
+# would see that broken object, call it "already installed", and skip
+# retrying liqoctl forever — burning every retry attempt on a cluster that
+# can never recover on its own.
 if [[ -n "$SKIP_LIQO" ]]; then
   warn "skipping Liqo install (--skip-liqo)"
-elif kubectl get deploy liqo-controller-manager -n liqo >/dev/null 2>&1; then
-  ok "Liqo already installed — skipping"
+elif kubectl get deploy liqo-controller-manager -n liqo >/dev/null 2>&1 && \
+     kubectl -n liqo wait --for=condition=Available deploy/liqo-controller-manager --timeout=10s >/dev/null 2>&1; then
+  ok "Liqo already installed and healthy — skipping"
 else
   ensure_tools liqoctl
   log "Installing Liqo (cluster-id ${CLUSTER_ID})"
-  liqo_args=(install "$LIQO_PROVIDER" --cluster-id "$CLUSTER_ID" --timeout 10m)
+  liqo_args=(install "$LIQO_PROVIDER" --cluster-id "$CLUSTER_ID" --timeout 20m)
   [[ -n "$POD_CIDR"     ]] && liqo_args+=(--pod-cidr "$POD_CIDR")
   [[ -n "$SERVICE_CIDR" ]] && liqo_args+=(--service-cidr "$SERVICE_CIDR")
-  liqoctl "${liqo_args[@]}"
+  # Retries transient network hiccups (e.g. DNS lookup timeouts to GitHub for
+  # release assets) and purges any partial install between attempts (see
+  # retry_liqo_install in common.sh) — observed under the background load of
+  # a large comparative-eco/latency run with many already-running Kind
+  # clusters.
+  retry_liqo_install "${liqo_args[@]}"
 fi
 
 # 3. CRDs (VirtualNodeState + ConsumerPolicy are used on the consumer) + namespace.
@@ -208,9 +221,9 @@ kubectl apply -f "${FA_STANDALONE_DIR}/manifests/namespaceoffloading.yaml"
 # 9. Restart the agent (to pick up agent-config) and wait for everything.
 kubectl -n "$NAMESPACE" rollout restart deploy/agent
 log "Waiting for agent / gRPC server / Cluster Autoscaler to become Available"
-kubectl -n "$NAMESPACE" rollout status deploy/agent --timeout=120s
-kubectl -n "$NAMESPACE" rollout status deploy/grpc-server --timeout=120s
-kubectl -n "$NAMESPACE" rollout status deploy/cluster-autoscaler --timeout=120s
+kubectl -n "$NAMESPACE" rollout status deploy/agent --timeout=300s
+kubectl -n "$NAMESPACE" rollout status deploy/grpc-server --timeout=300s
+kubectl -n "$NAMESPACE" rollout status deploy/cluster-autoscaler --timeout=300s
 
 # 10. Liqo dashboard (peerings / virtual nodes / offloaded pods) — as the Ansible
 #     liqo_dashboard role installs it on consumers.

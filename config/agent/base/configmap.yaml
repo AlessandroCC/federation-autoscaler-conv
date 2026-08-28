@@ -22,3 +22,9 @@ data:
   # mockEcoUrl is consumed by providers only; mockGeoUrl by both roles.
   mockEcoUrl: ""
   mockGeoUrl: ""
+  # ecoCacheTtl (provider-only) is how long a region's carbon intensity is
+  # cached before re-fetching from mockEcoUrl. Production carbon data changes
+  # at most hourly, hence 1h; comparative-eco test runs patch this down to
+  # match their carbonRefreshInterval (see tests/testlib/deploy.go) so
+  # providers actually observe the harness's periodic re-randomization.
+  ecoCacheTtl: "1h"
