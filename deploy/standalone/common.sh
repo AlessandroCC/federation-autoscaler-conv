@@ -68,7 +68,11 @@ retry() {
 # fresh attempt, so the retry loop burns its whole budget doing nothing —
 # observed at ~50-cluster scale where the first install alone timed out.
 retry_liqo_install() {
-  local max=3 sleep_s=15
+  # max=2, not 3: each attempt can now run up to --timeout (20m), and this
+  # already nests inside retryDeploy's own 3 outer attempts (tests/testlib) —
+  # 3x3 at 20m each would let one stuck cluster stall for hours before the
+  # run finally gives up on it.
+  local max=2 sleep_s=15
   local attempt=1
   until liqoctl "$@"; do
     if (( attempt >= max )); then
@@ -76,7 +80,21 @@ retry_liqo_install() {
     fi
     warn "liqoctl install failed (attempt ${attempt}/${max}) — purging the partial install, retrying in ${sleep_s}s"
     liqoctl uninstall --skip-confirm >/dev/null 2>&1 || true
-    kubectl delete namespace liqo --ignore-not-found --wait=true --timeout=120s >/dev/null 2>&1 || true
+    if kubectl get namespace liqo >/dev/null 2>&1; then
+      kubectl delete namespace liqo --ignore-not-found --wait=true --timeout=120s >/dev/null 2>&1 || true
+      if kubectl get namespace liqo >/dev/null 2>&1; then
+        # Still there: it's stuck Terminating, almost always because some Liqo
+        # CR's finalizer never got cleared (its controller pod is already
+        # gone). Force-clear the namespace's own finalizer so it disappears
+        # regardless — the standard escape hatch for a stuck namespace.
+        warn "namespace 'liqo' stuck terminating — force-clearing its finalizer"
+        kubectl patch namespace liqo --type=merge -p '{"spec":{"finalizers":[]}}' --subresource=finalize >/dev/null 2>&1 || true
+        for _ in $(seq 1 12); do
+          kubectl get namespace liqo >/dev/null 2>&1 || break
+          sleep 5
+        done
+      fi
+    fi
     sleep "$sleep_s"
     attempt=$((attempt + 1))
   done

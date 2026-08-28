@@ -107,7 +107,7 @@ elif kubectl get deploy liqo-controller-manager -n liqo >/dev/null 2>&1 && \
 else
   ensure_tools liqoctl
   log "Installing Liqo (cluster-id ${CLUSTER_ID})"
-  liqo_args=(install "$LIQO_PROVIDER" --cluster-id "$CLUSTER_ID" --timeout 10m)
+  liqo_args=(install "$LIQO_PROVIDER" --cluster-id "$CLUSTER_ID" --timeout 20m)
   [[ -n "$POD_CIDR"     ]] && liqo_args+=(--pod-cidr "$POD_CIDR")
   [[ -n "$SERVICE_CIDR" ]] && liqo_args+=(--service-cidr "$SERVICE_CIDR")
   # Retries transient network hiccups (e.g. DNS lookup timeouts to GitHub for
