@@ -35,6 +35,10 @@
 #                  non-overlapping across the federation.
 #   --scale-down-unneeded-time  CA scale-down window (default 5m; use ~1m for a
 #                  snappy demo, longer for production).
+#   --skip-cluster-autoscaler  Don't deploy Cluster Autoscaler at all (it plays
+#                  no role when something else drives scaling directly, e.g. a
+#                  test harness that talks to the broker/API and never lets CA
+#                  run — deploying it there is pure startup risk for nothing).
 #
 # By default this also installs the ArubaKube Liqo dashboard via Helm (peerings /
 # virtual nodes / offloaded pods, Ingress host liqo-dashboard.local) — pass
@@ -62,6 +66,7 @@ SKIP_LIQO=""
 CA_IMAGE="registry.k8s.io/autoscaling/cluster-autoscaler:v1.32.0"
 SCALE_DOWN_UNNEEDED_TIME="5m"
 SKIP_LIQO_DASHBOARD=""
+SKIP_CLUSTER_AUTOSCALER=""
 INSTALL_METRICS_SERVER=""
 LIQO_DASHBOARD_DIR="${HOME}/liqo-dashboard"
 
@@ -84,6 +89,7 @@ while [[ $# -gt 0 ]]; do
     --ca-image)                  CA_IMAGE="$2"; shift 2 ;;
     --scale-down-unneeded-time)  SCALE_DOWN_UNNEEDED_TIME="$2"; shift 2 ;;
     --skip-liqo-dashboard)       SKIP_LIQO_DASHBOARD=1; shift ;;
+    --skip-cluster-autoscaler)   SKIP_CLUSTER_AUTOSCALER=1; shift ;;
     --install-metrics-server)    INSTALL_METRICS_SERVER=1; shift ;;
     --liqo-dashboard-dir)        LIQO_DASHBOARD_DIR="$2"; shift 2 ;;
     -h|--help)                   usage 0 ;;
@@ -209,21 +215,25 @@ kubectl -n "$NAMESPACE" patch configmap agent-config --type merge -p \
       "$CLUSTER_ID" "$CLUSTER_ID" "$BROKER_URL" "$MOCK_GEO_URL")" >/dev/null
 
 # 8. Cluster Autoscaler (externalgrpc -> gRPC server) + Liqo NamespaceOffloading.
-log "Applying Cluster Autoscaler"
-sed -e "s#__NAMESPACE__#${NAMESPACE}#g" \
-    -e "s#__CA_IMAGE__#${CA_IMAGE}#g" \
-    -e "s#__GRPC_ADDR__#${GRPC_ADDR}#g" \
-    -e "s#__SCALE_DOWN_UNNEEDED_TIME__#${SCALE_DOWN_UNNEEDED_TIME}#g" \
-    "${FA_STANDALONE_DIR}/manifests/cluster-autoscaler.yaml" | kubectl apply -f -
+if [[ -n "$SKIP_CLUSTER_AUTOSCALER" ]]; then
+  warn "skipping Cluster Autoscaler (--skip-cluster-autoscaler)"
+else
+  log "Applying Cluster Autoscaler"
+  sed -e "s#__NAMESPACE__#${NAMESPACE}#g" \
+      -e "s#__CA_IMAGE__#${CA_IMAGE}#g" \
+      -e "s#__GRPC_ADDR__#${GRPC_ADDR}#g" \
+      -e "s#__SCALE_DOWN_UNNEEDED_TIME__#${SCALE_DOWN_UNNEEDED_TIME}#g" \
+      "${FA_STANDALONE_DIR}/manifests/cluster-autoscaler.yaml" | kubectl apply -f -
+fi
 log "Stamping Liqo NamespaceOffloading for the default namespace"
 kubectl apply -f "${FA_STANDALONE_DIR}/manifests/namespaceoffloading.yaml"
 
 # 9. Restart the agent (to pick up agent-config) and wait for everything.
 kubectl -n "$NAMESPACE" rollout restart deploy/agent
-log "Waiting for agent / gRPC server / Cluster Autoscaler to become Available"
+log "Waiting for agent / gRPC server$([[ -n "$SKIP_CLUSTER_AUTOSCALER" ]] || echo ' / Cluster Autoscaler') to become Available"
 kubectl -n "$NAMESPACE" rollout status deploy/agent --timeout=300s
 kubectl -n "$NAMESPACE" rollout status deploy/grpc-server --timeout=300s
-kubectl -n "$NAMESPACE" rollout status deploy/cluster-autoscaler --timeout=300s
+[[ -n "$SKIP_CLUSTER_AUTOSCALER" ]] || kubectl -n "$NAMESPACE" rollout status deploy/cluster-autoscaler --timeout=300s
 
 # 10. Liqo dashboard (peerings / virtual nodes / offloaded pods) — as the Ansible
 #     liqo_dashboard role installs it on consumers.
