@@ -177,6 +177,47 @@ func KindLoadImages(ctx context.Context, clusterName string, images []string) er
 	return cmd.Run()
 }
 
+// LiqoImages is the full set of container images `liqoctl install` (Liqo
+// v1.1.2, matching LIQOCTL_VERSION in deploy/standalone/common.sh) pulls for
+// a fresh install, plus the uninstaller image its `uninstall` path uses
+// (retry_liqo_install's purge calls `liqoctl uninstall` on a failed
+// attempt). Preloading them once and `kind load`-ing them into every
+// provider/consumer cluster avoids each of the ~50 concurrent clusters
+// independently pulling the same images from ghcr.io / k8s.gcr.io.
+var LiqoImages = []string{
+	"ghcr.io/liqotech/gateway:v1.1.2",
+	"ghcr.io/liqotech/gateway/wireguard:v1.1.2",
+	"ghcr.io/liqotech/gateway/geneve:v1.1.2",
+	"ghcr.io/liqotech/fabric:v1.1.2",
+	"ghcr.io/liqotech/liqo-controller-manager:v1.1.2",
+	"ghcr.io/liqotech/webhook:v1.1.2",
+	"ghcr.io/liqotech/ipam:v1.1.2",
+	"ghcr.io/liqotech/crd-replicator:v1.1.2",
+	"ghcr.io/liqotech/metric-agent:v1.1.2",
+	"ghcr.io/liqotech/cert-creator:v1.1.2",
+	"ghcr.io/liqotech/telemetry:v1.1.2",
+	"ghcr.io/liqotech/virtual-kubelet:v1.1.2",
+	"ghcr.io/liqotech/proxy:v1.1.2",
+	"ghcr.io/liqotech/uninstaller:v1.1.2",
+	"k8s.gcr.io/ingress-nginx/kube-webhook-certgen:v1.1.1",
+}
+
+// DockerPullImages pulls each image onto the host's local Docker cache if
+// not already present. Safe to call repeatedly across runs — an image
+// already pulled is a fast no-op.
+func DockerPullImages(ctx context.Context, images []string) error {
+	for _, img := range images {
+		log.Printf("[infra] pulling %s", img)
+		cmd := exec.CommandContext(ctx, "docker", "pull", img)
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		if err := cmd.Run(); err != nil {
+			return fmt.Errorf("docker pull %s: %w", img, err)
+		}
+	}
+	return nil
+}
+
 // DockerBuild runs `make docker-build` in the repo root.
 func DockerBuild(ctx context.Context, repoRoot string) error {
 	log.Println("[infra] building Docker images (make docker-build)")

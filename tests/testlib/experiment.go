@@ -412,6 +412,16 @@ func (o *Orchestrator) Setup(ctx context.Context) error {
 		return fmt.Errorf("retag: %w", err)
 	}
 
+	// Pre-pull Liqo's images once on the host, so kind-loading them into
+	// each provider/consumer cluster (below) never re-downloads from
+	// ghcr.io per cluster. Sequential, not backgrounded: a goroutine left
+	// running past an early return (e.g. a later cluster-creation failure)
+	// would leak with its error never checked.
+	log.Println("=== PRELOAD LIQO IMAGES ===")
+	if err := DockerPullImages(ctx, LiqoImages); err != nil {
+		return fmt.Errorf("pull liqo images: %w", err)
+	}
+
 	// Generate cluster specs.
 	log.Println("=== CREATE CLUSTERS ===")
 	o.Specs = GenerateClusterSpecs(o.RunID, o.Config.Consumers, o.Config.Providers)
@@ -433,12 +443,15 @@ func (o *Orchestrator) Setup(ctx context.Context) error {
 	for i := 0; i < o.Config.Consumers; i++ {
 		imgs := append([]string{}, agentImgs...)
 		imgs = append(imgs, consumerExtra...)
+		imgs = append(imgs, LiqoImages...)
 		if err := KindLoadImages(ctx, o.Specs[1+i].Name, imgs); err != nil {
 			return fmt.Errorf("load images into consumer-%d: %w", i+1, err)
 		}
 	}
 	for i := 0; i < o.Config.Providers; i++ {
-		if err := KindLoadImages(ctx, o.Specs[1+o.Config.Consumers+i].Name, agentImgs); err != nil {
+		imgs := append([]string{}, agentImgs...)
+		imgs = append(imgs, LiqoImages...)
+		if err := KindLoadImages(ctx, o.Specs[1+o.Config.Consumers+i].Name, imgs); err != nil {
 			return fmt.Errorf("load images into provider-%d: %w", i+1, err)
 		}
 	}
