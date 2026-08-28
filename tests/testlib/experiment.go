@@ -476,15 +476,6 @@ func (o *Orchestrator) Setup(ctx context.Context) error {
 		return fmt.Errorf("deploy: %w", err)
 	}
 
-	// Scale down cluster autoscaler on each consumer.
-	for i := 0; i < o.Config.Consumers; i++ {
-		spec := o.Specs[1+i]
-		log.Printf("[deploy] scaling cluster-autoscaler to 0 on consumer-%d", i+1)
-		if err := ScaleClusterAutoscaler(ctx, spec.Kubeconfig, 0); err != nil {
-			log.Printf("[deploy] warning: could not scale CA on consumer-%d: %v", i+1, err)
-		}
-	}
-
 	// Resolve identities from all consumer join bundles.
 	log.Println("=== WAIT FOR READINESS ===")
 	identities, caFile, err := o.resolveIdentities()

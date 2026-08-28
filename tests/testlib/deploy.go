@@ -237,7 +237,7 @@ func deployConsumer(ctx context.Context, standaloneDir string, spec ClusterSpec,
 		"--mock-geo-url", mockGeoURL,
 		"--liqo-provider", opts.LiqoProvider,
 		"--skip-liqo-dashboard",
-		"--scale-down-unneeded-time", "1m",
+		"--skip-cluster-autoscaler",
 	}
 	if opts.LiqoProvider != "kind" {
 		args = append(args, "--pod-cidr", spec.PodCIDR, "--service-cidr", spec.SvcCIDR)
@@ -652,19 +652,6 @@ func deployControllableMockGeo(ctx context.Context, repoRoot string, centralSpec
 		"-n", "federation-autoscaler-system",
 		"rollout", "status", "deploy/mock-geo",
 		"--timeout=120s",
-	)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	return cmd.Run()
-}
-
-// ScaleClusterAutoscaler scales the cluster-autoscaler deployment to the given replicas.
-func ScaleClusterAutoscaler(ctx context.Context, kubeconfig string, replicas int) error {
-	cmd := exec.CommandContext(ctx, "kubectl",
-		"--kubeconfig", kubeconfig,
-		"-n", "federation-autoscaler-system",
-		"scale", "deploy/cluster-autoscaler",
-		fmt.Sprintf("--replicas=%d", replicas),
 	)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
