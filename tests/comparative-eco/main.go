@@ -556,38 +556,46 @@ func runReserveConsumerIteration(ctx context.Context, orch *testlib.Orchestrator
 
 	var prevProvider string
 	var releaseMs float64
+	var initialProvider string
 
 	for attempt := 0; ; attempt++ {
 		ngResp, err := broker.GetNodeGroups(ctx)
 		if err != nil {
 			state.addSelection(testlib.SelectionRecord{
-				Timestamp:    start,
-				ConsumerID:   consID,
-				Phase:        phase,
-				Policy:       policy,
-				Iteration:    i,
-				Outcome:      "error",
-				ErrorMessage: fmt.Sprintf("get nodegroups: %v", err),
-				DurationMs:   msSince(start),
+				Timestamp:         start,
+				ConsumerID:        consID,
+				Phase:             phase,
+				Policy:            policy,
+				Iteration:         i,
+				Outcome:           "error",
+				ErrorMessage:      fmt.Sprintf("get nodegroups: %v", err),
+				DurationMs:        msSince(start),
+				InitialProviderID: initialProvider,
+				RetryCount:        attempt,
 			})
 			log.Printf("[%s] iter %d %s: nodegroups error: %v", phase, i, consID, err)
 			return
 		}
 
 		winner := testlib.FindWinner(ngResp.NodeGroups)
+		if winner != nil && initialProvider == "" {
+			initialProvider = winner.ProviderClusterID
+		}
 
 		if winner == nil {
 			growable := testlib.GrowableNodeGroups(ngResp.NodeGroups)
 			state.addSnapshots(nodeGroupSnapshots(ngResp, start, consID, phase, policy, i, nil))
 			state.addSelection(testlib.SelectionRecord{
-				Timestamp:    start,
-				ConsumerID:   consID,
-				Phase:        phase,
-				Policy:       policy,
-				Iteration:    i,
-				Outcome:      "no-winner",
-				ErrorMessage: fmt.Sprintf("growable=%d applied=%s", len(growable), ngResp.AppliedPlacement),
-				DurationMs:   msSince(start),
+				Timestamp:         start,
+				ConsumerID:        consID,
+				Phase:             phase,
+				Policy:            policy,
+				Iteration:         i,
+				Outcome:           "no-winner",
+				ErrorMessage:      fmt.Sprintf("growable=%d applied=%s", len(growable), ngResp.AppliedPlacement),
+				DurationMs:        msSince(start),
+				InitialProviderID: initialProvider,
+				RetryCount:        attempt,
 			})
 			log.Printf("[%s] iter %d %s: no single winner (growable=%d)", phase, i, consID, len(growable))
 			return
@@ -606,18 +614,20 @@ func runReserveConsumerIteration(ctx context.Context, orch *testlib.Orchestrator
 			}
 
 			state.addSelection(testlib.SelectionRecord{
-				Timestamp:      start,
-				ConsumerID:     consID,
-				Phase:          phase,
-				Policy:         policy,
-				Iteration:      i,
-				SelectedID:     cur.ProviderClusterID,
-				NodeGroupID:    cur.NodeGroupID,
-				ReservationID:  cur.ReservationID,
-				PlacementValue: curMetric,
-				HasMetric:      curHasMetric,
-				Outcome:        "success",
-				DurationMs:     msSince(start),
+				Timestamp:         start,
+				ConsumerID:        consID,
+				Phase:             phase,
+				Policy:            policy,
+				Iteration:         i,
+				SelectedID:        cur.ProviderClusterID,
+				NodeGroupID:       cur.NodeGroupID,
+				ReservationID:     cur.ReservationID,
+				PlacementValue:    curMetric,
+				HasMetric:         curHasMetric,
+				Outcome:           "success",
+				DurationMs:        msSince(start),
+				InitialProviderID: initialProvider,
+				RetryCount:        attempt,
 			})
 			state.addReservation(testlib.ReservationRecord{
 				Timestamp:         start,
@@ -633,6 +643,8 @@ func runReserveConsumerIteration(ctx context.Context, orch *testlib.Orchestrator
 				PlacementMetric:   curMetric,
 				Outcome:           "success",
 				TotalMs:           msSince(start),
+				InitialProviderID: initialProvider,
+				RetryCount:        attempt,
 			})
 			log.Printf("[%s] iter %02d %s: keep  %-20s (metric=%.2f)", phase, i, consID, cur.ProviderClusterID, curMetric)
 			return
@@ -684,19 +696,21 @@ func runReserveConsumerIteration(ctx context.Context, orch *testlib.Orchestrator
 				finalPhase = string(resp.Status)
 			}
 			state.addSelection(testlib.SelectionRecord{
-				Timestamp:      start,
-				ConsumerID:     consID,
-				Phase:          phase,
-				Policy:         policy,
-				Iteration:      i,
-				SelectedID:     winner.ProviderClusterID,
-				NodeGroupID:    winner.ID,
-				ReservationID:  resID,
-				PlacementValue: winner.PlacementMetric,
-				HasMetric:      winner.HasMetric,
-				Outcome:        "reserve-error",
-				ErrorMessage:   peerErr.Error(),
-				DurationMs:     msSince(start),
+				Timestamp:         start,
+				ConsumerID:        consID,
+				Phase:             phase,
+				Policy:            policy,
+				Iteration:         i,
+				SelectedID:        winner.ProviderClusterID,
+				NodeGroupID:       winner.ID,
+				ReservationID:     resID,
+				PlacementValue:    winner.PlacementMetric,
+				HasMetric:         winner.HasMetric,
+				Outcome:           "reserve-error",
+				ErrorMessage:      peerErr.Error(),
+				DurationMs:        msSince(start),
+				InitialProviderID: initialProvider,
+				RetryCount:        attempt,
 			})
 			state.addReservation(testlib.ReservationRecord{
 				Timestamp:         start,
@@ -716,6 +730,8 @@ func runReserveConsumerIteration(ctx context.Context, orch *testlib.Orchestrator
 				PlacementMetric:   winner.PlacementMetric,
 				Outcome:           "error",
 				ErrorMessage:      peerErr.Error(),
+				InitialProviderID: initialProvider,
+				RetryCount:        attempt,
 			})
 			log.Printf("[%s] iter %d %s: %s error → %s: %v", phase, i, consID, action, winner.ProviderClusterID, peerErr)
 			return
@@ -730,18 +746,20 @@ func runReserveConsumerIteration(ctx context.Context, orch *testlib.Orchestrator
 		})
 
 		state.addSelection(testlib.SelectionRecord{
-			Timestamp:      start,
-			ConsumerID:     consID,
-			Phase:          phase,
-			Policy:         policy,
-			Iteration:      i,
-			SelectedID:     winner.ProviderClusterID,
-			NodeGroupID:    winner.ID,
-			ReservationID:  resID,
-			PlacementValue: winner.PlacementMetric,
-			HasMetric:      winner.HasMetric,
-			Outcome:        "success",
-			DurationMs:     msSince(start),
+			Timestamp:         start,
+			ConsumerID:        consID,
+			Phase:             phase,
+			Policy:            policy,
+			Iteration:         i,
+			SelectedID:        winner.ProviderClusterID,
+			NodeGroupID:       winner.ID,
+			ReservationID:     resID,
+			PlacementValue:    winner.PlacementMetric,
+			HasMetric:         winner.HasMetric,
+			Outcome:           "success",
+			DurationMs:        msSince(start),
+			InitialProviderID: initialProvider,
+			RetryCount:        attempt,
 		})
 		state.addReservation(testlib.ReservationRecord{
 			Timestamp:         start,
@@ -760,6 +778,8 @@ func runReserveConsumerIteration(ctx context.Context, orch *testlib.Orchestrator
 			FinalPhase:        string(resp.Status),
 			PlacementMetric:   winner.PlacementMetric,
 			Outcome:           "success",
+			InitialProviderID: initialProvider,
+			RetryCount:        attempt,
 		})
 		log.Printf("[%s] iter %02d %s: %s %-20s (res=%s peer=%.0fms rel=%.0fms metric=%.2f)",
 			phase, i, consID, action, winner.ProviderClusterID, resID, peerMs, releaseMs, winner.PlacementMetric)

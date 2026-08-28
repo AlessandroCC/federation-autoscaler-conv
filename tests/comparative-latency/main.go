@@ -610,19 +610,22 @@ func runLatencyReserveConsumerIteration(ctx context.Context, orch *testlib.Orche
 
 	var prevProvider string
 	var releaseMs float64
+	var initialProvider string
 
 	for attempt := 0; ; attempt++ {
 		ngResp, err := broker.GetNodeGroups(ctx)
 		if err != nil {
 			state.addSelection(testlib.SelectionRecord{
-				Timestamp:    start,
-				ConsumerID:   consID,
-				Phase:        phase,
-				Policy:       policy,
-				Iteration:    i,
-				Outcome:      "error",
-				ErrorMessage: fmt.Sprintf("get nodegroups: %v", err),
-				DurationMs:   msSince(start),
+				Timestamp:         start,
+				ConsumerID:        consID,
+				Phase:             phase,
+				Policy:            policy,
+				Iteration:         i,
+				Outcome:           "error",
+				ErrorMessage:      fmt.Sprintf("get nodegroups: %v", err),
+				DurationMs:        msSince(start),
+				InitialProviderID: initialProvider,
+				RetryCount:        attempt,
 			})
 			log.Printf("[%s] iter %d %s: nodegroups error: %v", phase, i, consID, err)
 			return
@@ -646,14 +649,16 @@ func runLatencyReserveConsumerIteration(ctx context.Context, orch *testlib.Orche
 			}
 			if len(candidates) == 0 {
 				state.addSelection(testlib.SelectionRecord{
-					Timestamp:    start,
-					ConsumerID:   consID,
-					Phase:        phase,
-					Policy:       policy,
-					Iteration:    i,
-					Outcome:      "no-candidates",
-					ErrorMessage: "no growable with ProbeEndpoint",
-					DurationMs:   msSince(start),
+					Timestamp:         start,
+					ConsumerID:        consID,
+					Phase:             phase,
+					Policy:            policy,
+					Iteration:         i,
+					Outcome:           "no-candidates",
+					ErrorMessage:      "no growable with ProbeEndpoint",
+					DurationMs:        msSince(start),
+					InitialProviderID: initialProvider,
+					RetryCount:        attempt,
 				})
 				return
 			}
@@ -661,14 +666,16 @@ func runLatencyReserveConsumerIteration(ctx context.Context, orch *testlib.Orche
 			probeResp, err := console.Probe(ctx, candidates)
 			if err != nil {
 				state.addSelection(testlib.SelectionRecord{
-					Timestamp:    start,
-					ConsumerID:   consID,
-					Phase:        phase,
-					Policy:       policy,
-					Iteration:    i,
-					Outcome:      "probe-error",
-					ErrorMessage: err.Error(),
-					DurationMs:   msSince(start),
+					Timestamp:         start,
+					ConsumerID:        consID,
+					Phase:             phase,
+					Policy:            policy,
+					Iteration:         i,
+					Outcome:           "probe-error",
+					ErrorMessage:      err.Error(),
+					DurationMs:        msSince(start),
+					InitialProviderID: initialProvider,
+					RetryCount:        attempt,
 				})
 				return
 			}
@@ -694,13 +701,15 @@ func runLatencyReserveConsumerIteration(ctx context.Context, orch *testlib.Orche
 			winner := testlib.FindWinner(ngResp.NodeGroups)
 			if winner == nil {
 				state.addSelection(testlib.SelectionRecord{
-					Timestamp:  start,
-					ConsumerID: consID,
-					Phase:      phase,
-					Policy:     policy,
-					Iteration:  i,
-					Outcome:    "no-winner",
-					DurationMs: msSince(start),
+					Timestamp:         start,
+					ConsumerID:        consID,
+					Phase:             phase,
+					Policy:            policy,
+					Iteration:         i,
+					Outcome:           "no-winner",
+					DurationMs:        msSince(start),
+					InitialProviderID: initialProvider,
+					RetryCount:        attempt,
 				})
 				return
 			}
@@ -730,6 +739,10 @@ func runLatencyReserveConsumerIteration(ctx context.Context, orch *testlib.Orche
 			}
 		}
 
+		if initialProvider == "" && chosenProviderID != "" {
+			initialProvider = chosenProviderID
+		}
+
 		cur := state.getActive(consID)
 
 		// For latency: if current provider was probed and not chosen, switch.
@@ -749,17 +762,19 @@ func runLatencyReserveConsumerIteration(ctx context.Context, orch *testlib.Orche
 				state.addProbe(*probeRec)
 			}
 			state.addSelection(testlib.SelectionRecord{
-				Timestamp:     start,
-				ConsumerID:    consID,
-				Phase:         phase,
-				Policy:        policy,
-				Iteration:     i,
-				SelectedID:    cur.ProviderClusterID,
-				NodeGroupID:   cur.NodeGroupID,
-				ReservationID: cur.ReservationID,
-				RTTMs:         chosenRTT,
-				Outcome:       "success",
-				DurationMs:    msSince(start),
+				Timestamp:         start,
+				ConsumerID:        consID,
+				Phase:             phase,
+				Policy:            policy,
+				Iteration:         i,
+				SelectedID:        cur.ProviderClusterID,
+				NodeGroupID:       cur.NodeGroupID,
+				ReservationID:     cur.ReservationID,
+				RTTMs:             chosenRTT,
+				Outcome:           "success",
+				DurationMs:        msSince(start),
+				InitialProviderID: initialProvider,
+				RetryCount:        attempt,
 			})
 			state.addReservation(testlib.ReservationRecord{
 				Timestamp:         start,
@@ -775,6 +790,8 @@ func runLatencyReserveConsumerIteration(ctx context.Context, orch *testlib.Orche
 				RTTMs:             chosenRTT,
 				Outcome:           "success",
 				TotalMs:           msSince(start),
+				InitialProviderID: initialProvider,
+				RetryCount:        attempt,
 			})
 			log.Printf("[%s] iter %02d %s: keep  %-20s (rtt=%.2fms)", phase, i, consID, cur.ProviderClusterID, chosenRTT)
 			return
@@ -835,18 +852,20 @@ func runLatencyReserveConsumerIteration(ctx context.Context, orch *testlib.Orche
 				finalPhase = string(resp.Status)
 			}
 			state.addSelection(testlib.SelectionRecord{
-				Timestamp:     start,
-				ConsumerID:    consID,
-				Phase:         phase,
-				Policy:        policy,
-				Iteration:     i,
-				SelectedID:    chosenProviderID,
-				NodeGroupID:   chosenNodeGroupID,
-				ReservationID: resID,
-				RTTMs:         chosenRTT,
-				Outcome:       "reserve-error",
-				ErrorMessage:  peerErr.Error(),
-				DurationMs:    msSince(start),
+				Timestamp:         start,
+				ConsumerID:        consID,
+				Phase:             phase,
+				Policy:            policy,
+				Iteration:         i,
+				SelectedID:        chosenProviderID,
+				NodeGroupID:       chosenNodeGroupID,
+				ReservationID:     resID,
+				RTTMs:             chosenRTT,
+				Outcome:           "reserve-error",
+				ErrorMessage:      peerErr.Error(),
+				DurationMs:        msSince(start),
+				InitialProviderID: initialProvider,
+				RetryCount:        attempt,
 			})
 			state.addReservation(testlib.ReservationRecord{
 				Timestamp:         start,
@@ -866,6 +885,8 @@ func runLatencyReserveConsumerIteration(ctx context.Context, orch *testlib.Orche
 				RTTMs:             chosenRTT,
 				Outcome:           "error",
 				ErrorMessage:      peerErr.Error(),
+				InitialProviderID: initialProvider,
+				RetryCount:        attempt,
 			})
 			log.Printf("[%s] iter %d %s: %s error → %s: %v", phase, i, consID, action, chosenProviderID, peerErr)
 			return
@@ -879,17 +900,19 @@ func runLatencyReserveConsumerIteration(ctx context.Context, orch *testlib.Orche
 		})
 
 		state.addSelection(testlib.SelectionRecord{
-			Timestamp:     start,
-			ConsumerID:    consID,
-			Phase:         phase,
-			Policy:        policy,
-			Iteration:     i,
-			SelectedID:    chosenProviderID,
-			NodeGroupID:   chosenNodeGroupID,
-			ReservationID: resID,
-			RTTMs:         chosenRTT,
-			Outcome:       "success",
-			DurationMs:    msSince(start),
+			Timestamp:         start,
+			ConsumerID:        consID,
+			Phase:             phase,
+			Policy:            policy,
+			Iteration:         i,
+			SelectedID:        chosenProviderID,
+			NodeGroupID:       chosenNodeGroupID,
+			ReservationID:     resID,
+			RTTMs:             chosenRTT,
+			Outcome:           "success",
+			DurationMs:        msSince(start),
+			InitialProviderID: initialProvider,
+			RetryCount:        attempt,
 		})
 		state.addReservation(testlib.ReservationRecord{
 			Timestamp:         start,
@@ -908,6 +931,8 @@ func runLatencyReserveConsumerIteration(ctx context.Context, orch *testlib.Orche
 			FinalPhase:        string(resp.Status),
 			RTTMs:             chosenRTT,
 			Outcome:           "success",
+			InitialProviderID: initialProvider,
+			RetryCount:        attempt,
 		})
 		log.Printf("[%s] iter %02d %s: %s %-20s (res=%s peer=%.0fms rel=%.0fms rtt=%.2fms)",
 			phase, i, consID, action, chosenProviderID, resID, peerMs, releaseMs, chosenRTT)

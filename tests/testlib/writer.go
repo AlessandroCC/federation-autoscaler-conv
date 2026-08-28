@@ -54,6 +54,16 @@ type SelectionRecord struct {
 	DurationMs     float64   `json:"durationMs"`
 	Outcome        string    `json:"outcome"`
 	ErrorMessage   string    `json:"errorMessage,omitempty"`
+
+	// InitialProviderID is the first candidate this consumer computed, before
+	// any capacity-race retries; empty when there was no candidate at all
+	// (e.g. a "no-winner" outcome). Differs from SelectedID only when
+	// RetryCount > 0 — i.e. this consumer lost a race for its first pick.
+	InitialProviderID string `json:"initialProviderId,omitempty"`
+	// RetryCount is how many times this consumer lost a capacity race
+	// (insufficient-capacity 409) before landing on SelectedID or giving up.
+	// Zero means no contention.
+	RetryCount int `json:"retryCount"`
 }
 
 var selectionCSVHeader = []string{
@@ -61,6 +71,7 @@ var selectionCSVHeader = []string{
 	"selected_provider_id", "nodegroup_id", "reservation_id",
 	"placement_value", "has_metric", "rtt_ms",
 	"duration_ms", "outcome", "error_message",
+	"initial_provider_id", "retry_count",
 }
 
 func selectionCSVRow(r SelectionRecord) []string {
@@ -79,6 +90,8 @@ func selectionCSVRow(r SelectionRecord) []string {
 		strconv.FormatFloat(r.DurationMs, 'f', 3, 64),
 		r.Outcome,
 		r.ErrorMessage,
+		r.InitialProviderID,
+		strconv.Itoa(r.RetryCount),
 	}
 }
 
@@ -152,31 +165,31 @@ func WriteProbeCSV(dir, name string, records []ProbeRecord) error {
 
 // ExperimentSummary is the top-level JSON summary of a comparative run.
 type ExperimentSummary struct {
-	RunID           string    `json:"runId"`
-	TestType        string    `json:"testType"`
-	StartTime       time.Time `json:"startTime"`
-	EndTime         time.Time `json:"endTime"`
-	ConsumerID      string    `json:"consumerId"`
-	ConsumerCertFP  string    `json:"consumerCertFingerprint,omitempty"`
-	BrokerURL       string    `json:"brokerUrl"`
-	ConsoleURL      string    `json:"consoleUrl"`
-	ProviderCount   int       `json:"providerCount"`
-	IterationsPerPhase int    `json:"iterationsPerPhase"`
-	PhaseAPolicy    string    `json:"phaseAPolicy"`
-	PhaseBPolicy    string    `json:"phaseBPolicy"`
-	PhaseASummary   PhaseSummary `json:"phaseASummary"`
-	PhaseBSummary   PhaseSummary `json:"phaseBSummary"`
+	RunID              string       `json:"runId"`
+	TestType           string       `json:"testType"`
+	StartTime          time.Time    `json:"startTime"`
+	EndTime            time.Time    `json:"endTime"`
+	ConsumerID         string       `json:"consumerId"`
+	ConsumerCertFP     string       `json:"consumerCertFingerprint,omitempty"`
+	BrokerURL          string       `json:"brokerUrl"`
+	ConsoleURL         string       `json:"consoleUrl"`
+	ProviderCount      int          `json:"providerCount"`
+	IterationsPerPhase int          `json:"iterationsPerPhase"`
+	PhaseAPolicy       string       `json:"phaseAPolicy"`
+	PhaseBPolicy       string       `json:"phaseBPolicy"`
+	PhaseASummary      PhaseSummary `json:"phaseASummary"`
+	PhaseBSummary      PhaseSummary `json:"phaseBSummary"`
 }
 
 // PhaseSummary aggregates one measurement phase's results.
 type PhaseSummary struct {
-	Iterations       int                `json:"iterations"`
-	Successes        int                `json:"successes"`
-	Failures         int                `json:"failures"`
-	SelectionCounts  map[string]int     `json:"selectionCounts"`
-	MeanRTTMs        float64            `json:"meanRttMs,omitempty"`
-	MedianRTTMs      float64            `json:"medianRttMs,omitempty"`
-	MeanPlacementVal float64            `json:"meanPlacementValue,omitempty"`
+	Iterations       int            `json:"iterations"`
+	Successes        int            `json:"successes"`
+	Failures         int            `json:"failures"`
+	SelectionCounts  map[string]int `json:"selectionCounts"`
+	MeanRTTMs        float64        `json:"meanRttMs,omitempty"`
+	MedianRTTMs      float64        `json:"medianRttMs,omitempty"`
+	MeanPlacementVal float64        `json:"meanPlacementValue,omitempty"`
 }
 
 // WriteJSONFile writes an arbitrary value as pretty-printed JSON.
@@ -255,6 +268,17 @@ type ReservationRecord struct {
 	RTTMs             float64   `json:"rttMs,omitempty"`
 	Outcome           string    `json:"outcome"`
 	ErrorMessage      string    `json:"errorMessage,omitempty"`
+
+	// InitialProviderID is the first candidate this consumer computed for
+	// THIS decision, before any capacity-race retries; differs from
+	// ProviderClusterID only when RetryCount > 0. Not to be confused with
+	// PrevProviderID, which is the provider held before this decision
+	// (switch source), not before this decision's own retries.
+	InitialProviderID string `json:"initialProviderId,omitempty"`
+	// RetryCount is how many times this consumer lost a capacity race
+	// (insufficient-capacity 409) before landing on ProviderClusterID or
+	// giving up. Zero means no contention.
+	RetryCount int `json:"retryCount"`
 }
 
 var reservationCSVHeader = []string{
@@ -264,6 +288,7 @@ var reservationCSVHeader = []string{
 	"peer_duration_ms", "release_duration_ms", "total_duration_ms",
 	"final_phase", "placement_metric", "rtt_ms",
 	"outcome", "error_message",
+	"initial_provider_id", "retry_count",
 }
 
 func reservationCSVRow(r ReservationRecord) []string {
@@ -286,6 +311,8 @@ func reservationCSVRow(r ReservationRecord) []string {
 		strconv.FormatFloat(r.RTTMs, 'f', 3, 64),
 		r.Outcome,
 		r.ErrorMessage,
+		r.InitialProviderID,
+		strconv.Itoa(r.RetryCount),
 	}
 }
 
