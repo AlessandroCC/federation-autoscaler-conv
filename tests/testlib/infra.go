@@ -205,10 +205,19 @@ var LiqoImages = []string{
 // DockerPullImages pulls each image onto the host's local Docker cache if
 // not already present. Safe to call repeatedly across runs — an image
 // already pulled is a fast no-op.
+//
+// Always pulls --platform linux/amd64: some of these images (notably
+// k8s.gcr.io/ingress-nginx/kube-webhook-certgen) are published as a
+// multi-arch manifest list, and `kind load docker-image` imports with
+// --all-platforms — if the local Docker store doesn't have every listed
+// platform's blobs (only observed for some multi-arch images, not all),
+// that import fails with "ctr: content digest ... not found". Pulling a
+// single platform explicitly makes Docker store a plain single-platform
+// image instead of a manifest list, sidestepping the issue.
 func DockerPullImages(ctx context.Context, images []string) error {
 	for _, img := range images {
 		log.Printf("[infra] pulling %s", img)
-		cmd := exec.CommandContext(ctx, "docker", "pull", img)
+		cmd := exec.CommandContext(ctx, "docker", "pull", "--platform", "linux/amd64", img)
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
 		if err := cmd.Run(); err != nil {
