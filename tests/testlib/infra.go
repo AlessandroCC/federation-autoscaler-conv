@@ -202,27 +202,84 @@ var LiqoImages = []string{
 	"k8s.gcr.io/ingress-nginx/kube-webhook-certgen:v1.1.1",
 }
 
-// DockerPullImages pulls each image onto the host's local Docker cache if
-// not already present. Safe to call repeatedly across runs — an image
-// already pulled is a fast no-op.
+// craneVersion pins the crane (go-containerregistry) release ensureCrane
+// installs when the tool isn't already on PATH.
+const craneVersion = "v0.21.9"
+
+// ensureCrane returns a path to a working `crane` binary, downloading the
+// pinned release into a cache dir under os.TempDir if it isn't already on
+// PATH. Idempotent: a second call in the same run (or a later run, since the
+// cache dir isn't wiped) finds the binary and skips the download.
+func ensureCrane(ctx context.Context) (string, error) {
+	if p, err := exec.LookPath("crane"); err == nil {
+		return p, nil
+	}
+	toolsDir := filepath.Join(os.TempDir(), "fa-tools")
+	cranePath := filepath.Join(toolsDir, "crane")
+	if _, err := os.Stat(cranePath); err == nil {
+		return cranePath, nil
+	}
+	if err := os.MkdirAll(toolsDir, 0o755); err != nil {
+		return "", fmt.Errorf("create tools dir: %w", err)
+	}
+	log.Printf("[infra] crane not found — installing %s", craneVersion)
+	url := fmt.Sprintf("https://github.com/google/go-containerregistry/releases/download/%s/go-containerregistry_Linux_x86_64.tar.gz", craneVersion)
+	sh := fmt.Sprintf("curl -fsSL %q | tar -xz -C %q crane", url, toolsDir)
+	cmd := exec.CommandContext(ctx, "sh", "-c", sh)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return "", fmt.Errorf("install crane: %w", err)
+	}
+	if err := os.Chmod(cranePath, 0o755); err != nil {
+		return "", fmt.Errorf("chmod crane: %w", err)
+	}
+	return cranePath, nil
+}
+
+// DockerPullImages pulls each image for linux/amd64 into the host's local
+// Docker image store, so later `kind load docker-image` calls (KindLoadImages)
+// never re-download per cluster.
 //
-// Always pulls --platform linux/amd64: some of these images (notably
-// k8s.gcr.io/ingress-nginx/kube-webhook-certgen) are published as a
-// multi-arch manifest list, and `kind load docker-image` imports with
-// --all-platforms — if the local Docker store doesn't have every listed
-// platform's blobs (only observed for some multi-arch images, not all),
-// that import fails with "ctr: content digest ... not found". Pulling a
-// single platform explicitly makes Docker store a plain single-platform
-// image instead of a manifest list, sidestepping the issue.
+// This goes through crane, not `docker pull`, because of a documented kind
+// bug (https://github.com/kubernetes-sigs/kind/issues/3845 and others):
+// when Docker uses the containerd-snapshotter storage backend, an image
+// pulled from a multi-platform manifest list stays associated with that full
+// index locally even after `docker pull --platform`, which only limits which
+// blobs get downloaded. `kind load docker-image` (`docker save | ctr images
+// import --all-platforms`) then tries to import every platform the index
+// lists, and fails with "ctr: content digest ... not found" for the
+// platforms whose blobs were never fetched. `crane pull --platform` resolves
+// the index down to a single concrete manifest before ever touching Docker,
+// so the tar loaded into Docker's store has no lingering multi-platform
+// index to trip over.
 func DockerPullImages(ctx context.Context, images []string) error {
-	for _, img := range images {
-		log.Printf("[infra] pulling %s", img)
-		cmd := exec.CommandContext(ctx, "docker", "pull", "--platform", "linux/amd64", img)
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
-		if err := cmd.Run(); err != nil {
-			return fmt.Errorf("docker pull %s: %w", img, err)
+	cranePath, err := ensureCrane(ctx)
+	if err != nil {
+		return fmt.Errorf("ensure crane: %w", err)
+	}
+	tmpDir, err := os.MkdirTemp("", "fa-image-pull-")
+	if err != nil {
+		return fmt.Errorf("create temp dir: %w", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	for i, img := range images {
+		log.Printf("[infra] pulling %s (linux/amd64, via crane)", img)
+		tarPath := filepath.Join(tmpDir, fmt.Sprintf("img-%d.tar", i))
+		pull := exec.CommandContext(ctx, cranePath, "pull", "--platform=linux/amd64", img, tarPath)
+		pull.Stdout = os.Stdout
+		pull.Stderr = os.Stderr
+		if err := pull.Run(); err != nil {
+			return fmt.Errorf("crane pull %s: %w", img, err)
 		}
+		load := exec.CommandContext(ctx, "docker", "load", "-i", tarPath)
+		load.Stdout = os.Stdout
+		load.Stderr = os.Stderr
+		if err := load.Run(); err != nil {
+			return fmt.Errorf("docker load %s: %w", img, err)
+		}
+		os.Remove(tarPath)
 	}
 	return nil
 }
