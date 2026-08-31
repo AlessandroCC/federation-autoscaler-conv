@@ -513,6 +513,16 @@ func runReservePhase(ctx context.Context, orch *testlib.Orchestrator, clients *t
 // waiting out a real requeue delay.
 const maxReserveRaceRetries = 5
 
+// raceRetryBackoff is how long to wait before retrying after a 429
+// (per-cluster rate limit — 10 burst / 5rps, see internal/broker/api's
+// RateLimitMiddleware). Unlike a lost capacity race, hammering again
+// immediately just refires the same limiter; the token bucket refills at
+// 5/s, so this leaves ample margin. 409 (capacity) and 5xx (e.g. a
+// provider's advertisement gone stale) get no backoff — the retry loop
+// already re-reads GetNodeGroups from scratch, which is the correct
+// response to both: a different provider, or the same one once fresh.
+const raceRetryBackoff = 750 * time.Millisecond
+
 // nodeGroupSnapshots builds one record per node group in resp, flagging
 // winner (nil if none) as the selected one.
 func nodeGroupSnapshots(resp *brokerapi.NodeGroupListResponse, ts time.Time, consID, phase, policy string, i int, winner *brokerapi.NodeGroupView) []testlib.NodeGroupSnapshotRecord {
@@ -684,9 +694,17 @@ func runReserveConsumerIteration(ctx context.Context, orch *testlib.Orchestrator
 		}
 
 		if peerErr != nil {
-			if agentclient.IsConflict(peerErr) && attempt < maxReserveRaceRetries {
-				log.Printf("[%s] iter %d %s: lost race for %s (insufficient capacity) — retrying with next-best",
-					phase, i, consID, winner.ProviderClusterID)
+			switch {
+			case agentclient.IsTooManyRequests(peerErr) && attempt < maxReserveRaceRetries:
+				log.Printf("[%s] iter %d %s: rate limited on %s — backing off %s before retrying",
+					phase, i, consID, winner.ProviderClusterID, raceRetryBackoff)
+				if sleepErr := testlib.SleepCtx(ctx, raceRetryBackoff); sleepErr != nil {
+					return
+				}
+				continue
+			case (agentclient.IsConflict(peerErr) || agentclient.IsTransient(peerErr)) && attempt < maxReserveRaceRetries:
+				log.Printf("[%s] iter %d %s: %s — retrying with next-best (%v)",
+					phase, i, consID, winner.ProviderClusterID, peerErr)
 				continue
 			}
 
