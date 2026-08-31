@@ -1,9 +1,21 @@
-consumers: 2
-providers: 3
+consumers: 3
+providers: 7
 
 experiment:
   mode: reserve
-  iterations: 3
-  phasePause: 15s
-  policyPropagationWait: 15s
-  advertisementLag: 15s
+  iterations: 15
+  phasePause: 35s
+  policyPropagationWait: 35s
+  advertisementLag: 35s
+
+  latencyRefreshInterval: 30s
+  latencyJitterMs: 20
+
+infra:
+  readinessTimeout: 10m
+  liqoProvider: kind
+
+cleanup: true
+
+output:
+  dir: results
