@@ -598,7 +598,25 @@ func runReservePhase(ctx context.Context, orch *testlib.Orchestrator, clients *t
 // ever leaves providers with headroom unmasked — so retrying mirrors what
 // the real, continuously-reconciling ResourceRequest controller / Cluster
 // Autoscaler would do on its next tick, just resolved within this iteration.
-const maxReserveRaceRetries = 5
+//
+// 5 was tight at high concurrency: with many consumers converging on a few
+// exposed candidates (Eco's single best-with-headroom, Latency's top-3
+// shortlist), a consumer unlucky in the spread cascade could exhaust its
+// budget before ever reaching a provider with room — observed as ~10% of
+// iterations failing on pure capacity exhaustion in a 30-consumer/70-provider
+// run. Raised to give more room to find a free slot; the cost only lands on
+// iterations with real contention.
+const maxReserveRaceRetries = 10
+
+// raceRetryBackoff is how long to wait before retrying after a 429
+// (per-cluster rate limit — 10 burst / 5rps, see internal/broker/api's
+// RateLimitMiddleware). Unlike a lost capacity race, hammering again
+// immediately just refires the same limiter; the token bucket refills at
+// 5/s, so this leaves ample margin. 409 (capacity) and 5xx (e.g. a
+// provider's advertisement gone stale) get no backoff — the retry loop
+// already re-reads GetNodeGroups from scratch, which is the correct
+// response to both: a different provider, or the same one once fresh.
+const raceRetryBackoff = 750 * time.Millisecond
 
 // runLatencyReserveConsumerIteration is the per-consumer, per-iteration body
 // of runReservePhase, safe to run concurrently with other consumers' calls:
@@ -841,9 +859,17 @@ func runLatencyReserveConsumerIteration(ctx context.Context, orch *testlib.Orche
 		}
 
 		if peerErr != nil {
-			if agentclient.IsConflict(peerErr) && attempt < maxReserveRaceRetries {
-				log.Printf("[%s] iter %d %s: lost race for %s (insufficient capacity) — retrying with next-best",
-					phase, i, consID, chosenProviderID)
+			switch {
+			case agentclient.IsTooManyRequests(peerErr) && attempt < maxReserveRaceRetries:
+				log.Printf("[%s] iter %d %s: rate limited on %s — backing off %s before retrying",
+					phase, i, consID, chosenProviderID, raceRetryBackoff)
+				if sleepErr := testlib.SleepCtx(ctx, raceRetryBackoff); sleepErr != nil {
+					return
+				}
+				continue
+			case (agentclient.IsConflict(peerErr) || agentclient.IsTransient(peerErr)) && attempt < maxReserveRaceRetries:
+				log.Printf("[%s] iter %d %s: %s — retrying with next-best (%v)",
+					phase, i, consID, chosenProviderID, peerErr)
 				continue
 			}
 
