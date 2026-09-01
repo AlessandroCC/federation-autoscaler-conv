@@ -511,7 +511,15 @@ func runReservePhase(ctx context.Context, orch *testlib.Orchestrator, clients *t
 // continuously-reconciling ResourceRequest controller / Cluster Autoscaler
 // would do on its next tick, just resolved within this iteration instead of
 // waiting out a real requeue delay.
-const maxReserveRaceRetries = 5
+//
+// 5 was tight at high concurrency: with many consumers converging on a few
+// exposed candidates (Eco's single best-with-headroom, Latency's top-3
+// shortlist), a consumer unlucky in the spread cascade could exhaust its
+// budget before ever reaching a provider with room — observed as ~10% of
+// iterations failing on pure capacity exhaustion in a 30-consumer/70-provider
+// run. Raised to give more room to find a free slot; the cost only lands on
+// iterations with real contention.
+const maxReserveRaceRetries = 10
 
 // raceRetryBackoff is how long to wait before retrying after a 429
 // (per-cluster rate limit — 10 burst / 5rps, see internal/broker/api's
