@@ -600,9 +600,58 @@ func runReserveConsumerIteration(ctx context.Context, orch *testlib.Orchestrator
 			initialProvider = winner.ProviderClusterID
 		}
 
+		// Read the current reservation BEFORE the no-winner branch: a fully
+		// booked federation (nothing growable) says nothing about the
+		// reservation this consumer already holds, which is still Peered and
+		// serving. Treating "no winner" as a failure without looking at it
+		// recorded a healthy consumer as failing on every iteration once
+		// capacity ran out.
+		cur := state.getActive(consID)
+
 		if winner == nil {
 			growable := testlib.GrowableNodeGroups(ngResp.NodeGroups)
 			state.addSnapshots(nodeGroupSnapshots(ngResp, start, consID, phase, policy, i, nil))
+			if cur != nil {
+				// Stayed put because there was nothing to move to — a success,
+				// but tagged so analysis can tell it apart from a keep that
+				// won on merit.
+				reason := fmt.Sprintf("growable=%d", len(growable))
+				state.addSelection(testlib.SelectionRecord{
+					Timestamp:         start,
+					ConsumerID:        consID,
+					Phase:             phase,
+					Policy:            policy,
+					Iteration:         i,
+					SelectedID:        cur.ProviderClusterID,
+					NodeGroupID:       cur.NodeGroupID,
+					ReservationID:     cur.ReservationID,
+					Outcome:           testlib.OutcomeKeepNoAlternative,
+					ErrorMessage:      reason,
+					DurationMs:        msSince(start),
+					InitialProviderID: initialProvider,
+					RetryCount:        attempt,
+				})
+				state.addReservation(testlib.ReservationRecord{
+					Timestamp:         start,
+					ConsumerID:        consID,
+					Phase:             phase,
+					Policy:            policy,
+					Iteration:         i,
+					ReservationID:     cur.ReservationID,
+					ProviderClusterID: cur.ProviderClusterID,
+					NodeGroupID:       cur.NodeGroupID,
+					Action:            "keep",
+					FinalPhase:        "Peered",
+					Outcome:           testlib.OutcomeKeepNoAlternative,
+					ErrorMessage:      reason,
+					TotalMs:           msSince(start),
+					InitialProviderID: initialProvider,
+					RetryCount:        attempt,
+				})
+				log.Printf("[%s] iter %02d %s: keep  %-20s (no alternative: %s)",
+					phase, i, consID, cur.ProviderClusterID, reason)
+				return
+			}
 			state.addSelection(testlib.SelectionRecord{
 				Timestamp:         start,
 				ConsumerID:        consID,
@@ -618,8 +667,6 @@ func runReserveConsumerIteration(ctx context.Context, orch *testlib.Orchestrator
 			log.Printf("[%s] iter %d %s: no single winner (growable=%d)", phase, i, consID, len(growable))
 			return
 		}
-
-		cur := state.getActive(consID)
 
 		if !testlib.ShouldSwitch(cur, winner.ProviderClusterID, ngResp.NodeGroups) {
 			state.addSnapshots(nodeGroupSnapshots(ngResp, start, consID, phase, policy, i, winner))
@@ -821,7 +868,10 @@ func summarizePhase(records []testlib.SelectionRecord) testlib.PhaseSummary {
 	var metricSum float64
 	var metricCount int
 	for _, r := range records {
-		if r.Outcome == "success" {
+		// A keep-no-alternative iteration ended with the consumer holding
+		// working capacity, so it counts as a success here; selections.csv
+		// keeps the two apart for anyone who needs the distinction.
+		if r.Outcome == "success" || r.Outcome == testlib.OutcomeKeepNoAlternative {
 			s.Successes++
 			s.SelectionCounts[r.SelectedID]++
 			if r.HasMetric {

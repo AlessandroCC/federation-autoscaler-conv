@@ -654,6 +654,55 @@ func runLatencyReserveConsumerIteration(ctx context.Context, orch *testlib.Orche
 		var chosenRTT float64
 		var probeRec *testlib.ProbeRecord
 
+		// Read the consumer's current reservation up front, BEFORE the
+		// no-candidates / no-winner branches below. A fully booked federation
+		// (every node group at MaxSize == CurrentReserved, so nothing is
+		// growable) says nothing about the reservation this consumer already
+		// holds — that one is still Peered and serving. Deciding "no winner ⇒
+		// failure" without looking at it recorded a healthy consumer as a
+		// failure on every iteration once capacity ran out.
+		cur := state.getActive(consID)
+
+		// keepNoAlternative records the iteration as a keep on the current
+		// reservation because the Broker offered nothing to move to. Mirrors
+		// the record pair built by the regular !shouldSwitch path below.
+		keepNoAlternative := func(reason string) {
+			state.addSelection(testlib.SelectionRecord{
+				Timestamp:         start,
+				ConsumerID:        consID,
+				Phase:             phase,
+				Policy:            policy,
+				Iteration:         i,
+				SelectedID:        cur.ProviderClusterID,
+				NodeGroupID:       cur.NodeGroupID,
+				ReservationID:     cur.ReservationID,
+				Outcome:           testlib.OutcomeKeepNoAlternative,
+				ErrorMessage:      reason,
+				DurationMs:        msSince(start),
+				InitialProviderID: initialProvider,
+				RetryCount:        attempt,
+			})
+			state.addReservation(testlib.ReservationRecord{
+				Timestamp:         start,
+				ConsumerID:        consID,
+				Phase:             phase,
+				Policy:            policy,
+				Iteration:         i,
+				ReservationID:     cur.ReservationID,
+				ProviderClusterID: cur.ProviderClusterID,
+				NodeGroupID:       cur.NodeGroupID,
+				Action:            "keep",
+				FinalPhase:        "Peered",
+				Outcome:           testlib.OutcomeKeepNoAlternative,
+				ErrorMessage:      reason,
+				TotalMs:           msSince(start),
+				InitialProviderID: initialProvider,
+				RetryCount:        attempt,
+			})
+			log.Printf("[%s] iter %02d %s: keep  %-20s (no alternative: %s)",
+				phase, i, consID, cur.ProviderClusterID, reason)
+		}
+
 		if ngResp.LatencyShortlist {
 			growable := testlib.GrowableNodeGroups(ngResp.NodeGroups)
 			var candidates []testlib.ProbeCandidate
@@ -666,6 +715,10 @@ func runLatencyReserveConsumerIteration(ctx context.Context, orch *testlib.Orche
 				}
 			}
 			if len(candidates) == 0 {
+				if cur != nil {
+					keepNoAlternative(fmt.Sprintf("growable=%d, none with ProbeEndpoint", len(growable)))
+					return
+				}
 				state.addSelection(testlib.SelectionRecord{
 					Timestamp:         start,
 					ConsumerID:        consID,
@@ -678,6 +731,8 @@ func runLatencyReserveConsumerIteration(ctx context.Context, orch *testlib.Orche
 					InitialProviderID: initialProvider,
 					RetryCount:        attempt,
 				})
+				log.Printf("[%s] iter %d %s: no probe candidates (growable=%d)",
+					phase, i, consID, len(growable))
 				return
 			}
 
@@ -718,6 +773,11 @@ func runLatencyReserveConsumerIteration(ctx context.Context, orch *testlib.Orche
 		} else {
 			winner := testlib.FindWinner(ngResp.NodeGroups)
 			if winner == nil {
+				growable := testlib.GrowableNodeGroups(ngResp.NodeGroups)
+				if cur != nil {
+					keepNoAlternative(fmt.Sprintf("growable=%d", len(growable)))
+					return
+				}
 				state.addSelection(testlib.SelectionRecord{
 					Timestamp:         start,
 					ConsumerID:        consID,
@@ -725,10 +785,12 @@ func runLatencyReserveConsumerIteration(ctx context.Context, orch *testlib.Orche
 					Policy:            policy,
 					Iteration:         i,
 					Outcome:           "no-winner",
+					ErrorMessage:      fmt.Sprintf("growable=%d applied=%s", len(growable), ngResp.AppliedPlacement),
 					DurationMs:        msSince(start),
 					InitialProviderID: initialProvider,
 					RetryCount:        attempt,
 				})
+				log.Printf("[%s] iter %d %s: no single winner (growable=%d)", phase, i, consID, len(growable))
 				return
 			}
 			chosenProviderID = winner.ProviderClusterID
@@ -760,8 +822,6 @@ func runLatencyReserveConsumerIteration(ctx context.Context, orch *testlib.Orche
 		if initialProvider == "" && chosenProviderID != "" {
 			initialProvider = chosenProviderID
 		}
-
-		cur := state.getActive(consID)
 
 		// For latency: if current provider was probed and not chosen, switch.
 		// If current provider was NOT probed (not in shortlist), keep.
@@ -973,7 +1033,10 @@ func summarizeLatencyPhase(selections []testlib.SelectionRecord, _ []testlib.Pro
 	}
 	var rttValues []float64
 	for _, r := range selections {
-		if r.Outcome == "success" {
+		// A keep-no-alternative iteration ended with the consumer holding
+		// working capacity, so it counts as a success here; selections.csv
+		// keeps the two apart for anyone who needs the distinction.
+		if r.Outcome == "success" || r.Outcome == testlib.OutcomeKeepNoAlternative {
 			s.Successes++
 			s.SelectionCounts[r.SelectedID]++
 			if r.RTTMs > 0 && !math.IsInf(r.RTTMs, 1) {

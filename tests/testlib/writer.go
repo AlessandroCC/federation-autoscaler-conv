@@ -37,6 +37,17 @@ const (
 	PhaseCleanup    = "cleanup"
 )
 
+// OutcomeKeepNoAlternative marks an iteration where the consumer stayed on the
+// reservation it already held because the Broker exposed nothing growable to
+// move to — the federation was fully booked. It is a success (the consumer
+// ends the iteration with working capacity, and the real ResourceRequest
+// controller likewise never tears down a working peering just because there
+// is no headroom elsewhere right now), but it is kept distinct from a plain
+// "success" so analysis can separate "kept because it was the best choice"
+// from "kept because it was the only choice". Shared by both comparative
+// binaries and by their phase summaries, which count it alongside "success".
+const OutcomeKeepNoAlternative = "keep-no-alternative"
+
 // SelectionRecord captures one reservation attempt: which provider was picked,
 // under which policy, and any measured RTT.
 type SelectionRecord struct {
