@@ -9,7 +9,12 @@ experiment:
   advertisementLag: 35s
 
   latencyRefreshInterval: 30s
-  latencyJitterMs: 20
+  # Simulated one-way delay per (consumer, provider) pair, redrawn from this
+  # range on every refresh. The ceiling stays under the prober's 300ms
+  # per-probe deadline, above which a provider reads as unreachable and its
+  # RTT never reaches the CSVs.
+  latencyMinMs: 30
+  latencyMaxMs: 250
 
 infra:
   readinessTimeout: 10m

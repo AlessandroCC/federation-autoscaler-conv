@@ -28,7 +28,6 @@ import (
 	"fmt"
 	"log"
 	"math"
-	"math/rand"
 	"os"
 	"os/signal"
 	"sort"
@@ -715,6 +714,12 @@ func runLatencyReserveConsumerIteration(ctx context.Context, orch *testlib.Orche
 				phase, i, consID, cur.ProviderClusterID, reason)
 		}
 
+		// The Random/Eco branch always yields a winner distinct from the
+		// incumbent's masking, so it always had somewhere to go; only the
+		// shortlist branch can find itself with the incumbent as the sole
+		// candidate.
+		hadAlternatives := true
+
 		if ngResp.LatencyShortlist {
 			growable := testlib.GrowableNodeGroups(ngResp.NodeGroups)
 			var candidates []testlib.ProbeCandidate
@@ -726,6 +731,38 @@ func runLatencyReserveConsumerIteration(ctx context.Context, orch *testlib.Orche
 					})
 				}
 			}
+			// Whether the Broker offered anywhere to move to, decided before
+			// the incumbent is added below so a lone incumbent still reads as
+			// "nothing else was free".
+			hadAlternatives = len(candidates) > 0
+
+			// Probe the provider we are already on, even though the Broker
+			// masked it. Its shortlist only carries providers with head-room,
+			// and a consumer holding the last chunk of its own provider fills
+			// it — so the incumbent never appeared, was never measured, and
+			// the switch test below (which requires the incumbent's RTT)
+			// could only ever answer "keep". Measuring it makes the choice a
+			// real comparison between where we are and where we could go, and
+			// gives the keep rows the RTT of the provider actually kept
+			// instead of some other candidate's.
+			if cur != nil {
+				if ep, ok := endpoints[cur.ProviderClusterID]; ok {
+					already := false
+					for _, c := range candidates {
+						if c.ProviderClusterID == cur.ProviderClusterID {
+							already = true
+							break
+						}
+					}
+					if !already {
+						candidates = append(candidates, testlib.ProbeCandidate{
+							ProviderClusterID: cur.ProviderClusterID,
+							Endpoint:          ep,
+						})
+					}
+				}
+			}
+
 			if len(candidates) == 0 {
 				if cur != nil {
 					keepNoAlternative(fmt.Sprintf("growable=%d, none with ProbeEndpoint", len(growable)))
@@ -835,8 +872,34 @@ func runLatencyReserveConsumerIteration(ctx context.Context, orch *testlib.Orche
 			initialProvider = chosenProviderID
 		}
 
-		// For latency: if current provider was probed and not chosen, switch.
-		// If current provider was NOT probed (not in shortlist), keep.
+		// No candidate answered at all: chosenProviderID is empty, and sending
+		// that to the Broker earns a 400 "providerClusterId is required".
+		// Stay put if we can; otherwise end the iteration with an outcome that
+		// says why rather than with a malformed request.
+		if chosenProviderID == "" {
+			if cur != nil {
+				keepNoAlternative("no probe answered")
+				return
+			}
+			state.addSelection(testlib.SelectionRecord{
+				Timestamp:         start,
+				ConsumerID:        consID,
+				Phase:             phase,
+				Policy:            policy,
+				Iteration:         i,
+				Outcome:           "no-winner",
+				ErrorMessage:      "no probe answered",
+				DurationMs:        msSince(start),
+				InitialProviderID: initialProvider,
+				RetryCount:        attempt,
+			})
+			log.Printf("[%s] iter %d %s: no probe answered", phase, i, consID)
+			return
+		}
+
+		// Switch only when the incumbent was actually measured and lost: an
+		// unmeasured incumbent gives nothing to compare against, so staying is
+		// the only defensible call.
 		shouldSwitch := cur == nil
 		if cur != nil && chosenProviderID != cur.ProviderClusterID {
 			if probeRec != nil {
@@ -848,6 +911,14 @@ func runLatencyReserveConsumerIteration(ctx context.Context, orch *testlib.Orche
 		}
 
 		if !shouldSwitch {
+			// Distinguish "stayed because it was the best" from "stayed
+			// because the Broker offered nowhere to go".
+			outcome := "success"
+			reason := ""
+			if !hadAlternatives {
+				outcome = testlib.OutcomeKeepNoAlternative
+				reason = "no growable alternative"
+			}
 			if probeRec != nil {
 				state.addProbe(*probeRec)
 			}
@@ -861,7 +932,8 @@ func runLatencyReserveConsumerIteration(ctx context.Context, orch *testlib.Orche
 				NodeGroupID:       cur.NodeGroupID,
 				ReservationID:     cur.ReservationID,
 				RTTMs:             chosenRTT,
-				Outcome:           "success",
+				Outcome:           outcome,
+				ErrorMessage:      reason,
 				DurationMs:        msSince(start),
 				InitialProviderID: initialProvider,
 				RetryCount:        attempt,
@@ -878,7 +950,8 @@ func runLatencyReserveConsumerIteration(ctx context.Context, orch *testlib.Orche
 				Action:            "keep",
 				FinalPhase:        "Peered",
 				RTTMs:             chosenRTT,
-				Outcome:           "success",
+				Outcome:           outcome,
+				ErrorMessage:      reason,
 				TotalMs:           msSince(start),
 				InitialProviderID: initialProvider,
 				RetryCount:        attempt,
@@ -1092,8 +1165,8 @@ func printSummary(s testlib.ExperimentSummary) {
 
 func refreshLatency(ctx context.Context, exp testlib.TestParams, consumerTCs []*testlib.TCConsumerDelay, providerTCs []*testlib.TCDelayKind) {
 	interval := exp.LatencyRefreshInterval
-	jitter := exp.LatencyJitterMs
-	log.Printf("[latency-refresh] started (interval=%s, jitter=±%dms)", interval, jitter)
+	minMs, maxMs := exp.LatencyMinMs, exp.LatencyMaxMs
+	log.Printf("[latency-refresh] started (interval=%s, delays redrawn in %d-%dms)", interval, minMs, maxMs)
 
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
@@ -1104,17 +1177,18 @@ func refreshLatency(ctx context.Context, exp testlib.TestParams, consumerTCs []*
 			log.Println("[latency-refresh] stopped")
 			return
 		case <-ticker.C:
+			// Redraw the whole matrix from scratch rather than nudging the
+			// previous values, mirroring refreshCarbon in comparative-eco.
+			// A random walk kept each consumer's ranking of providers almost
+			// unchanged from one refresh to the next, so the nearest provider
+			// never really moved and the Latency policy had no reason to
+			// switch; an independent draw reshuffles the ranking every cycle.
 			for _, tc := range consumerTCs {
 				newDelays := make([]testlib.ProviderDelayEntry, len(tc.ProviderDelays))
 				for i, pd := range tc.ProviderDelays {
-					delta := rand.Intn(2*jitter+1) - jitter
-					newDelay := pd.DelayMs + delta
-					if newDelay < 1 {
-						newDelay = 1
-					}
 					newDelays[i] = testlib.ProviderDelayEntry{
 						ProviderIP: pd.ProviderIP,
-						DelayMs:    newDelay,
+						DelayMs:    testlib.RandomDelayMs(minMs, maxMs),
 						Label:      pd.Label,
 					}
 				}
@@ -1128,11 +1202,7 @@ func refreshLatency(ctx context.Context, exp testlib.TestParams, consumerTCs []*
 				testlib.LogProviderDelays("[latency-refresh]   "+tc.ContainerName, newDelays)
 			}
 			for _, tc := range providerTCs {
-				delta := rand.Intn(2*jitter+1) - jitter
-				newDelay := tc.DelayMs + delta
-				if newDelay < 1 {
-					newDelay = 1
-				}
+				newDelay := testlib.RandomDelayMs(minMs, maxMs)
 				if err := tc.UpdateDelay(newDelay); err != nil {
 					if ctx.Err() != nil {
 						return

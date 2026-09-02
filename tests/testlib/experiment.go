@@ -64,14 +64,24 @@ func autoGenerateTCDelays(n int) []TCDelayAutoConfig {
 	return delays
 }
 
-func autoGenerateConsumerDelays(consumers, providers int) []ConsumerDelayConfig {
+// RandomDelayMs draws one simulated one-way delay uniformly from [minMs, maxMs].
+// Used both to seed the matrix and to redraw it on every refresh, so the
+// nearest provider genuinely moves between iterations instead of drifting.
+func RandomDelayMs(minMs, maxMs int) int {
+	if maxMs <= minMs {
+		return minMs
+	}
+	return minMs + rand.Intn(maxMs-minMs+1)
+}
+
+func autoGenerateConsumerDelays(consumers, providers, minMs, maxMs int) []ConsumerDelayConfig {
 	configs := make([]ConsumerDelayConfig, consumers)
 	for c := range configs {
 		pds := make([]ProviderDelay, providers)
 		for p := range pds {
 			pds[p] = ProviderDelay{
 				ProviderIndex: p + 1,
-				DelayMs:       5 + rand.Intn(100),
+				DelayMs:       RandomDelayMs(minMs, maxMs),
 			}
 		}
 		configs[c] = ConsumerDelayConfig{
@@ -169,7 +179,14 @@ type TestParams struct {
 	ConsumerDelays         []ConsumerDelayConfig `yaml:"consumerDelays,omitempty"`
 	SSHKey                 string                `yaml:"sshKey,omitempty"`
 	LatencyRefreshInterval time.Duration         `yaml:"latencyRefreshInterval"`
-	LatencyJitterMs        int                   `yaml:"latencyJitterMs"`
+	// LatencyMinMs/LatencyMaxMs bound the simulated one-way delay drawn for
+	// each (consumer, provider) pair, both at setup and again from scratch on
+	// every refresh. The ceiling stays under the prober's 300ms per-probe
+	// deadline (DefaultProbeTimeout): a delay above it never answers in time,
+	// so that provider would be scored unreachable and its RTT would never
+	// reach the CSVs.
+	LatencyMinMs int `yaml:"latencyMinMs"`
+	LatencyMaxMs int `yaml:"latencyMaxMs"`
 }
 
 // TCDelayAutoConfig is the automated tc delay config (uses providerIndex).
@@ -268,8 +285,11 @@ func (c *AutoConfig) applyDefaults() {
 	if c.Experiment.LatencyRefreshInterval <= 0 {
 		c.Experiment.LatencyRefreshInterval = 3 * time.Minute
 	}
-	if c.Experiment.LatencyJitterMs <= 0 {
-		c.Experiment.LatencyJitterMs = 20
+	if c.Experiment.LatencyMinMs <= 0 {
+		c.Experiment.LatencyMinMs = 30
+	}
+	if c.Experiment.LatencyMaxMs <= c.Experiment.LatencyMinMs {
+		c.Experiment.LatencyMaxMs = 250
 	}
 	if c.Output.Dir == "" {
 		c.Output.Dir = "results"
@@ -289,7 +309,8 @@ func (c *AutoConfig) applyDefaults() {
 		log.Printf("[config] auto-generated regions: %v", c.ProviderRegions)
 	}
 	if len(c.Experiment.ConsumerDelays) == 0 && len(c.Experiment.TCDelaysAuto) == 0 {
-		c.Experiment.ConsumerDelays = autoGenerateConsumerDelays(c.Consumers, c.Providers)
+		c.Experiment.ConsumerDelays = autoGenerateConsumerDelays(
+			c.Consumers, c.Providers, c.Experiment.LatencyMinMs, c.Experiment.LatencyMaxMs)
 		// Print the full matrix only while it is small enough to read: it has
 		// consumers x providers entries, so at 30 x 70 the per-entry form
 		// dumped 2100 lines before the run even started.
@@ -637,8 +658,18 @@ func (o *Orchestrator) MockEcoURL(ctx context.Context) (string, error) {
 }
 
 // ConsumerContainerName returns the Docker container name for a consumer by 1-based index.
+// Mirrors ProviderContainerName: with a worker node the consumer agent — and so
+// the UDP prober whose egress the tc delays are meant to shape — is scheduled on
+// the worker, because a multi-node Kind cluster keeps the control-plane tainted
+// NoSchedule. Naming the control-plane here installed the qdisc on a container
+// the probe traffic never traverses, so injected delays of 1-200ms produced
+// measured RTTs of 0.2-0.4ms and the latency policy had nothing to act on.
 func (o *Orchestrator) ConsumerContainerName(consumerIdx int) string {
-	return o.Specs[1+consumerIdx-1].Name + "-control-plane"
+	spec := o.Specs[1+consumerIdx-1]
+	if spec.HasWorker {
+		return spec.Name + "-worker"
+	}
+	return spec.Name + "-control-plane"
 }
 
 // ProviderContainerName returns the Docker container name for a provider by 1-based index.
@@ -765,8 +796,11 @@ func (c *ExperimentConfig) applyDefaults() {
 	if c.Experiment.LatencyRefreshInterval <= 0 {
 		c.Experiment.LatencyRefreshInterval = 3 * time.Minute
 	}
-	if c.Experiment.LatencyJitterMs <= 0 {
-		c.Experiment.LatencyJitterMs = 20
+	if c.Experiment.LatencyMinMs <= 0 {
+		c.Experiment.LatencyMinMs = 30
+	}
+	if c.Experiment.LatencyMaxMs <= c.Experiment.LatencyMinMs {
+		c.Experiment.LatencyMaxMs = 250
 	}
 	if c.Output.Dir == "" {
 		c.Output.Dir = "results"
