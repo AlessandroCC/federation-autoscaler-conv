@@ -202,6 +202,20 @@ var LiqoImages = []string{
 	"k8s.gcr.io/ingress-nginx/kube-webhook-certgen:v1.1.1",
 }
 
+// UDPEchoImage is the always-on probe responder deployed on every provider
+// cluster (config/agent/provider/udpecho.yaml, the "echo-server" Deployment).
+// Preloaded and kind-loaded the same way as LiqoImages: some environments
+// have no working DNS/egress to ghcr.io from inside a Kind node's own
+// network namespace, and a live pull failure there doesn't fail the
+// experiment loudly — it just leaves echo-server in ImagePullBackOff
+// forever, so every measured-latency probe against that provider times out
+// and silently loses to any candidate that did come up (observed: 0/45
+// successful probes across every comparative-latency run so far, root
+// cause "dial tcp: lookup ghcr.io ...: i/o timeout" in `kubectl describe
+// pod`). Only "latest" is published for this image (confirmed via the
+// ghcr.io tags API), so there is no version to pin.
+const UDPEchoImage = "ghcr.io/liqotech/udpecho:latest"
+
 // craneVersion pins the crane (go-containerregistry) release ensureCrane
 // installs when the tool isn't already on PATH.
 const craneVersion = "v0.21.9"
