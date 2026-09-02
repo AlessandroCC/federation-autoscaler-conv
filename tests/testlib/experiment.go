@@ -290,11 +290,19 @@ func (c *AutoConfig) applyDefaults() {
 	}
 	if len(c.Experiment.ConsumerDelays) == 0 && len(c.Experiment.TCDelaysAuto) == 0 {
 		c.Experiment.ConsumerDelays = autoGenerateConsumerDelays(c.Consumers, c.Providers)
-		for _, cd := range c.Experiment.ConsumerDelays {
-			for _, pd := range cd.ProviderDelays {
-				log.Printf("[config] auto-generated consumer delay: consumer-%d → provider-%d: %dms",
-					cd.ConsumerIndex, pd.ProviderIndex, pd.DelayMs)
+		// Print the full matrix only while it is small enough to read: it has
+		// consumers x providers entries, so at 30 x 70 the per-entry form
+		// dumped 2100 lines before the run even started.
+		if c.Providers <= logProviderDelaysThreshold {
+			for _, cd := range c.Experiment.ConsumerDelays {
+				for _, pd := range cd.ProviderDelays {
+					log.Printf("[config] auto-generated consumer delay: consumer-%d → provider-%d: %dms",
+						cd.ConsumerIndex, pd.ProviderIndex, pd.DelayMs)
+				}
 			}
+		} else {
+			log.Printf("[config] auto-generated consumer delays: %d consumers x %d providers",
+				c.Consumers, c.Providers)
 		}
 	}
 	for i := range c.Experiment.TCDelaysAuto {

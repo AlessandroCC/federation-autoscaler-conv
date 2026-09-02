@@ -113,14 +113,26 @@ func runExperiment(ctx context.Context, orch *testlib.Orchestrator) error {
 	var providerTCs []*testlib.TCDelayKind
 	if len(exp.ConsumerDelays) > 0 {
 		// Consumer-side tc: per-consumer × per-provider delay matrix.
+		//
+		// Every consumer's matrix names the same providers, so resolve each
+		// provider container's IP once and reuse it: ContainerIP shells out to
+		// `docker inspect`, and looking it up inside the inner loop cost one
+		// inspect per (consumer, provider) pair — 2100 of them at 30
+		// consumers x 70 providers, for 70 distinct answers.
+		provIPs := make(map[int]string, len(exp.ConsumerDelays))
 		for _, cd := range exp.ConsumerDelays {
 			containerName := orch.ConsumerContainerName(cd.ConsumerIndex)
 			var entries []testlib.ProviderDelayEntry
 			for _, pd := range cd.ProviderDelays {
-				provContainer := orch.ProviderContainerName(pd.ProviderIndex)
-				provIP, err := testlib.ContainerIP(ctx, provContainer)
-				if err != nil {
-					return fmt.Errorf("get IP for provider-%d (%s): %w", pd.ProviderIndex, provContainer, err)
+				provIP, ok := provIPs[pd.ProviderIndex]
+				if !ok {
+					provContainer := orch.ProviderContainerName(pd.ProviderIndex)
+					ip, err := testlib.ContainerIP(ctx, provContainer)
+					if err != nil {
+						return fmt.Errorf("get IP for provider-%d (%s): %w", pd.ProviderIndex, provContainer, err)
+					}
+					provIPs[pd.ProviderIndex] = ip
+					provIP = ip
 				}
 				entries = append(entries, testlib.ProviderDelayEntry{
 					ProviderIP: provIP,
@@ -1113,9 +1125,7 @@ func refreshLatency(ctx context.Context, exp testlib.TestParams, consumerTCs []*
 					log.Printf("[latency-refresh] error updating %s: %v", tc.ContainerName, err)
 					continue
 				}
-				for _, pd := range newDelays {
-					log.Printf("[latency-refresh]   %s → %s: %dms", tc.ContainerName, pd.Label, pd.DelayMs)
-				}
+				testlib.LogProviderDelays("[latency-refresh]   "+tc.ContainerName, newDelays)
 			}
 			for _, tc := range providerTCs {
 				delta := rand.Intn(2*jitter+1) - jitter
