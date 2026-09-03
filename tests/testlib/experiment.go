@@ -160,6 +160,15 @@ type MockEcoConfig struct {
 type TestParams struct {
 	Mode                  string        `yaml:"mode"`
 	Iterations            int           `yaml:"iterations"`
+	// Duration selects how a phase's length is decided: "iterations"
+	// (default) runs exactly Iterations synchronized rounds, as it always
+	// has; "time" instead runs each phase for Timer wall-clock duration,
+	// with every consumer looping independently on its own iteration
+	// counter rather than waiting for the others each round (see
+	// runReservePhaseTimed) — one consumer may finish more iterations than
+	// another in the same window.
+	Duration              string        `yaml:"duration"`
+	Timer                 time.Duration `yaml:"timer"`
 	PhasePause            time.Duration `yaml:"phasePause"`
 	PolicyPropagationWait time.Duration `yaml:"policyPropagationWait"`
 	AdvertisementLag      time.Duration `yaml:"advertisementLag"`
@@ -187,6 +196,19 @@ type TestParams struct {
 	// reach the CSVs.
 	LatencyMinMs int `yaml:"latencyMinMs"`
 	LatencyMaxMs int `yaml:"latencyMaxMs"`
+
+	// FederationSampleInterval is how often the federation-wide sampler
+	// snapshots every consumer's current provider and cost metric
+	// (carbon_intensity for comparative-eco, rtt_ms for comparative-latency)
+	// into federation.csv, independent of the iteration/keep/switch cadence.
+	FederationSampleInterval time.Duration `yaml:"federationSampleInterval"`
+}
+
+// IsTimeBased reports whether phases run for a wall-clock Timer duration
+// (with consumers iterating independently) instead of a fixed Iterations
+// count.
+func (t TestParams) IsTimeBased() bool {
+	return t.Duration == "time"
 }
 
 // TCDelayAutoConfig is the automated tc delay config (uses providerIndex).
@@ -249,6 +271,9 @@ func (c *AutoConfig) applyDefaults() {
 	if c.Experiment.Iterations <= 0 {
 		c.Experiment.Iterations = 10
 	}
+	if c.Experiment.Duration == "" {
+		c.Experiment.Duration = "iterations"
+	}
 	if c.Experiment.PhasePause <= 0 {
 		c.Experiment.PhasePause = 30 * time.Second
 	}
@@ -290,6 +315,9 @@ func (c *AutoConfig) applyDefaults() {
 	}
 	if c.Experiment.LatencyMaxMs <= c.Experiment.LatencyMinMs {
 		c.Experiment.LatencyMaxMs = 250
+	}
+	if c.Experiment.FederationSampleInterval <= 0 {
+		c.Experiment.FederationSampleInterval = time.Minute
 	}
 	if c.Output.Dir == "" {
 		c.Output.Dir = "results"
@@ -346,6 +374,12 @@ func (c *AutoConfig) Validate() error {
 	}
 	if c.Experiment.Mode != "observe" && c.Experiment.Mode != "reserve" {
 		return fmt.Errorf("experiment.mode must be observe or reserve (got %q)", c.Experiment.Mode)
+	}
+	if c.Experiment.Duration != "iterations" && c.Experiment.Duration != "time" {
+		return fmt.Errorf("experiment.duration must be iterations or time (got %q)", c.Experiment.Duration)
+	}
+	if c.Experiment.IsTimeBased() && c.Experiment.Timer <= 0 {
+		return fmt.Errorf("experiment.timer must be > 0 when duration is \"time\"")
 	}
 	for _, td := range c.Experiment.TCDelaysAuto {
 		if td.ProviderIndex < 1 || td.ProviderIndex > c.Providers {
@@ -760,6 +794,9 @@ func (c *ExperimentConfig) applyDefaults() {
 	if c.Experiment.Iterations <= 0 {
 		c.Experiment.Iterations = 10
 	}
+	if c.Experiment.Duration == "" {
+		c.Experiment.Duration = "iterations"
+	}
 	if c.Experiment.PhasePause <= 0 {
 		c.Experiment.PhasePause = 30 * time.Second
 	}
@@ -801,6 +838,9 @@ func (c *ExperimentConfig) applyDefaults() {
 	}
 	if c.Experiment.LatencyMaxMs <= c.Experiment.LatencyMinMs {
 		c.Experiment.LatencyMaxMs = 250
+	}
+	if c.Experiment.FederationSampleInterval <= 0 {
+		c.Experiment.FederationSampleInterval = time.Minute
 	}
 	if c.Output.Dir == "" {
 		c.Output.Dir = "results"

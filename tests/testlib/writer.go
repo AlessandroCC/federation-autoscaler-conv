@@ -176,20 +176,25 @@ func WriteProbeCSV(dir, name string, records []ProbeRecord) error {
 
 // ExperimentSummary is the top-level JSON summary of a comparative run.
 type ExperimentSummary struct {
-	RunID              string       `json:"runId"`
-	TestType           string       `json:"testType"`
-	StartTime          time.Time    `json:"startTime"`
-	EndTime            time.Time    `json:"endTime"`
-	ConsumerID         string       `json:"consumerId"`
-	ConsumerCertFP     string       `json:"consumerCertFingerprint,omitempty"`
-	BrokerURL          string       `json:"brokerUrl"`
-	ConsoleURL         string       `json:"consoleUrl"`
-	ProviderCount      int          `json:"providerCount"`
-	IterationsPerPhase int          `json:"iterationsPerPhase"`
-	PhaseAPolicy       string       `json:"phaseAPolicy"`
-	PhaseBPolicy       string       `json:"phaseBPolicy"`
-	PhaseASummary      PhaseSummary `json:"phaseASummary"`
-	PhaseBSummary      PhaseSummary `json:"phaseBSummary"`
+	RunID              string    `json:"runId"`
+	TestType           string    `json:"testType"`
+	StartTime          time.Time `json:"startTime"`
+	EndTime            time.Time `json:"endTime"`
+	ConsumerID         string    `json:"consumerId"`
+	ConsumerCertFP     string    `json:"consumerCertFingerprint,omitempty"`
+	BrokerURL          string    `json:"brokerUrl"`
+	ConsoleURL         string    `json:"consoleUrl"`
+	ProviderCount      int       `json:"providerCount"`
+	IterationsPerPhase int       `json:"iterationsPerPhase"`
+	// DurationMode is "iterations" or "time" (see TestParams.Duration).
+	// TimerConfigured is the formatted Timer duration when DurationMode is
+	// "time", empty otherwise.
+	DurationMode    string       `json:"durationMode,omitempty"`
+	TimerConfigured string       `json:"timerConfigured,omitempty"`
+	PhaseAPolicy    string       `json:"phaseAPolicy"`
+	PhaseBPolicy    string       `json:"phaseBPolicy"`
+	PhaseASummary   PhaseSummary `json:"phaseASummary"`
+	PhaseBSummary   PhaseSummary `json:"phaseBSummary"`
 }
 
 // PhaseSummary aggregates one measurement phase's results.
@@ -276,9 +281,15 @@ type ReservationRecord struct {
 	TotalMs           float64   `json:"totalMs"`
 	FinalPhase        string    `json:"finalPhase"`
 	PlacementMetric   float64   `json:"placementMetric,omitempty"`
-	RTTMs             float64   `json:"rttMs,omitempty"`
-	Outcome           string    `json:"outcome"`
-	ErrorMessage      string    `json:"errorMessage,omitempty"`
+	// CarbonIntensity/HasCarbon duplicate the provider's carbon reading
+	// already visible per-provider in nodegroups.csv, so comparative-eco
+	// analysis doesn't need a join on provider_id to know what a reservation
+	// cost. Always zero/false for comparative-latency (no carbon metric).
+	CarbonIntensity float64 `json:"carbonIntensity,omitempty"`
+	HasCarbon       bool    `json:"hasCarbon"`
+	RTTMs           float64 `json:"rttMs,omitempty"`
+	Outcome         string  `json:"outcome"`
+	ErrorMessage    string  `json:"errorMessage,omitempty"`
 
 	// InitialProviderID is the first candidate this consumer computed for
 	// THIS decision, before any capacity-race retries; differs from
@@ -297,12 +308,17 @@ var reservationCSVHeader = []string{
 	"reservation_id", "provider_id", "nodegroup_id",
 	"action", "prev_provider_id",
 	"peer_duration_ms", "release_duration_ms", "total_duration_ms",
-	"final_phase", "placement_metric", "rtt_ms",
+	"final_phase", "placement_metric",
+	"carbon_intensity", "has_carbon", "rtt_ms",
 	"outcome", "error_message",
 	"initial_provider_id", "retry_count",
 }
 
 func reservationCSVRow(r ReservationRecord) []string {
+	carbonStr := ""
+	if r.HasCarbon {
+		carbonStr = strconv.FormatFloat(r.CarbonIntensity, 'f', 2, 64)
+	}
 	return []string{
 		r.Timestamp.UTC().Format(time.RFC3339Nano),
 		r.ConsumerID,
@@ -319,6 +335,8 @@ func reservationCSVRow(r ReservationRecord) []string {
 		strconv.FormatFloat(r.TotalMs, 'f', 3, 64),
 		r.FinalPhase,
 		strconv.FormatFloat(r.PlacementMetric, 'f', 4, 64),
+		carbonStr,
+		strconv.FormatBool(r.HasCarbon),
 		strconv.FormatFloat(r.RTTMs, 'f', 3, 64),
 		r.Outcome,
 		r.ErrorMessage,
@@ -417,6 +435,70 @@ func WriteNodeGroupCSV(dir, name string, records []NodeGroupSnapshotRecord) erro
 	}
 	for _, r := range records {
 		if err := w.Write(nodegroupCSVRow(r)); err != nil {
+			return err
+		}
+	}
+	return w.Error()
+}
+
+// FederationSampleRecord is one periodic snapshot of a single consumer's
+// standing state, independent of the iteration/keep/switch event stream:
+// which provider it is connected to right now (empty if none) and what that
+// connection currently costs. MetricType names what MetricValue means so one
+// schema serves both comparative binaries — "carbon_intensity" for
+// comparative-eco, "rtt_ms" for comparative-latency — instead of a column
+// per test type that is always empty for the other.
+type FederationSampleRecord struct {
+	Timestamp         time.Time `json:"timestamp"`
+	Phase             string    `json:"phase"`
+	Policy            string    `json:"policy"`
+	ConsumerID        string    `json:"consumerId"`
+	ProviderClusterID string    `json:"providerClusterId,omitempty"`
+	ReservationID     string    `json:"reservationId,omitempty"`
+	MetricType        string    `json:"metricType"`
+	MetricValue       float64   `json:"metricValue,omitempty"`
+	HasMetric         bool      `json:"hasMetric"`
+}
+
+var federationCSVHeader = []string{
+	"timestamp", "phase", "policy", "consumer_id",
+	"provider_id", "reservation_id",
+	"metric_type", "metric_value", "has_metric",
+}
+
+func federationCSVRow(r FederationSampleRecord) []string {
+	metricStr := ""
+	if r.HasMetric {
+		metricStr = strconv.FormatFloat(r.MetricValue, 'f', 3, 64)
+	}
+	return []string{
+		r.Timestamp.UTC().Format(time.RFC3339Nano),
+		r.Phase,
+		r.Policy,
+		r.ConsumerID,
+		r.ProviderClusterID,
+		r.ReservationID,
+		r.MetricType,
+		metricStr,
+		strconv.FormatBool(r.HasMetric),
+	}
+}
+
+// WriteFederationCSV writes federation-wide periodic sample records to a CSV file.
+func WriteFederationCSV(dir, name string, records []FederationSampleRecord) error {
+	f, err := os.Create(filepath.Join(dir, name))
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	w := csv.NewWriter(f)
+	defer w.Flush()
+
+	if err := w.Write(federationCSVHeader); err != nil {
+		return err
+	}
+	for _, r := range records {
+		if err := w.Write(federationCSVRow(r)); err != nil {
 			return err
 		}
 	}

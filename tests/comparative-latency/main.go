@@ -195,6 +195,7 @@ func runExperiment(ctx context.Context, orch *testlib.Orchestrator) error {
 	var allSelections []testlib.SelectionRecord
 	var allProbes []testlib.ProbeRecord
 	var allReservations []testlib.ReservationRecord
+	var allFederation []testlib.FederationSampleRecord
 	mode := exp.Mode
 
 	// Start latency refresh for both phases (same background jitter).
@@ -216,8 +217,10 @@ func runExperiment(ctx context.Context, orch *testlib.Orchestrator) error {
 	var phaseAProbe []testlib.ProbeRecord
 	if mode == "reserve" {
 		var phaseARes []testlib.ReservationRecord
-		phaseASel, phaseAProbe, phaseARes, err = runReservePhase(ctx, orch, clients, probeEndpoints, testlib.PhaseA, "Random")
+		var phaseAFed []testlib.FederationSampleRecord
+		phaseASel, phaseAProbe, phaseARes, phaseAFed, err = runReservePhase(ctx, orch, clients, probeEndpoints, testlib.PhaseA, "Random")
 		allReservations = append(allReservations, phaseARes...)
+		allFederation = append(allFederation, phaseAFed...)
 	} else {
 		phaseASel, phaseAProbe, err = runLatencyPhase(ctx, orch, clients, probeEndpoints, testlib.PhaseA, "Random")
 	}
@@ -240,8 +243,10 @@ func runExperiment(ctx context.Context, orch *testlib.Orchestrator) error {
 	var phaseBProbe []testlib.ProbeRecord
 	if mode == "reserve" {
 		var phaseBRes []testlib.ReservationRecord
-		phaseBSel, phaseBProbe, phaseBRes, err = runReservePhase(ctx, orch, clients, probeEndpoints, testlib.PhaseB, "Latency")
+		var phaseBFed []testlib.FederationSampleRecord
+		phaseBSel, phaseBProbe, phaseBRes, phaseBFed, err = runReservePhase(ctx, orch, clients, probeEndpoints, testlib.PhaseB, "Latency")
 		allReservations = append(allReservations, phaseBRes...)
+		allFederation = append(allFederation, phaseBFed...)
 	} else {
 		phaseBSel, phaseBProbe, err = runLatencyPhase(ctx, orch, clients, probeEndpoints, testlib.PhaseB, "Latency")
 	}
@@ -274,9 +279,19 @@ func runExperiment(ctx context.Context, orch *testlib.Orchestrator) error {
 			return fmt.Errorf("write reservations CSV: %w", err)
 		}
 	}
+	if len(allFederation) > 0 {
+		if err := testlib.WriteFederationCSV(outputDir, "federation.csv", allFederation); err != nil {
+			return fmt.Errorf("write federation CSV: %w", err)
+		}
+	}
 
 	brokerURL, _ := orch.BrokerURL(ctx)
 	consoleURL, _ := orch.ConsoleURL(ctx, 0)
+
+	timerConfigured := ""
+	if exp.IsTimeBased() {
+		timerConfigured = exp.Timer.String()
+	}
 
 	summary := testlib.ExperimentSummary{
 		RunID:              orch.RunID,
@@ -289,6 +304,8 @@ func runExperiment(ctx context.Context, orch *testlib.Orchestrator) error {
 		ConsoleURL:         consoleURL,
 		ProviderCount:      cfg.Providers,
 		IterationsPerPhase: exp.Iterations,
+		DurationMode:       exp.Duration,
+		TimerConfigured:    timerConfigured,
 		PhaseAPolicy:       "Random",
 		PhaseBPolicy:       "Latency",
 		PhaseASummary:      summarizeLatencyPhase(phaseASel, phaseAProbe),
@@ -324,29 +341,53 @@ func runLatencyPhase(ctx context.Context, orch *testlib.Orchestrator, clients *t
 	}
 	sort.Strings(consumerIDs)
 
-	for i := 1; i <= exp.Iterations; i++ {
-		if ctx.Err() != nil {
-			return selections, probes, ctx.Err()
-		}
-
+	var loopErr error
+	if exp.IsTimeBased() {
+		deadline := time.Now().Add(exp.Timer)
 		var wg sync.WaitGroup
 		for _, consID := range consumerIDs {
 			wg.Add(1)
 			go func(consID string) {
 				defer wg.Done()
-				runLatencyConsumerIteration(ctx, clients, endpoints, phase, policy, i, consID, &mu, &selections, &probes)
+				for i := 1; ctx.Err() == nil && time.Now().Before(deadline); i++ {
+					runLatencyConsumerIteration(ctx, clients, endpoints, phase, policy, i, consID, &mu, &selections, &probes)
+					if time.Now().Before(deadline) {
+						if testlib.SleepCtx(ctx, exp.PhasePause) != nil {
+							return
+						}
+					}
+				}
 			}(consID)
 		}
 		wg.Wait()
+		loopErr = ctx.Err()
+	} else {
+		for i := 1; i <= exp.Iterations; i++ {
+			if ctx.Err() != nil {
+				loopErr = ctx.Err()
+				break
+			}
 
-		if i < exp.Iterations {
-			if err := testlib.SleepCtx(ctx, exp.PhasePause); err != nil {
-				return selections, probes, err
+			var wg sync.WaitGroup
+			for _, consID := range consumerIDs {
+				wg.Add(1)
+				go func(consID string) {
+					defer wg.Done()
+					runLatencyConsumerIteration(ctx, clients, endpoints, phase, policy, i, consID, &mu, &selections, &probes)
+				}(consID)
+			}
+			wg.Wait()
+
+			if i < exp.Iterations {
+				if err := testlib.SleepCtx(ctx, exp.PhasePause); err != nil {
+					loopErr = err
+					break
+				}
 			}
 		}
 	}
 
-	return selections, probes, nil
+	return selections, probes, loopErr
 }
 
 // runLatencyConsumerIteration is the per-consumer, per-iteration body of
@@ -483,12 +524,13 @@ func runLatencyConsumerIteration(ctx context.Context, clients *testlib.Experimen
 // from multiple goroutines even across disjoint keys, so every access —
 // reads included — goes through mu.
 type latencyReservePhaseState struct {
-	mu           sync.Mutex
-	selections   []testlib.SelectionRecord
-	probes       []testlib.ProbeRecord
-	reservations []testlib.ReservationRecord
-	active       map[string]*testlib.ConsumerReservation
-	seqNo        map[string]int
+	mu                sync.Mutex
+	selections        []testlib.SelectionRecord
+	probes            []testlib.ProbeRecord
+	reservations      []testlib.ReservationRecord
+	federationSamples []testlib.FederationSampleRecord
+	active            map[string]*testlib.ConsumerReservation
+	seqNo             map[string]int
 }
 
 func newLatencyReservePhaseState() *latencyReservePhaseState {
@@ -513,6 +555,12 @@ func (s *latencyReservePhaseState) addProbe(p testlib.ProbeRecord) {
 func (s *latencyReservePhaseState) addReservation(res testlib.ReservationRecord) {
 	s.mu.Lock()
 	s.reservations = append(s.reservations, res)
+	s.mu.Unlock()
+}
+
+func (s *latencyReservePhaseState) addFederationSamples(samples []testlib.FederationSampleRecord) {
+	s.mu.Lock()
+	s.federationSamples = append(s.federationSamples, samples...)
 	s.mu.Unlock()
 }
 
@@ -550,7 +598,7 @@ func (s *latencyReservePhaseState) nextSeq(consID string) int {
 // joined before the next iteration's phasePause, so the iteration cadence is
 // unchanged; only the per-consumer work inside each iteration is now
 // parallel instead of serial.
-func runReservePhase(ctx context.Context, orch *testlib.Orchestrator, clients *testlib.ExperimentClients, endpoints map[string]string, phase, policy string) ([]testlib.SelectionRecord, []testlib.ProbeRecord, []testlib.ReservationRecord, error) {
+func runReservePhase(ctx context.Context, orch *testlib.Orchestrator, clients *testlib.ExperimentClients, endpoints map[string]string, phase, policy string) ([]testlib.SelectionRecord, []testlib.ProbeRecord, []testlib.ReservationRecord, []testlib.FederationSampleRecord, error) {
 	exp := orch.Config.Experiment
 	pollInterval := exp.ReservationPoll
 
@@ -576,9 +624,39 @@ func runReservePhase(ctx context.Context, orch *testlib.Orchestrator, clients *t
 		}
 	}()
 
+	// Federation-wide sampler: independent of the iteration cadence, ticks on
+	// its own schedule for the whole phase and records where each consumer
+	// stands right now, not just what changed.
+	sampleCtx, cancelSample := context.WithCancel(ctx)
+	var sampleWG sync.WaitGroup
+	sampleWG.Add(1)
+	go func() {
+		defer sampleWG.Done()
+		runFederationSampler(sampleCtx, exp.FederationSampleInterval, func() {
+			state.addFederationSamples(sampleFederationLatency(ctx, clients, endpoints, consumerIDs, phase, policy, state))
+		})
+	}()
+
+	var loopErr error
+	if exp.IsTimeBased() {
+		loopErr = runReservePhaseTimed(ctx, orch, clients, endpoints, phase, policy, pollInterval, exp, state, consumerIDs)
+	} else {
+		loopErr = runReservePhaseCounted(ctx, orch, clients, endpoints, phase, policy, pollInterval, exp, state, consumerIDs)
+	}
+
+	cancelSample()
+	sampleWG.Wait()
+
+	return state.selections, state.probes, state.reservations, state.federationSamples, loopErr
+}
+
+// runReservePhaseCounted is the original, unchanged loop: exp.Iterations
+// synchronized rounds, every consumer dispatched concurrently within each
+// round and joined before the next round's phasePause.
+func runReservePhaseCounted(ctx context.Context, orch *testlib.Orchestrator, clients *testlib.ExperimentClients, endpoints map[string]string, phase, policy string, pollInterval time.Duration, exp testlib.TestParams, state *latencyReservePhaseState, consumerIDs []string) error {
 	for i := 1; i <= exp.Iterations; i++ {
 		if ctx.Err() != nil {
-			return state.selections, state.probes, state.reservations, ctx.Err()
+			return ctx.Err()
 		}
 
 		var wg sync.WaitGroup
@@ -593,12 +671,94 @@ func runReservePhase(ctx context.Context, orch *testlib.Orchestrator, clients *t
 
 		if i < exp.Iterations {
 			if err := testlib.SleepCtx(ctx, exp.PhasePause); err != nil {
-				return state.selections, state.probes, state.reservations, err
+				return err
 			}
 		}
 	}
+	return nil
+}
 
-	return state.selections, state.probes, state.reservations, nil
+// runReservePhaseTimed runs the phase for exp.Timer wall-clock duration
+// instead of a fixed iteration count. Each consumer loops independently on
+// its own local iteration counter and its own phasePause, rather than
+// waiting for the others each round — one consumer may complete more
+// iterations than another in the same window.
+func runReservePhaseTimed(ctx context.Context, orch *testlib.Orchestrator, clients *testlib.ExperimentClients, endpoints map[string]string, phase, policy string, pollInterval time.Duration, exp testlib.TestParams, state *latencyReservePhaseState, consumerIDs []string) error {
+	deadline := time.Now().Add(exp.Timer)
+	var wg sync.WaitGroup
+	for _, consID := range consumerIDs {
+		wg.Add(1)
+		go func(consID string) {
+			defer wg.Done()
+			for i := 1; ctx.Err() == nil && time.Now().Before(deadline); i++ {
+				runLatencyReserveConsumerIteration(ctx, orch, clients, endpoints, phase, policy, i, consID, pollInterval, exp, state)
+				if time.Now().Before(deadline) {
+					if testlib.SleepCtx(ctx, exp.PhasePause) != nil {
+						return
+					}
+				}
+			}
+		}(consID)
+	}
+	wg.Wait()
+	return ctx.Err()
+}
+
+// runFederationSampler ticks sample on interval until ctx is done, firing
+// once immediately first so a very short phase still gets one snapshot.
+func runFederationSampler(ctx context.Context, interval time.Duration, sample func()) {
+	sample()
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			sample()
+		}
+	}
+}
+
+// sampleFederationLatency snapshots every consumer's currently-held provider
+// and the live RTT to it. Unlike carbon intensity, RTT is a per-(consumer,
+// provider) pair value that depends on the calling consumer's own network
+// path, so it takes one UDP probe per consumer rather than a single shared
+// lookup — run concurrently so the tick's duration is one probe, not their sum.
+func sampleFederationLatency(ctx context.Context, clients *testlib.ExperimentClients, endpoints map[string]string, consumerIDs []string, phase, policy string, state *latencyReservePhaseState) []testlib.FederationSampleRecord {
+	ts := time.Now()
+	var mu sync.Mutex
+	samples := make([]testlib.FederationSampleRecord, 0, len(consumerIDs))
+	var wg sync.WaitGroup
+	for _, consID := range consumerIDs {
+		wg.Add(1)
+		go func(consID string) {
+			defer wg.Done()
+			rec := testlib.FederationSampleRecord{
+				Timestamp: ts, Phase: phase, Policy: policy, ConsumerID: consID,
+				MetricType: "rtt_ms",
+			}
+			if res := state.getActive(consID); res != nil {
+				rec.ProviderClusterID = res.ProviderClusterID
+				rec.ReservationID = res.ReservationID
+				if ep, ok := endpoints[res.ProviderClusterID]; ok {
+					if resp, err := clients.Consoles[consID].Probe(ctx, []testlib.ProbeCandidate{{
+						ProviderClusterID: res.ProviderClusterID,
+						Endpoint:          ep,
+					}}); err == nil {
+						if rtt, ok := resp.RTTs[res.ProviderClusterID]; ok {
+							rec.MetricValue, rec.HasMetric = rtt, true
+						}
+					}
+				}
+			}
+			mu.Lock()
+			samples = append(samples, rec)
+			mu.Unlock()
+		}(consID)
+	}
+	wg.Wait()
+	return samples
 }
 
 // maxReserveRaceRetries bounds how many times a consumer re-picks (re-probing
@@ -897,15 +1057,33 @@ func runLatencyReserveConsumerIteration(ctx context.Context, orch *testlib.Orche
 			return
 		}
 
-		// Switch only when the incumbent was actually measured and lost: an
-		// unmeasured incumbent gives nothing to compare against, so staying is
-		// the only defensible call.
 		shouldSwitch := cur == nil
 		if cur != nil && chosenProviderID != cur.ProviderClusterID {
-			if probeRec != nil {
-				_, curProbed := probeRec.RTTs[cur.ProviderClusterID]
-				shouldSwitch = curProbed
+			if ngResp.LatencyShortlist {
+				// Switch only when the incumbent was actually measured and
+				// lost: its endpoint was added to the probe candidates above
+				// when reachable (see keepNoAlternative context), so an
+				// unmeasured incumbent gives nothing to compare against.
+				shouldSwitch = probeRec != nil
+				if shouldSwitch {
+					_, curProbed := probeRec.RTTs[cur.ProviderClusterID]
+					shouldSwitch = curProbed
+				}
 			} else {
+				// Single-winner branch (Random / Eco-without-metric / Price /
+				// Standard): FindWinner already picked the one node group the
+				// Broker left growable, so a different winner here means the
+				// Broker genuinely wants a move. probeRec in this branch is
+				// only the winner's own RTT for the CSV's rtt_ms column, not
+				// a measurement of the incumbent — gating on it here meant
+				// probeRec.RTTs[cur.ProviderClusterID] was never present
+				// (only the winner was ever probed), so curProbed was always
+				// false and Random could never switch even though the
+				// Broker rerolled a genuinely different winner on every
+				// call (visible as initial_provider_id != provider_id with
+				// retry_count == 0 in reservations.csv). No "measured"
+				// requirement applies here, matching testlib.ShouldSwitch's
+				// no-metric case used by comparative-eco.
 				shouldSwitch = true
 			}
 		}
