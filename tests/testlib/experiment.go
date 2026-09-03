@@ -64,14 +64,24 @@ func autoGenerateTCDelays(n int) []TCDelayAutoConfig {
 	return delays
 }
 
-func autoGenerateConsumerDelays(consumers, providers int) []ConsumerDelayConfig {
+// RandomDelayMs draws one simulated one-way delay uniformly from [minMs, maxMs].
+// Used both to seed the matrix and to redraw it on every refresh, so the
+// nearest provider genuinely moves between iterations instead of drifting.
+func RandomDelayMs(minMs, maxMs int) int {
+	if maxMs <= minMs {
+		return minMs
+	}
+	return minMs + rand.Intn(maxMs-minMs+1)
+}
+
+func autoGenerateConsumerDelays(consumers, providers, minMs, maxMs int) []ConsumerDelayConfig {
 	configs := make([]ConsumerDelayConfig, consumers)
 	for c := range configs {
 		pds := make([]ProviderDelay, providers)
 		for p := range pds {
 			pds[p] = ProviderDelay{
 				ProviderIndex: p + 1,
-				DelayMs:       5 + rand.Intn(100),
+				DelayMs:       RandomDelayMs(minMs, maxMs),
 			}
 		}
 		configs[c] = ConsumerDelayConfig{
@@ -150,6 +160,15 @@ type MockEcoConfig struct {
 type TestParams struct {
 	Mode                  string        `yaml:"mode"`
 	Iterations            int           `yaml:"iterations"`
+	// Duration selects how a phase's length is decided: "iterations"
+	// (default) runs exactly Iterations synchronized rounds, as it always
+	// has; "time" instead runs each phase for Timer wall-clock duration,
+	// with every consumer looping independently on its own iteration
+	// counter rather than waiting for the others each round (see
+	// runReservePhaseTimed) — one consumer may finish more iterations than
+	// another in the same window.
+	Duration              string        `yaml:"duration"`
+	Timer                 time.Duration `yaml:"timer"`
 	PhasePause            time.Duration `yaml:"phasePause"`
 	PolicyPropagationWait time.Duration `yaml:"policyPropagationWait"`
 	AdvertisementLag      time.Duration `yaml:"advertisementLag"`
@@ -169,7 +188,27 @@ type TestParams struct {
 	ConsumerDelays         []ConsumerDelayConfig `yaml:"consumerDelays,omitempty"`
 	SSHKey                 string                `yaml:"sshKey,omitempty"`
 	LatencyRefreshInterval time.Duration         `yaml:"latencyRefreshInterval"`
-	LatencyJitterMs        int                   `yaml:"latencyJitterMs"`
+	// LatencyMinMs/LatencyMaxMs bound the simulated one-way delay drawn for
+	// each (consumer, provider) pair, both at setup and again from scratch on
+	// every refresh. The ceiling stays under the prober's 300ms per-probe
+	// deadline (DefaultProbeTimeout): a delay above it never answers in time,
+	// so that provider would be scored unreachable and its RTT would never
+	// reach the CSVs.
+	LatencyMinMs int `yaml:"latencyMinMs"`
+	LatencyMaxMs int `yaml:"latencyMaxMs"`
+
+	// FederationSampleInterval is how often the federation-wide sampler
+	// snapshots every consumer's current provider and cost metric
+	// (carbon_intensity for comparative-eco, rtt_ms for comparative-latency)
+	// into federation.csv, independent of the iteration/keep/switch cadence.
+	FederationSampleInterval time.Duration `yaml:"federationSampleInterval"`
+}
+
+// IsTimeBased reports whether phases run for a wall-clock Timer duration
+// (with consumers iterating independently) instead of a fixed Iterations
+// count.
+func (t TestParams) IsTimeBased() bool {
+	return t.Duration == "time"
 }
 
 // TCDelayAutoConfig is the automated tc delay config (uses providerIndex).
@@ -232,6 +271,9 @@ func (c *AutoConfig) applyDefaults() {
 	if c.Experiment.Iterations <= 0 {
 		c.Experiment.Iterations = 10
 	}
+	if c.Experiment.Duration == "" {
+		c.Experiment.Duration = "iterations"
+	}
 	if c.Experiment.PhasePause <= 0 {
 		c.Experiment.PhasePause = 30 * time.Second
 	}
@@ -268,8 +310,14 @@ func (c *AutoConfig) applyDefaults() {
 	if c.Experiment.LatencyRefreshInterval <= 0 {
 		c.Experiment.LatencyRefreshInterval = 3 * time.Minute
 	}
-	if c.Experiment.LatencyJitterMs <= 0 {
-		c.Experiment.LatencyJitterMs = 20
+	if c.Experiment.LatencyMinMs <= 0 {
+		c.Experiment.LatencyMinMs = 30
+	}
+	if c.Experiment.LatencyMaxMs <= c.Experiment.LatencyMinMs {
+		c.Experiment.LatencyMaxMs = 250
+	}
+	if c.Experiment.FederationSampleInterval <= 0 {
+		c.Experiment.FederationSampleInterval = time.Minute
 	}
 	if c.Output.Dir == "" {
 		c.Output.Dir = "results"
@@ -289,12 +337,21 @@ func (c *AutoConfig) applyDefaults() {
 		log.Printf("[config] auto-generated regions: %v", c.ProviderRegions)
 	}
 	if len(c.Experiment.ConsumerDelays) == 0 && len(c.Experiment.TCDelaysAuto) == 0 {
-		c.Experiment.ConsumerDelays = autoGenerateConsumerDelays(c.Consumers, c.Providers)
-		for _, cd := range c.Experiment.ConsumerDelays {
-			for _, pd := range cd.ProviderDelays {
-				log.Printf("[config] auto-generated consumer delay: consumer-%d → provider-%d: %dms",
-					cd.ConsumerIndex, pd.ProviderIndex, pd.DelayMs)
+		c.Experiment.ConsumerDelays = autoGenerateConsumerDelays(
+			c.Consumers, c.Providers, c.Experiment.LatencyMinMs, c.Experiment.LatencyMaxMs)
+		// Print the full matrix only while it is small enough to read: it has
+		// consumers x providers entries, so at 30 x 70 the per-entry form
+		// dumped 2100 lines before the run even started.
+		if c.Providers <= logProviderDelaysThreshold {
+			for _, cd := range c.Experiment.ConsumerDelays {
+				for _, pd := range cd.ProviderDelays {
+					log.Printf("[config] auto-generated consumer delay: consumer-%d → provider-%d: %dms",
+						cd.ConsumerIndex, pd.ProviderIndex, pd.DelayMs)
+				}
 			}
+		} else {
+			log.Printf("[config] auto-generated consumer delays: %d consumers x %d providers",
+				c.Consumers, c.Providers)
 		}
 	}
 	for i := range c.Experiment.TCDelaysAuto {
@@ -317,6 +374,12 @@ func (c *AutoConfig) Validate() error {
 	}
 	if c.Experiment.Mode != "observe" && c.Experiment.Mode != "reserve" {
 		return fmt.Errorf("experiment.mode must be observe or reserve (got %q)", c.Experiment.Mode)
+	}
+	if c.Experiment.Duration != "iterations" && c.Experiment.Duration != "time" {
+		return fmt.Errorf("experiment.duration must be iterations or time (got %q)", c.Experiment.Duration)
+	}
+	if c.Experiment.IsTimeBased() && c.Experiment.Timer <= 0 {
+		return fmt.Errorf("experiment.timer must be > 0 when duration is \"time\"")
 	}
 	for _, td := range c.Experiment.TCDelaysAuto {
 		if td.ProviderIndex < 1 || td.ProviderIndex > c.Providers {
@@ -417,9 +480,9 @@ func (o *Orchestrator) Setup(ctx context.Context) error {
 	// ghcr.io per cluster. Sequential, not backgrounded: a goroutine left
 	// running past an early return (e.g. a later cluster-creation failure)
 	// would leak with its error never checked.
-	log.Println("=== PRELOAD LIQO IMAGES ===")
-	if err := DockerPullImages(ctx, LiqoImages); err != nil {
-		return fmt.Errorf("pull liqo images: %w", err)
+	log.Println("=== PRELOAD LIQO + UDPECHO IMAGES ===")
+	if err := DockerPullImages(ctx, append(append([]string{}, LiqoImages...), UDPEchoImage)); err != nil {
+		return fmt.Errorf("pull liqo/udpecho images: %w", err)
 	}
 
 	// Generate cluster specs.
@@ -451,6 +514,7 @@ func (o *Orchestrator) Setup(ctx context.Context) error {
 	for i := 0; i < o.Config.Providers; i++ {
 		imgs := append([]string{}, agentImgs...)
 		imgs = append(imgs, LiqoImages...)
+		imgs = append(imgs, UDPEchoImage)
 		if err := KindLoadImages(ctx, o.Specs[1+o.Config.Consumers+i].Name, imgs); err != nil {
 			return fmt.Errorf("load images into provider-%d: %w", i+1, err)
 		}
@@ -628,8 +692,18 @@ func (o *Orchestrator) MockEcoURL(ctx context.Context) (string, error) {
 }
 
 // ConsumerContainerName returns the Docker container name for a consumer by 1-based index.
+// Mirrors ProviderContainerName: with a worker node the consumer agent — and so
+// the UDP prober whose egress the tc delays are meant to shape — is scheduled on
+// the worker, because a multi-node Kind cluster keeps the control-plane tainted
+// NoSchedule. Naming the control-plane here installed the qdisc on a container
+// the probe traffic never traverses, so injected delays of 1-200ms produced
+// measured RTTs of 0.2-0.4ms and the latency policy had nothing to act on.
 func (o *Orchestrator) ConsumerContainerName(consumerIdx int) string {
-	return o.Specs[1+consumerIdx-1].Name + "-control-plane"
+	spec := o.Specs[1+consumerIdx-1]
+	if spec.HasWorker {
+		return spec.Name + "-worker"
+	}
+	return spec.Name + "-control-plane"
 }
 
 // ProviderContainerName returns the Docker container name for a provider by 1-based index.
@@ -720,6 +794,9 @@ func (c *ExperimentConfig) applyDefaults() {
 	if c.Experiment.Iterations <= 0 {
 		c.Experiment.Iterations = 10
 	}
+	if c.Experiment.Duration == "" {
+		c.Experiment.Duration = "iterations"
+	}
 	if c.Experiment.PhasePause <= 0 {
 		c.Experiment.PhasePause = 30 * time.Second
 	}
@@ -756,8 +833,14 @@ func (c *ExperimentConfig) applyDefaults() {
 	if c.Experiment.LatencyRefreshInterval <= 0 {
 		c.Experiment.LatencyRefreshInterval = 3 * time.Minute
 	}
-	if c.Experiment.LatencyJitterMs <= 0 {
-		c.Experiment.LatencyJitterMs = 20
+	if c.Experiment.LatencyMinMs <= 0 {
+		c.Experiment.LatencyMinMs = 30
+	}
+	if c.Experiment.LatencyMaxMs <= c.Experiment.LatencyMinMs {
+		c.Experiment.LatencyMaxMs = 250
+	}
+	if c.Experiment.FederationSampleInterval <= 0 {
+		c.Experiment.FederationSampleInterval = time.Minute
 	}
 	if c.Output.Dir == "" {
 		c.Output.Dir = "results"

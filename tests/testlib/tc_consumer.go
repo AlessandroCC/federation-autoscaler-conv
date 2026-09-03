@@ -65,33 +65,34 @@ func (t *TCConsumerDelay) Apply() error {
 		)
 	}
 
-	log.Printf("[tc-consumer] applying per-provider delays on %s (iface=%s)", t.ContainerName, t.Interface)
-	for _, pd := range t.ProviderDelays {
-		log.Printf("[tc-consumer]   → %s (%s): +%dms", pd.Label, pd.ProviderIP, pd.DelayMs)
-	}
+	log.Printf("[tc-consumer] applying per-provider delays on %s (iface=%s, %d providers)",
+		t.ContainerName, t.Interface, len(t.ProviderDelays))
+	LogProviderDelays("[tc-consumer]  ", t.ProviderDelays)
 
-	for _, cmd := range cmds {
-		if err := t.dockerExec(cmd...); err != nil {
-			_ = t.Restore()
-			return fmt.Errorf("tc command %v: %w", cmd, err)
-		}
+	if err := t.dockerExecScript(cmds); err != nil {
+		_ = t.Restore()
+		return err
 	}
 	return nil
 }
 
 // UpdateDelays changes the netem delay on each per-provider qdisc in place.
 func (t *TCConsumerDelay) UpdateDelays(newDelays []ProviderDelayEntry) error {
+	var cmds [][]string
 	for i, pd := range newDelays {
 		if i >= len(t.ProviderDelays) {
 			break
 		}
 		netemHandle := 100 + i
-		if err := t.dockerExec("tc", "qdisc", "change", "dev", t.Interface, "parent",
+		cmds = append(cmds, []string{"tc", "qdisc", "change", "dev", t.Interface, "parent",
 			fmt.Sprintf("42:%d", i+2), "handle", fmt.Sprintf("%d:", netemHandle),
-			"netem", "delay", fmt.Sprintf("%dms", pd.DelayMs)); err != nil {
-			return fmt.Errorf("update delay on class 42:%d: %w", i+2, err)
-		}
-		t.ProviderDelays[i].DelayMs = pd.DelayMs
+			"netem", "delay", fmt.Sprintf("%dms", pd.DelayMs)})
+	}
+	if err := t.dockerExecScript(cmds); err != nil {
+		return err
+	}
+	for i := range cmds {
+		t.ProviderDelays[i].DelayMs = newDelays[i].DelayMs
 	}
 	return nil
 }
@@ -114,4 +115,77 @@ func (t *TCConsumerDelay) dockerExec(args ...string) error {
 		return fmt.Errorf("%s: %w (output: %s)", strings.Join(args, " "), err, strings.TrimSpace(string(out)))
 	}
 	return nil
+}
+
+// dockerExecScript runs cmds as a single `sh -c` script inside the container
+// instead of one `docker exec` per command.
+//
+// The delay matrix is per (consumer, provider), so the per-command form cost
+// one exec per pair: at 30 consumers x 70 providers that is 6300 execs to
+// apply and 2100 per refresh tick. At ~0.1-0.2s each a tick took minutes
+// against a 30s ticker, so the delays stopped being refreshed at the intended
+// cadence. Batching makes the cost per consumer, not per pair.
+//
+// `set -e` keeps the previous fail-fast behaviour, and the combined output is
+// folded into the error, so a failing tc command still identifies itself even
+// though the batch no longer reports per-command status.
+func (t *TCConsumerDelay) dockerExecScript(cmds [][]string) error {
+	if len(cmds) == 0 {
+		return nil
+	}
+	var sb strings.Builder
+	sb.WriteString("set -e\n")
+	for _, c := range cmds {
+		quoted := make([]string, len(c))
+		for i, a := range c {
+			quoted[i] = shellQuote(a)
+		}
+		sb.WriteString(strings.Join(quoted, " "))
+		sb.WriteString("\n")
+	}
+	cmd := exec.Command("docker", "exec", t.ContainerName, "sh", "-c", sb.String())
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("%d tc commands on %s: %w (output: %s)",
+			len(cmds), t.ContainerName, err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+// shellQuote makes one argument safe for the sh -c script built by
+// dockerExecScript. Passing args through a shell rather than straight to
+// exec.Command hands them back to the shell's parser, and provider IPs come
+// from `docker inspect` rather than from this package.
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
+// logProviderDelaysThreshold is the largest per-consumer delay matrix still
+// logged provider-by-provider. Above it the detail is replaced by a one-line
+// summary: at 70 providers the per-provider form emitted 70 lines per consumer
+// per refresh tick (2100 at 30 consumers, every 30s), burying everything else.
+const logProviderDelaysThreshold = 10
+
+// LogProviderDelays prints one line per provider for a small matrix, or a
+// single min/max summary for a large one.
+func LogProviderDelays(prefix string, delays []ProviderDelayEntry) {
+	if len(delays) == 0 {
+		return
+	}
+	if len(delays) <= logProviderDelaysThreshold {
+		for _, pd := range delays {
+			log.Printf("%s → %s (%s): +%dms", prefix, pd.Label, pd.ProviderIP, pd.DelayMs)
+		}
+		return
+	}
+	minDelay, maxDelay := delays[0].DelayMs, delays[0].DelayMs
+	for _, pd := range delays {
+		if pd.DelayMs < minDelay {
+			minDelay = pd.DelayMs
+		}
+		if pd.DelayMs > maxDelay {
+			maxDelay = pd.DelayMs
+		}
+	}
+	log.Printf("%s %d providers, delays %d-%dms", prefix, len(delays), minDelay, maxDelay)
 }

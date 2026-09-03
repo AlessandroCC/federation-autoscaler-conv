@@ -14,7 +14,8 @@ experiment:
   policyPropagationWait: 20s
 
   latencyRefreshInterval: 3m
-  latencyJitterMs: 20
+  latencyMinMs: 30
+  latencyMaxMs: 250
 
   tcDelays:
     - providerIndex: 2    # LOM

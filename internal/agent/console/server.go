@@ -50,6 +50,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
@@ -477,9 +478,25 @@ func (s *Server) handleProbe(w http.ResponseWriter, r *http.Request) {
 	result := s.prober.MeasureAndPick(r.Context(), cands)
 	durationMs := float64(time.Since(start).Microseconds()) / 1000.0
 
+	// latency.Prober scores an unreachable candidate +Inf (see its Result doc
+	// comment) so it always loses the pick — but encoding/json cannot
+	// marshal +Inf/-Inf/NaN, and by the time Encode hits one deep inside the
+	// map it has already committed http.StatusOK via WriteHeader, so the
+	// failure just truncates the body to nothing instead of ever reaching
+	// the client as an error. Omit non-finite entries instead: callers
+	// already do a comma-ok map lookup (e.g. tests/comparative-latency
+	// reading RTTs[Chosen]), so a missing key for "never answered" is
+	// already the expected, handled shape.
+	rtts := make(map[string]float64, len(result.RTTs))
+	for id, rtt := range result.RTTs {
+		if !math.IsInf(rtt, 0) && !math.IsNaN(rtt) {
+			rtts[id] = rtt
+		}
+	}
+
 	s.writeJSON(w, http.StatusOK, map[string]any{
 		"chosen":     result.Chosen,
-		"rtts":       result.RTTs,
+		"rtts":       rtts,
 		"durationMs": durationMs,
 	})
 }
