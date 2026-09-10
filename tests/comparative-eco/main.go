@@ -107,18 +107,28 @@ func runExperiment(ctx context.Context, orch *testlib.Orchestrator) error {
 	var allFederation []testlib.FederationSampleRecord
 	mode := exp.Mode
 
-	// Start carbon refresh for both phases (same background load).
-	carbonRefreshCtx, cancelCarbonRefresh := context.WithCancel(ctx)
-	var carbonWG sync.WaitGroup
-	carbonWG.Add(1)
-	go func() {
-		defer carbonWG.Done()
-		refreshCarbon(carbonRefreshCtx, mockEco, cfg, exp)
-	}()
+	// carbonSeed is reused, unchanged, to start BOTH phases' carbon refresh --
+	// a fresh *rand.Rand seeded identically at the start of each phase draws
+	// the exact same sequence of region assignments, so Phase B ("Eco")
+	// replays Phase A's ("Random") carbon-intensity conditions tick for tick
+	// instead of seeing its own independent random draw. This is what makes
+	// the two phases a genuine paired comparison (same environment, only the
+	// placement policy differs) rather than two independent samples from the
+	// same distribution.
+	carbonSeed := testlib.SeedFromString(orch.RunID)
 
 	// --- Phase A: Random ---
 	log.Println("=== PHASE A: Random ===")
+	carbonRefreshCtxA, cancelCarbonRefreshA := context.WithCancel(ctx)
+	var carbonWGA sync.WaitGroup
+	carbonWGA.Add(1)
+	go func() {
+		defer carbonWGA.Done()
+		refreshCarbon(carbonRefreshCtxA, mockEco, cfg, exp, rand.New(rand.NewSource(carbonSeed)))
+	}()
 	if err := clients.SetPolicyAll(ctx, "Random", exp.PolicyPropagationWait); err != nil {
+		cancelCarbonRefreshA()
+		carbonWGA.Wait()
 		return fmt.Errorf("set Random: %w", err)
 	}
 
@@ -136,6 +146,8 @@ func runExperiment(ctx context.Context, orch *testlib.Orchestrator) error {
 		phaseARecords, phaseASnaps, err = runObservePhase(ctx, orch, clients, testlib.PhaseA, "Random")
 		allSnapshots = append(allSnapshots, phaseASnaps...)
 	}
+	cancelCarbonRefreshA()
+	carbonWGA.Wait()
 	if err != nil {
 		return fmt.Errorf("phase A: %w", err)
 	}
@@ -160,6 +172,16 @@ func runExperiment(ctx context.Context, orch *testlib.Orchestrator) error {
 
 	// --- Phase B: Eco ---
 	log.Println("=== PHASE B: Eco ===")
+	// Freshly seeded with the SAME carbonSeed as Phase A above: replays Phase
+	// A's exact carbon-intensity sequence instead of drawing an independent
+	// one, so the two phases are directly comparable tick for tick.
+	carbonRefreshCtxB, cancelCarbonRefreshB := context.WithCancel(ctx)
+	var carbonWGB sync.WaitGroup
+	carbonWGB.Add(1)
+	go func() {
+		defer carbonWGB.Done()
+		refreshCarbon(carbonRefreshCtxB, mockEco, cfg, exp, rand.New(rand.NewSource(carbonSeed)))
+	}()
 	var phaseBRecords []testlib.SelectionRecord
 	if mode == "reserve" {
 		var phaseBRes []testlib.ReservationRecord
@@ -174,8 +196,8 @@ func runExperiment(ctx context.Context, orch *testlib.Orchestrator) error {
 		phaseBRecords, phaseBSnaps, err = runObservePhase(ctx, orch, clients, testlib.PhaseB, "Eco")
 		allSnapshots = append(allSnapshots, phaseBSnaps...)
 	}
-	cancelCarbonRefresh()
-	carbonWG.Wait()
+	cancelCarbonRefreshB()
+	carbonWGB.Wait()
 	if err != nil {
 		return fmt.Errorf("phase B: %w", err)
 	}
@@ -1088,7 +1110,13 @@ func printSummary(s testlib.ExperimentSummary) {
 	}
 }
 
-func refreshCarbon(ctx context.Context, mockEco *testlib.MockEcoClient, cfg *testlib.AutoConfig, exp testlib.TestParams) {
+// refreshCarbon periodically reassigns carbon intensity per region. rng is an
+// explicit, caller-owned source (never the global math/rand) so that Phase A
+// and Phase B can each be handed a freshly seeded rng with the same seed
+// value (see runExperiment) and draw byte-for-byte identical sequences,
+// unaffected by any unrelated goroutine in the process also consuming the
+// shared global source between the two phases.
+func refreshCarbon(ctx context.Context, mockEco *testlib.MockEcoClient, cfg *testlib.AutoConfig, exp testlib.TestParams, rng *rand.Rand) {
 	interval := exp.CarbonRefreshInterval
 	log.Printf("[carbon-refresh] started (interval=%s, green fraction=%.0f%%–%.0f%%, low=%d high=%d)",
 		interval, exp.CarbonGreenFractionMin*100, exp.CarbonGreenFractionMax*100,
@@ -1102,7 +1130,7 @@ func refreshCarbon(ctx context.Context, mockEco *testlib.MockEcoClient, cfg *tes
 		}
 
 		frac := exp.CarbonGreenFractionMin +
-			rand.Float64()*(exp.CarbonGreenFractionMax-exp.CarbonGreenFractionMin)
+			rng.Float64()*(exp.CarbonGreenFractionMax-exp.CarbonGreenFractionMin)
 		greenCount := int(math.Round(frac * float64(n)))
 		if greenCount < 1 {
 			greenCount = 1
@@ -1111,7 +1139,7 @@ func refreshCarbon(ctx context.Context, mockEco *testlib.MockEcoClient, cfg *tes
 			greenCount = n - 1
 		}
 
-		perm := rand.Perm(n)
+		perm := rng.Perm(n)
 		greenSet := make(map[int]bool, greenCount)
 		for i := 0; i < greenCount; i++ {
 			greenSet[perm[i]] = true
@@ -1120,10 +1148,10 @@ func refreshCarbon(ctx context.Context, mockEco *testlib.MockEcoClient, cfg *tes
 		for i, region := range unique {
 			var carbon int
 			if greenSet[i] {
-				jitter := 0.7 + rand.Float64()*0.6
+				jitter := 0.7 + rng.Float64()*0.6
 				carbon = max(1, int(float64(exp.CarbonLow)*jitter))
 			} else {
-				jitter := 0.7 + rand.Float64()*0.6
+				jitter := 0.7 + rng.Float64()*0.6
 				carbon = max(1, int(float64(exp.CarbonHigh)*jitter))
 			}
 			if err := mockEco.SetCarbon(ctx, region, carbon, nil); err != nil {

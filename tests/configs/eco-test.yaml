@@ -1,9 +1,28 @@
-consumers: 2
-providers: 3
+consumers: 3
+providers: 7
 
 experiment:
   mode: reserve
-  iterations: 3
-  phasePause: 15s
-  policyPropagationWait: 15s
-  advertisementLag: 15s
+  duration: time
+  timer: 30m
+  iterations: 15 # ignored while duration: time; kept as a fallback value
+  phasePause: 35s
+  policyPropagationWait: 35s
+  advertisementLag: 35s
+
+  # carbonLow/carbonHigh/carbonGreenFractionMin/Max left at their defaults
+  # (50/800/0.3/0.7) -- already the values validated in earlier sessions.
+  # Only the refresh cadence needs to be set: it must not go below the
+  # provider's 30s advertisement cycle (the refreshed value wouldn't be read
+  # in time), and matching phasePause here means almost every iteration sees
+  # a freshly reshuffled carbon ranking instead of the same one repeated.
+  carbonRefreshInterval: 35s
+
+infra:
+  readinessTimeout: 10m
+  liqoProvider: kind
+
+cleanup: true
+
+output:
+  dir: results

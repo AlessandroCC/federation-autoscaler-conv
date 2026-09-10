@@ -28,6 +28,7 @@ import (
 	"fmt"
 	"log"
 	"math"
+	"math/rand"
 	"os"
 	"os/signal"
 	"sort"
@@ -192,24 +193,44 @@ func runExperiment(ctx context.Context, orch *testlib.Orchestrator) error {
 		}()
 	}
 
+	// Snapshot the delays exactly as applied above: UpdateDelays/UpdateDelay
+	// mutate consumerTCs/providerTCs in place on every refresh tick, so by
+	// the end of Phase A they no longer hold their starting values. Phase B
+	// resets to this snapshot before it starts so it replays Phase A's
+	// exact delay sequence rather than continuing to drift from it.
+	initialConsumerDelays := make([][]testlib.ProviderDelayEntry, len(consumerTCs))
+	for i, tc := range consumerTCs {
+		initialConsumerDelays[i] = append([]testlib.ProviderDelayEntry(nil), tc.ProviderDelays...)
+	}
+	initialProviderDelayMs := make([]int, len(providerTCs))
+	for i, tc := range providerTCs {
+		initialProviderDelayMs[i] = tc.DelayMs
+	}
+
 	var allSelections []testlib.SelectionRecord
 	var allProbes []testlib.ProbeRecord
 	var allReservations []testlib.ReservationRecord
 	var allFederation []testlib.FederationSampleRecord
 	mode := exp.Mode
 
-	// Start latency refresh for both phases (same background jitter).
-	latencyRefreshCtx, cancelLatencyRefresh := context.WithCancel(ctx)
-	var latencyWG sync.WaitGroup
-	latencyWG.Add(1)
+	// Reused unchanged for both phases so Phase B's refresh goroutine draws
+	// the exact same delay sequence Phase A drew (see refreshLatency).
+	latencySeed := testlib.SeedFromString(orch.RunID)
+
+	// Start latency refresh for Phase A.
+	latencyRefreshCtxA, cancelLatencyRefreshA := context.WithCancel(ctx)
+	var latencyWGA sync.WaitGroup
+	latencyWGA.Add(1)
 	go func() {
-		defer latencyWG.Done()
-		refreshLatency(latencyRefreshCtx, exp, consumerTCs, providerTCs)
+		defer latencyWGA.Done()
+		refreshLatency(latencyRefreshCtxA, exp, consumerTCs, providerTCs, rand.New(rand.NewSource(latencySeed)))
 	}()
 
 	// --- Phase A: Random ---
 	log.Println("=== PHASE A: Random ===")
 	if err := clients.SetPolicyAll(ctx, "Random", exp.PolicyPropagationWait); err != nil {
+		cancelLatencyRefreshA()
+		latencyWGA.Wait()
 		return fmt.Errorf("set Random: %w", err)
 	}
 
@@ -224,6 +245,8 @@ func runExperiment(ctx context.Context, orch *testlib.Orchestrator) error {
 	} else {
 		phaseASel, phaseAProbe, err = runLatencyPhase(ctx, orch, clients, probeEndpoints, testlib.PhaseA, "Random")
 	}
+	cancelLatencyRefreshA()
+	latencyWGA.Wait()
 	if err != nil {
 		return fmt.Errorf("phase A: %w", err)
 	}
@@ -237,8 +260,31 @@ func runExperiment(ctx context.Context, orch *testlib.Orchestrator) error {
 		return fmt.Errorf("set Latency: %w", err)
 	}
 
+	// Reset every tc to its Phase A starting value so Phase B's refresh
+	// goroutine (seeded identically below) redraws the exact same sequence
+	// of delays Phase A saw, instead of continuing from wherever Phase A's
+	// jitter happened to leave off.
+	for i, tc := range consumerTCs {
+		if err := tc.UpdateDelays(initialConsumerDelays[i]); err != nil {
+			return fmt.Errorf("reset consumer tc on %s for phase B replay: %w", tc.ContainerName, err)
+		}
+	}
+	for i, tc := range providerTCs {
+		if err := tc.UpdateDelay(initialProviderDelayMs[i]); err != nil {
+			return fmt.Errorf("reset tc on %s for phase B replay: %w", tc.ContainerName, err)
+		}
+	}
+
 	// --- Phase B: Latency ---
 	log.Println("=== PHASE B: Latency ===")
+	latencyRefreshCtxB, cancelLatencyRefreshB := context.WithCancel(ctx)
+	var latencyWGB sync.WaitGroup
+	latencyWGB.Add(1)
+	go func() {
+		defer latencyWGB.Done()
+		refreshLatency(latencyRefreshCtxB, exp, consumerTCs, providerTCs, rand.New(rand.NewSource(latencySeed)))
+	}()
+
 	var phaseBSel []testlib.SelectionRecord
 	var phaseBProbe []testlib.ProbeRecord
 	if mode == "reserve" {
@@ -250,8 +296,8 @@ func runExperiment(ctx context.Context, orch *testlib.Orchestrator) error {
 	} else {
 		phaseBSel, phaseBProbe, err = runLatencyPhase(ctx, orch, clients, probeEndpoints, testlib.PhaseB, "Latency")
 	}
-	cancelLatencyRefresh()
-	latencyWG.Wait()
+	cancelLatencyRefreshB()
+	latencyWGB.Wait()
 	if err != nil {
 		return fmt.Errorf("phase B: %w", err)
 	}
@@ -1341,7 +1387,13 @@ func printSummary(s testlib.ExperimentSummary) {
 	}
 }
 
-func refreshLatency(ctx context.Context, exp testlib.TestParams, consumerTCs []*testlib.TCConsumerDelay, providerTCs []*testlib.TCDelayKind) {
+// refreshLatency periodically redraws every simulated delay. rng is an
+// explicit, caller-owned source (never the global math/rand) so that Phase A
+// and Phase B can each be handed a freshly seeded rng with the same seed
+// value (see runExperiment) and draw byte-for-byte identical sequences,
+// unaffected by any unrelated goroutine in the process also consuming the
+// shared global source between the two phases.
+func refreshLatency(ctx context.Context, exp testlib.TestParams, consumerTCs []*testlib.TCConsumerDelay, providerTCs []*testlib.TCDelayKind, rng *rand.Rand) {
 	interval := exp.LatencyRefreshInterval
 	minMs, maxMs := exp.LatencyMinMs, exp.LatencyMaxMs
 	log.Printf("[latency-refresh] started (interval=%s, delays redrawn in %d-%dms)", interval, minMs, maxMs)
@@ -1366,7 +1418,7 @@ func refreshLatency(ctx context.Context, exp testlib.TestParams, consumerTCs []*
 				for i, pd := range tc.ProviderDelays {
 					newDelays[i] = testlib.ProviderDelayEntry{
 						ProviderIP: pd.ProviderIP,
-						DelayMs:    testlib.RandomDelayMs(minMs, maxMs),
+						DelayMs:    testlib.RandomDelayMs(rng, minMs, maxMs),
 						Label:      pd.Label,
 					}
 				}
@@ -1380,7 +1432,7 @@ func refreshLatency(ctx context.Context, exp testlib.TestParams, consumerTCs []*
 				testlib.LogProviderDelays("[latency-refresh]   "+tc.ContainerName, newDelays)
 			}
 			for _, tc := range providerTCs {
-				newDelay := testlib.RandomDelayMs(minMs, maxMs)
+				newDelay := testlib.RandomDelayMs(rng, minMs, maxMs)
 				if err := tc.UpdateDelay(newDelay); err != nil {
 					if ctx.Err() != nil {
 						return

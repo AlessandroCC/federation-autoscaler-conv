@@ -19,6 +19,7 @@ package testlib
 import (
 	"context"
 	"fmt"
+	"hash/fnv"
 	"log"
 	"math/rand"
 	"os"
@@ -64,24 +65,47 @@ func autoGenerateTCDelays(n int) []TCDelayAutoConfig {
 	return delays
 }
 
-// RandomDelayMs draws one simulated one-way delay uniformly from [minMs, maxMs].
-// Used both to seed the matrix and to redraw it on every refresh, so the
-// nearest provider genuinely moves between iterations instead of drifting.
-func RandomDelayMs(minMs, maxMs int) int {
+// RandomDelayMs draws one simulated one-way delay uniformly from [minMs, maxMs]
+// using rng. Used both to seed the matrix and to redraw it on every refresh,
+// so the nearest provider genuinely moves between iterations instead of
+// drifting. Takes an explicit *rand.Rand (never the global math/rand source)
+// so a caller replaying the same sequence across two phases (see
+// SeedFromString) gets a deterministic result unaffected by any unrelated
+// goroutine in the process also drawing from the shared global source.
+func RandomDelayMs(rng *rand.Rand, minMs, maxMs int) int {
 	if maxMs <= minMs {
 		return minMs
 	}
-	return minMs + rand.Intn(maxMs-minMs+1)
+	return minMs + rng.Intn(maxMs-minMs+1)
+}
+
+// SeedFromString deterministically derives an int64 rand seed from s (e.g. a
+// run ID). Two rand.Rand instances seeded with the same string produce the
+// exact same sequence of draws -- used to make one phase replay another
+// phase's exact sequence of randomized values (carbon intensity, simulated
+// latency) within the same run, while still varying from one full run to the
+// next since each run has its own RunID.
+func SeedFromString(s string) int64 {
+	h := fnv.New64a()
+	_, _ = h.Write([]byte(s))
+	return int64(h.Sum64())
 }
 
 func autoGenerateConsumerDelays(consumers, providers, minMs, maxMs int) []ConsumerDelayConfig {
+	// This initial matrix is generated once at config-load time, before either
+	// phase runs, so it has no phase-to-phase replay to stay consistent with --
+	// an unpredictable seed here preserves today's "different every run"
+	// behavior. Phase B replaying Phase A's sequence (see refreshLatency in
+	// comparative-latency/main.go) works by resetting to and then redrawing
+	// from THIS realized starting matrix, not by regenerating it.
+	rng := rand.New(rand.NewSource(rand.Int63()))
 	configs := make([]ConsumerDelayConfig, consumers)
 	for c := range configs {
 		pds := make([]ProviderDelay, providers)
 		for p := range pds {
 			pds[p] = ProviderDelay{
 				ProviderIndex: p + 1,
-				DelayMs:       RandomDelayMs(minMs, maxMs),
+				DelayMs:       RandomDelayMs(rng, minMs, maxMs),
 			}
 		}
 		configs[c] = ConsumerDelayConfig{
@@ -95,13 +119,13 @@ func autoGenerateConsumerDelays(consumers, providers, minMs, maxMs int) []Consum
 // AutoConfig is the fully automated YAML schema. The user specifies counts,
 // regions, and experiment parameters; everything else is computed at runtime.
 type AutoConfig struct {
-	Consumers       int             `yaml:"consumers"`
-	Providers       int             `yaml:"providers"`
-	ProviderRegions []string        `yaml:"providerRegions"`
-	Experiment      TestParams      `yaml:"experiment"`
-	Infra           InfraConfig     `yaml:"infra"`
-	Cleanup         *bool           `yaml:"cleanup,omitempty"`
-	Output          OutputConfig    `yaml:"output"`
+	Consumers       int          `yaml:"consumers"`
+	Providers       int          `yaml:"providers"`
+	ProviderRegions []string     `yaml:"providerRegions"`
+	Experiment      TestParams   `yaml:"experiment"`
+	Infra           InfraConfig  `yaml:"infra"`
+	Cleanup         *bool        `yaml:"cleanup,omitempty"`
+	Output          OutputConfig `yaml:"output"`
 }
 
 // InfraConfig controls how the orchestrator builds infrastructure.
@@ -115,13 +139,13 @@ type InfraConfig struct {
 // topology and test parameters. Both comparative-eco and comparative-latency
 // read it.
 type ExperimentConfig struct {
-	Broker    BrokerConfig     `yaml:"broker"`
-	Consumers []ConsumerConfig `yaml:"consumers"`
-	Providers []ProviderConfig `yaml:"providers"`
-	Certs     CertsConfig      `yaml:"certs"`
-	MockEco   *MockEcoConfig   `yaml:"mockEco,omitempty"`
-	Experiment TestParams      `yaml:"experiment"`
-	Output    OutputConfig     `yaml:"output"`
+	Broker     BrokerConfig     `yaml:"broker"`
+	Consumers  []ConsumerConfig `yaml:"consumers"`
+	Providers  []ProviderConfig `yaml:"providers"`
+	Certs      CertsConfig      `yaml:"certs"`
+	MockEco    *MockEcoConfig   `yaml:"mockEco,omitempty"`
+	Experiment TestParams       `yaml:"experiment"`
+	Output     OutputConfig     `yaml:"output"`
 }
 
 // BrokerConfig identifies the Broker endpoint.
@@ -144,8 +168,8 @@ type ProviderConfig struct {
 
 // CertsConfig points to the mTLS certificates.
 type CertsConfig struct {
-	Dir    string `yaml:"dir"`
-	Prefix string `yaml:"prefix"`
+	Dir      string `yaml:"dir"`
+	Prefix   string `yaml:"prefix"`
 	CertFile string `yaml:"certFile"`
 	KeyFile  string `yaml:"keyFile"`
 	CAFile   string `yaml:"caFile"`
@@ -158,8 +182,8 @@ type MockEcoConfig struct {
 
 // TestParams are the knobs for the experiment.
 type TestParams struct {
-	Mode                  string        `yaml:"mode"`
-	Iterations            int           `yaml:"iterations"`
+	Mode       string `yaml:"mode"`
+	Iterations int    `yaml:"iterations"`
 	// Duration selects how a phase's length is decided: "iterations"
 	// (default) runs exactly Iterations synchronized rounds, as it always
 	// has; "time" instead runs each phase for Timer wall-clock duration,
@@ -407,17 +431,17 @@ func (c *AutoConfig) ShouldCleanup() bool {
 
 // Orchestrator manages the full lifecycle of a comparative test run.
 type Orchestrator struct {
-	Config      *AutoConfig
-	TestType    string // "comparative-eco" or "comparative-latency"
-	RunID       string
-	RepoRoot    string
-	Specs       []ClusterSpec
+	Config        *AutoConfig
+	TestType      string // "comparative-eco" or "comparative-latency"
+	RunID         string
+	RepoRoot      string
+	Specs         []ClusterSpec
 	KubeconfigDir string
-	CADir       string
-	Clients     *ExperimentClients
-	OutputDir   string
-	KeepClusters bool
-	SkipBuild    bool
+	CADir         string
+	Clients       *ExperimentClients
+	OutputDir     string
+	KeepClusters  bool
+	SkipBuild     bool
 }
 
 // NewOrchestrator creates an orchestrator for the given config.
@@ -949,12 +973,12 @@ func (c *ExperimentConfig) BuildClients(ctx context.Context) (*ExperimentClients
 	}
 
 	return &ExperimentClients{
-		Identity:    id,
-		CertFP:      certFP,
-		Broker:      broker,
-		Consoles:    consoles,
-		MockEco:     eco,
-		InitialNGs:  ngResp,
+		Identity:   id,
+		CertFP:     certFP,
+		Broker:     broker,
+		Consoles:   consoles,
+		MockEco:    eco,
+		InitialNGs: ngResp,
 	}, nil
 }
 
@@ -962,8 +986,8 @@ func (c *ExperimentConfig) BuildClients(ctx context.Context) (*ExperimentClients
 type ExperimentClients struct {
 	Identity   Identity
 	CertFP     string
-	Broker     *BrokerClient                // primary (consumer-1) for shared queries
-	Brokers    map[string]*BrokerClient      // per-consumer broker clients for reservations
+	Broker     *BrokerClient            // primary (consumer-1) for shared queries
+	Brokers    map[string]*BrokerClient // per-consumer broker clients for reservations
 	Consoles   map[string]*ConsoleClient
 	MockEco    *MockEcoClient
 	InitialNGs interface{}

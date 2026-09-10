@@ -3,7 +3,9 @@ providers: 7
 
 experiment:
   mode: reserve
-  iterations: 15
+  duration: time
+  timer: 30m
+  iterations: 15 # ignored while duration: time; kept as a fallback value
   phasePause: 35s
   policyPropagationWait: 35s
   advertisementLag: 35s
