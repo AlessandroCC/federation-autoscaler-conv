@@ -119,6 +119,10 @@ func runExperiment(ctx context.Context, orch *testlib.Orchestrator) error {
 
 	// --- Phase A: Random ---
 	log.Println("=== PHASE A: Random ===")
+	if err := clients.SetPolicyAll(ctx, "Random", exp.PolicyPropagationWait); err != nil {
+		return fmt.Errorf("set Random: %w", err)
+	}
+
 	carbonRefreshCtxA, cancelCarbonRefreshA := context.WithCancel(ctx)
 	var carbonWGA sync.WaitGroup
 	carbonWGA.Add(1)
@@ -126,10 +130,18 @@ func runExperiment(ctx context.Context, orch *testlib.Orchestrator) error {
 		defer carbonWGA.Done()
 		refreshCarbon(carbonRefreshCtxA, mockEco, cfg, exp, rand.New(rand.NewSource(carbonSeed)))
 	}()
-	if err := clients.SetPolicyAll(ctx, "Random", exp.PolicyPropagationWait); err != nil {
+
+	// Both phases start their refresh goroutine at the same point in their own
+	// sequence and then wait the same CarbonRefreshInterval before sampling, so
+	// a sample taken at the same elapsed time lands on the same tick of the
+	// replayed sequence in both. Expressing the gap as the same value on both
+	// sides is the point: it used to be PolicyPropagationWait here and
+	// CarbonRefreshInterval there, which only lined up because the config
+	// happens to set both to 35s.
+	if err := testlib.SleepCtx(ctx, exp.CarbonRefreshInterval); err != nil {
 		cancelCarbonRefreshA()
 		carbonWGA.Wait()
-		return fmt.Errorf("set Random: %w", err)
+		return err
 	}
 
 	var phaseARecords []testlib.SelectionRecord

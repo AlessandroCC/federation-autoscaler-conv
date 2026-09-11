@@ -217,7 +217,20 @@ func runExperiment(ctx context.Context, orch *testlib.Orchestrator) error {
 	// the exact same delay sequence Phase A drew (see refreshLatency).
 	latencySeed := testlib.SeedFromString(orch.RunID)
 
-	// Start latency refresh for Phase A.
+	// --- Phase A: Random ---
+	log.Println("=== PHASE A: Random ===")
+	if err := clients.SetPolicyAll(ctx, "Random", exp.PolicyPropagationWait); err != nil {
+		return fmt.Errorf("set Random: %w", err)
+	}
+
+	// Started here, after the policy wait and immediately before the phase's
+	// own loop, so the gap between "the delay ticker's first tick" and "the
+	// first sample" is the same in both phases. Phase B starts its refresh at
+	// exactly this point in its own sequence; starting Phase A's any earlier
+	// would put its ticker ahead by PolicyPropagationWait, and every sample
+	// taken at the same elapsed time would then land on a different tick of
+	// the replayed sequence — which is precisely what the replay is meant to
+	// keep aligned.
 	latencyRefreshCtxA, cancelLatencyRefreshA := context.WithCancel(ctx)
 	var latencyWGA sync.WaitGroup
 	latencyWGA.Add(1)
@@ -225,14 +238,6 @@ func runExperiment(ctx context.Context, orch *testlib.Orchestrator) error {
 		defer latencyWGA.Done()
 		refreshLatency(latencyRefreshCtxA, exp, consumerTCs, providerTCs, rand.New(rand.NewSource(latencySeed)))
 	}()
-
-	// --- Phase A: Random ---
-	log.Println("=== PHASE A: Random ===")
-	if err := clients.SetPolicyAll(ctx, "Random", exp.PolicyPropagationWait); err != nil {
-		cancelLatencyRefreshA()
-		latencyWGA.Wait()
-		return fmt.Errorf("set Random: %w", err)
-	}
 
 	var phaseASel []testlib.SelectionRecord
 	var phaseAProbe []testlib.ProbeRecord
