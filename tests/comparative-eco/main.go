@@ -182,6 +182,18 @@ func runExperiment(ctx context.Context, orch *testlib.Orchestrator) error {
 		defer carbonWGB.Done()
 		refreshCarbon(carbonRefreshCtxB, mockEco, cfg, exp, rand.New(rand.NewSource(carbonSeed)))
 	}()
+
+	// Let provider-side eco-client caches (TTL = CarbonRefreshInterval) catch
+	// up before sampling starts: a provider whose cache was still fresh from
+	// Phase A's last tick would otherwise keep advertising that stale value
+	// for the first sampled iteration or two of Phase B, even though the
+	// goroutine above has already posted Phase B's replayed values.
+	if err := testlib.SleepCtx(ctx, exp.CarbonRefreshInterval); err != nil {
+		cancelCarbonRefreshB()
+		carbonWGB.Wait()
+		return err
+	}
+
 	var phaseBRecords []testlib.SelectionRecord
 	if mode == "reserve" {
 		var phaseBRes []testlib.ReservationRecord
