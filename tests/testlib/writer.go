@@ -235,7 +235,15 @@ func WriteSummaryMarkdown(dir string, s ExperimentSummary) error {
 	fmt.Fprintf(f, "- Consumer: `%s`\n", s.ConsumerID)
 	fmt.Fprintf(f, "- Broker: %s\n", s.BrokerURL)
 	fmt.Fprintf(f, "- Providers: %d\n", s.ProviderCount)
-	fmt.Fprintf(f, "- Iterations per phase: %d\n\n", s.IterationsPerPhase)
+	// Under DurationMode "time" a phase runs to the clock and IterationsPerPhase
+	// carries the config's iterations value, which that mode ignores entirely --
+	// reporting it as if it described the run made the summary say "15" for a
+	// phase that actually ran 830 iterations.
+	if s.DurationMode == "time" {
+		fmt.Fprintf(f, "- Phase length: %s (wall clock; configured iterations ignored)\n\n", s.TimerConfigured)
+	} else {
+		fmt.Fprintf(f, "- Iterations per phase: %d\n\n", s.IterationsPerPhase)
+	}
 
 	for _, ps := range []struct {
 		label   string

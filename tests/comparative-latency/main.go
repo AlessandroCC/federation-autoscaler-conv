@@ -41,6 +41,13 @@ import (
 	"github.com/netgroup-polito/federation-autoscaler/tests/testlib"
 )
 
+// proberCacheDrain is how long each phase waits, after starting its refresh
+// goroutine and before its first sample, for every Consumer's prober cache to
+// expire. Twice testlib.ProberCacheTTL: an entry cached just before the wait
+// begins expires one TTL in, and the extra TTL is margin for a Consumer whose
+// probe round was still in flight at that moment.
+const proberCacheDrain = 2 * testlib.ProberCacheTTL
+
 func main() {
 	if err := run(); err != nil {
 		log.Fatal(err)
@@ -217,6 +224,18 @@ func runExperiment(ctx context.Context, orch *testlib.Orchestrator) error {
 	// the exact same delay sequence Phase A drew (see refreshLatency).
 	latencySeed := testlib.SeedFromString(orch.RunID)
 
+	// The federation Phase A is about to run on; the transition below checks
+	// Phase B gets the same one back. See comparative-eco for the reasoning --
+	// it applies identically here, and more strongly: Random switches provider
+	// on nearly every iteration, so Phase A does far more releases than the
+	// Latency phase and has far more chances to leave a chunk stranded.
+	baseline, err := testlib.ReadFederationCapacity(ctx, clients.Broker)
+	if err != nil {
+		return fmt.Errorf("baseline federation capacity: %w", err)
+	}
+	log.Printf("federation baseline: %d node groups, %d chunks reserved",
+		len(baseline.NodeGroupIDs), baseline.TotalReserved)
+
 	// --- Phase A: Random ---
 	log.Println("=== PHASE A: Random ===")
 	if err := clients.SetPolicyAll(ctx, "Random", exp.PolicyPropagationWait); err != nil {
@@ -238,6 +257,18 @@ func runExperiment(ctx context.Context, orch *testlib.Orchestrator) error {
 		defer latencyWGA.Done()
 		refreshLatency(latencyRefreshCtxA, exp, consumerTCs, providerTCs, rand.New(rand.NewSource(latencySeed)))
 	}()
+
+	// Wait out the Consumers' prober cache before sampling. This side does not
+	// strictly need it -- the caches are cold here -- but Phase B does, and the
+	// gap between "the refresh ticker's first tick" and "the first sample" has
+	// to be the same on both sides or samples taken at the same elapsed time
+	// land on different ticks of the replayed sequence. Symmetry is the point;
+	// see the matching wait at the start of Phase B.
+	if err := testlib.SleepCtx(ctx, proberCacheDrain); err != nil {
+		cancelLatencyRefreshA()
+		latencyWGA.Wait()
+		return err
+	}
 
 	var phaseASel []testlib.SelectionRecord
 	var phaseAProbe []testlib.ProbeRecord
@@ -261,6 +292,16 @@ func runExperiment(ctx context.Context, orch *testlib.Orchestrator) error {
 
 	// --- Transition: switch to Latency (tc delays already active) ---
 	log.Println("=== TRANSITION ===")
+
+	// Before the policy switch and before Phase B's refresh goroutine: this can
+	// block for up to testlib.FederationSettleTimeout, and a variable-length
+	// wait after the goroutine would shift Phase B's tick alignment away from
+	// Phase A's.
+	log.Println("  checking the federation is back to its starting capacity...")
+	if _, err := testlib.WaitForFederationCapacity(ctx, clients.Broker, baseline, exp.ReservationPoll, testlib.FederationSettleTimeout); err != nil {
+		return fmt.Errorf("phase A leaked capacity, so phase B would not run on the same federation: %w", err)
+	}
+
 	if err := clients.SetPolicyAll(ctx, "Latency", exp.PolicyPropagationWait); err != nil {
 		return fmt.Errorf("set Latency: %w", err)
 	}
@@ -289,6 +330,18 @@ func runExperiment(ctx context.Context, orch *testlib.Orchestrator) error {
 		defer latencyWGB.Done()
 		refreshLatency(latencyRefreshCtxB, exp, consumerTCs, providerTCs, rand.New(rand.NewSource(latencySeed)))
 	}()
+
+	// The reason the wait exists. Every Consumer arrives here holding RTTs it
+	// measured against Phase A's final delays, and would keep serving them for
+	// up to testlib.ProberCacheTTL into Phase B -- against the tc values this
+	// phase has just reset. Phase A began with cold caches and no such stale
+	// window, so without draining it here the two phases would not be
+	// observable as the same environment over their first samples.
+	if err := testlib.SleepCtx(ctx, proberCacheDrain); err != nil {
+		cancelLatencyRefreshB()
+		latencyWGB.Wait()
+		return err
+	}
 
 	var phaseBSel []testlib.SelectionRecord
 	var phaseBProbe []testlib.ProbeRecord

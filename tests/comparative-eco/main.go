@@ -117,9 +117,34 @@ func runExperiment(ctx context.Context, orch *testlib.Orchestrator) error {
 	// same distribution.
 	carbonSeed := testlib.SeedFromString(orch.RunID)
 
+	// One settle budget, computed once and spent identically by both phases.
+	// It used to be PolicyPropagationWait for Phase A and
+	// max(AdvertisementLag, PolicyPropagationWait) for Phase B, which happened
+	// to agree only because the config sets both knobs to the same value --
+	// raise advertisementLag alone and Phase B would silently get a longer
+	// runway than Phase A, breaking the paired comparison in a way nothing
+	// would report.
+	policySettle := exp.AdvertisementLag
+	if exp.PolicyPropagationWait > policySettle {
+		policySettle = exp.PolicyPropagationWait
+	}
+
+	// The federation Phase A is about to run on. Phase B has to start on this
+	// same one to be a paired comparison, and the transition below checks that
+	// it does. Measured rather than assumed to be empty: a deploy that came up
+	// with something already reserved is a different starting point, not a
+	// broken one, and either way the two phases only have to agree with
+	// each other.
+	baseline, err := testlib.ReadFederationCapacity(ctx, clients.Broker)
+	if err != nil {
+		return fmt.Errorf("baseline federation capacity: %w", err)
+	}
+	log.Printf("federation baseline: %d node groups, %d chunks reserved",
+		len(baseline.NodeGroupIDs), baseline.TotalReserved)
+
 	// --- Phase A: Random ---
 	log.Println("=== PHASE A: Random ===")
-	if err := clients.SetPolicyAll(ctx, "Random", exp.PolicyPropagationWait); err != nil {
+	if err := clients.SetPolicyAll(ctx, "Random", policySettle); err != nil {
 		return fmt.Errorf("set Random: %w", err)
 	}
 
@@ -169,17 +194,22 @@ func runExperiment(ctx context.Context, orch *testlib.Orchestrator) error {
 	// --- Transition: switch to Eco policy ---
 	log.Println("=== TRANSITION ===")
 
+	// Confirm Phase A gave the federation back before Phase B takes it. This
+	// has to happen HERE -- before the policy switch and before Phase B's
+	// refresh goroutine starts -- because it can block for up to
+	// testlib.FederationSettleTimeout, and any variable-length wait placed after the
+	// goroutine would shift Phase B's tick alignment relative to Phase A's and
+	// undo the replay the rest of this function exists to preserve.
+	log.Println("  checking the federation is back to its starting capacity...")
+	if _, err := testlib.WaitForFederationCapacity(ctx, clients.Broker, baseline, exp.ReservationPoll, testlib.FederationSettleTimeout); err != nil {
+		return fmt.Errorf("phase A leaked capacity, so phase B would not run on the same federation: %w", err)
+	}
+
 	// Switch to Eco (carbon values are already being refreshed by the goroutine).
-	if err := clients.SetPolicyAll(ctx, "Eco", 0); err != nil {
+	// Same policySettle Phase A spent, for the same reason.
+	log.Printf("  waiting %s for policy + advertisement propagation...", policySettle)
+	if err := clients.SetPolicyAll(ctx, "Eco", policySettle); err != nil {
 		return fmt.Errorf("set Eco: %w", err)
-	}
-	wait := exp.AdvertisementLag
-	if exp.PolicyPropagationWait > wait {
-		wait = exp.PolicyPropagationWait
-	}
-	log.Printf("  waiting %s for policy + advertisement propagation...", wait)
-	if err := testlib.SleepCtx(ctx, wait); err != nil {
-		return err
 	}
 
 	// --- Phase B: Eco ---

@@ -19,6 +19,9 @@ package testlib
 import (
 	"context"
 	"fmt"
+	"slices"
+	"sort"
+	"strings"
 	"time"
 
 	agentclient "github.com/netgroup-polito/federation-autoscaler/internal/agent/client"
@@ -50,6 +53,145 @@ func (bc *BrokerClient) CheckReachable(ctx context.Context) error {
 // GetNodeGroups returns the Broker's current view of node groups.
 func (bc *BrokerClient) GetNodeGroups(ctx context.Context) (*brokerapi.NodeGroupListResponse, error) {
 	return bc.Raw.GetNodeGroups(ctx)
+}
+
+// FederationCapacity is how much of the federation is occupied, as the Broker
+// itself sees it. The comparative harnesses use it to assert that Phase B
+// starts on the same federation Phase A started on.
+//
+// The need is not hypothetical. When ReleaseAndWait fails mid-phase the harness
+// logs the error and drops the reservation from its own bookkeeping, but the
+// Broker keeps it — its ExpiresAt is 24h out — so the chunk stays occupied for
+// the rest of the run. Phase A runs the Random policy and therefore switches
+// provider on nearly every iteration, giving it an order of magnitude more
+// releases than Phase B and an order of magnitude more chances to leak one.
+// Left unchecked, Phase A gets the whole federation and Phase B gets whatever
+// survived, which quietly stops the two phases from being a paired comparison.
+type FederationCapacity struct {
+	// TotalReserved sums CurrentReserved over every node group the Broker
+	// reports. Masked losers stay in the list, so this covers the federation
+	// and not just the caller's current winner.
+	TotalReserved int32
+	// ReservedBy maps node-group ID to its reserved chunks, for the groups
+	// holding at least one. Empty on a free federation; it exists so a failure
+	// can name the culprits instead of only reporting a total.
+	ReservedBy map[string]int32
+	// NodeGroupIDs is every node-group ID seen, sorted. Compared alongside the
+	// total because a provider that has gone stale (Status.Available false,
+	// 90s after its last advertisement) drops out of the list entirely — its
+	// reserved chunks would vanish from the sum and read as "all clear".
+	NodeGroupIDs []string
+}
+
+// FederationSettleTimeout is how long a phase transition waits for released
+// chunks to be credited back before calling the shortfall a leak. Generous
+// against a reconcile loop on purpose: the cost of waiting too long is two
+// minutes, the cost of waiting too little is aborting a good run.
+const FederationSettleTimeout = 2 * time.Minute
+
+// ReadFederationCapacity snapshots the Broker's current view.
+func ReadFederationCapacity(ctx context.Context, bc *BrokerClient) (FederationCapacity, error) {
+	resp, err := bc.GetNodeGroups(ctx)
+	if err != nil {
+		return FederationCapacity{}, fmt.Errorf("read federation capacity: %w", err)
+	}
+	snap := FederationCapacity{ReservedBy: make(map[string]int32)}
+	for _, ng := range resp.NodeGroups {
+		snap.TotalReserved += ng.CurrentReserved
+		if ng.CurrentReserved > 0 {
+			snap.ReservedBy[ng.ID] = ng.CurrentReserved
+		}
+		snap.NodeGroupIDs = append(snap.NodeGroupIDs, ng.ID)
+	}
+	sort.Strings(snap.NodeGroupIDs)
+	return snap, nil
+}
+
+// Matches reports whether c is the same federation shape and occupancy as want.
+func (c FederationCapacity) Matches(want FederationCapacity) bool {
+	return c.TotalReserved == want.TotalReserved &&
+		slices.Equal(c.NodeGroupIDs, want.NodeGroupIDs)
+}
+
+// Diff describes how c departs from want, for an error message.
+func (c FederationCapacity) Diff(want FederationCapacity) string {
+	var parts []string
+	if c.TotalReserved != want.TotalReserved {
+		var held []string
+		for _, id := range c.NodeGroupIDs {
+			if n, ok := c.ReservedBy[id]; ok {
+				held = append(held, fmt.Sprintf("%s=%d", id, n))
+			}
+		}
+		msg := fmt.Sprintf("reserved chunks %d, want %d", c.TotalReserved, want.TotalReserved)
+		if len(held) > 0 {
+			msg += " (still held: " + strings.Join(held, ", ") + ")"
+		}
+		parts = append(parts, msg)
+	}
+	if !slices.Equal(c.NodeGroupIDs, want.NodeGroupIDs) {
+		missing := missingFrom(want.NodeGroupIDs, c.NodeGroupIDs)
+		extra := missingFrom(c.NodeGroupIDs, want.NodeGroupIDs)
+		if len(missing) > 0 {
+			parts = append(parts, "node groups gone: "+strings.Join(missing, ", "))
+		}
+		if len(extra) > 0 {
+			parts = append(parts, "node groups appeared: "+strings.Join(extra, ", "))
+		}
+	}
+	if len(parts) == 0 {
+		return "no difference"
+	}
+	return strings.Join(parts, "; ")
+}
+
+func missingFrom(want, got []string) []string {
+	have := make(map[string]bool, len(got))
+	for _, id := range got {
+		have[id] = true
+	}
+	var out []string
+	for _, id := range want {
+		if !have[id] {
+			out = append(out, id)
+		}
+	}
+	return out
+}
+
+// WaitForFederationCapacity polls until the federation is back to want, and
+// fails if it never gets there.
+//
+// Polling rather than checking once is required, not defensive: a released
+// chunk is credited back asynchronously by the reservation controller, so an
+// immediate read right after a phase ends routinely still shows it held. What
+// distinguishes controller lag from a real leak is only whether it clears, so
+// the timeout is the whole measurement — give it a budget comfortably longer
+// than a reconcile, and treat anything still outstanding afterwards as lost.
+func WaitForFederationCapacity(ctx context.Context, bc *BrokerClient, want FederationCapacity, poll, timeout time.Duration) (FederationCapacity, error) {
+	deadline := time.Now().Add(timeout)
+	ticker := time.NewTicker(poll)
+	defer ticker.Stop()
+
+	var last FederationCapacity
+	for {
+		got, err := ReadFederationCapacity(ctx, bc)
+		if err != nil {
+			return last, err
+		}
+		last = got
+		if got.Matches(want) {
+			return got, nil
+		}
+		if !time.Now().Before(deadline) {
+			return got, fmt.Errorf("federation did not return to its starting capacity within %s: %s", timeout, got.Diff(want))
+		}
+		select {
+		case <-ctx.Done():
+			return got, ctx.Err()
+		case <-ticker.C:
+		}
+	}
 }
 
 // CreateReservation creates a reservation against the specified provider.

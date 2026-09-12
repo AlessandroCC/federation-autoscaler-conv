@@ -206,6 +206,15 @@ type TestParams struct {
 	CarbonGreenFractionMin float64       `yaml:"carbonGreenFractionMin"`
 	CarbonGreenFractionMax float64       `yaml:"carbonGreenFractionMax"`
 	CarbonRefreshInterval  time.Duration `yaml:"carbonRefreshInterval"`
+	// EcoCacheTTL is how long a provider agent caches a region's carbon
+	// intensity before re-reading it from mock-eco. It must stay well BELOW
+	// CarbonRefreshInterval, never equal to it: the value a Consumer finally
+	// observes lags the harness's write by up to EcoCacheTTL (cache) plus the
+	// provider's 30s advertisement cycle, and if that combined lag is
+	// comparable to the refresh period, different providers land on different
+	// ticks of the sequence and the two phases stop being observable as the
+	// same environment even when they replay the identical sequence.
+	EcoCacheTTL time.Duration `yaml:"ecoCacheTTL"`
 
 	// Latency-specific (automated Kind mode).
 	TCDelaysAuto           []TCDelayAutoConfig   `yaml:"tcDelays,omitempty"`
@@ -282,6 +291,20 @@ func LoadAutoConfig(path string) (*AutoConfig, error) {
 	return &cfg, cfg.Validate()
 }
 
+// advertisementCycle mirrors advertise.DefaultInterval: the provider agent
+// republishes its advertisement (carbon value included) on this cadence and it
+// is not configurable from the harness, so it is the floor on how quickly any
+// environment change can become visible to a Consumer.
+const advertisementCycle = 30 * time.Second
+
+// ProberCacheTTL mirrors latency.DefaultCacheTTL: how long a Consumer reuses a
+// measured RTT before re-probing. Not configurable from the harness, so it is
+// the floor on how quickly a redrawn tc delay can become visible -- and the
+// span for which a Consumer entering a new phase keeps serving measurements it
+// took during the previous one. comparative-latency waits it out at the start
+// of BOTH phases so neither begins with a warmer cache than the other.
+const ProberCacheTTL = 15 * time.Second
+
 func (c *AutoConfig) applyDefaults() {
 	if c.Consumers <= 0 {
 		c.Consumers = 1
@@ -331,8 +354,30 @@ func (c *AutoConfig) applyDefaults() {
 	if c.Experiment.CarbonRefreshInterval <= 0 {
 		c.Experiment.CarbonRefreshInterval = 3 * time.Minute
 	}
+	if c.Experiment.EcoCacheTTL <= 0 {
+		c.Experiment.EcoCacheTTL = 5 * time.Second
+	}
+	// A Consumer sees a carbon value at most EcoCacheTTL + the provider's 30s
+	// advertisement cycle after the harness wrote it. Once that lag reaches a
+	// sizeable share of one refresh tick, providers are observed on different
+	// ticks and the phases can no longer be overlaid point-by-point, even
+	// though Phase B replays Phase A's exact sequence.
+	if lag := c.Experiment.EcoCacheTTL + advertisementCycle; lag*2 > c.Experiment.CarbonRefreshInterval {
+		log.Printf("[config] WARNING: carbon observation lag (ecoCacheTTL %s + %s advertisement cycle = %s) "+
+			"is more than half of carbonRefreshInterval (%s); Phase A and Phase B will not be "+
+			"point-by-point comparable. Lower ecoCacheTTL or raise carbonRefreshInterval.",
+			c.Experiment.EcoCacheTTL, advertisementCycle, lag, c.Experiment.CarbonRefreshInterval)
+	}
 	if c.Experiment.LatencyRefreshInterval <= 0 {
 		c.Experiment.LatencyRefreshInterval = 3 * time.Minute
+	}
+	// Same check on the latency side. The lag here is just the Consumer's
+	// prober cache: it probes the provider's echo endpoint directly, so no
+	// advertisement cycle sits in this path.
+	if ProberCacheTTL*2 > c.Experiment.LatencyRefreshInterval {
+		log.Printf("[config] WARNING: latency observation lag (%s prober cache) is more than half of "+
+			"latencyRefreshInterval (%s); Phase A and Phase B will not be point-by-point comparable. "+
+			"Raise latencyRefreshInterval.", ProberCacheTTL, c.Experiment.LatencyRefreshInterval)
 	}
 	if c.Experiment.LatencyMinMs <= 0 {
 		c.Experiment.LatencyMinMs = 30
@@ -558,7 +603,7 @@ func (o *Orchestrator) Setup(ctx context.Context) error {
 		ImgPrefix:       registry,
 		ImgTag:          imgTag,
 		LiqoProvider:    o.Config.Infra.LiqoProvider,
-		EcoCacheTTL:     o.Config.Experiment.CarbonRefreshInterval,
+		EcoCacheTTL:     o.Config.Experiment.EcoCacheTTL,
 	}
 	if err := DeployAll(ctx, deployOpts); err != nil {
 		return fmt.Errorf("deploy: %w", err)
@@ -853,6 +898,9 @@ func (c *ExperimentConfig) applyDefaults() {
 	}
 	if c.Experiment.CarbonRefreshInterval <= 0 {
 		c.Experiment.CarbonRefreshInterval = 3 * time.Minute
+	}
+	if c.Experiment.EcoCacheTTL <= 0 {
+		c.Experiment.EcoCacheTTL = 5 * time.Second
 	}
 	if c.Experiment.LatencyRefreshInterval <= 0 {
 		c.Experiment.LatencyRefreshInterval = 3 * time.Minute
