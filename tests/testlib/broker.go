@@ -19,7 +19,6 @@ package testlib
 import (
 	"context"
 	"fmt"
-	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -107,10 +106,33 @@ func ReadFederationCapacity(ctx context.Context, bc *BrokerClient) (FederationCa
 	return snap, nil
 }
 
-// Matches reports whether c is the same federation shape and occupancy as want.
+// Matches reports whether c still accounts for everything want did: the same
+// total reserved and no node group from want missing out of c.
+//
+// A node group in c that was NOT in want is deliberately allowed. That case is
+// a provider that registered a moment after the baseline snapshot, or one that
+// went briefly stale (Status.Available false, up to 90s after its last
+// advertisement) and came back -- extra capacity showing up, not capacity
+// gone. Only a MISSING node group is treated as suspect: a stale provider
+// drops out of the Broker's list taking its ReservedChunks out of the sum
+// with it, which is exactly the case ReadFederationCapacity's doc comment
+// warns can make a real leak look clean by making the total add up on its
+// own. Requiring exact equality of the two ID sets would treat that harmless
+// "arrived late" case as a leak too and abort a perfectly good run.
 func (c FederationCapacity) Matches(want FederationCapacity) bool {
-	return c.TotalReserved == want.TotalReserved &&
-		slices.Equal(c.NodeGroupIDs, want.NodeGroupIDs)
+	if c.TotalReserved != want.TotalReserved {
+		return false
+	}
+	have := make(map[string]bool, len(c.NodeGroupIDs))
+	for _, id := range c.NodeGroupIDs {
+		have[id] = true
+	}
+	for _, id := range want.NodeGroupIDs {
+		if !have[id] {
+			return false
+		}
+	}
+	return true
 }
 
 // Diff describes how c departs from want, for an error message.
@@ -129,15 +151,15 @@ func (c FederationCapacity) Diff(want FederationCapacity) string {
 		}
 		parts = append(parts, msg)
 	}
-	if !slices.Equal(c.NodeGroupIDs, want.NodeGroupIDs) {
-		missing := missingFrom(want.NodeGroupIDs, c.NodeGroupIDs)
-		extra := missingFrom(c.NodeGroupIDs, want.NodeGroupIDs)
-		if len(missing) > 0 {
-			parts = append(parts, "node groups gone: "+strings.Join(missing, ", "))
-		}
-		if len(extra) > 0 {
-			parts = append(parts, "node groups appeared: "+strings.Join(extra, ", "))
-		}
+	// Missing groups are the actionable half of a mismatch (see Matches);
+	// extras are named too, but only as context -- they never caused this
+	// Diff to be printed in the first place.
+	missing := missingFrom(want.NodeGroupIDs, c.NodeGroupIDs)
+	if len(missing) > 0 {
+		parts = append(parts, "node groups gone: "+strings.Join(missing, ", "))
+	}
+	if extra := missingFrom(c.NodeGroupIDs, want.NodeGroupIDs); len(extra) > 0 {
+		parts = append(parts, "node groups appeared (not a problem on their own): "+strings.Join(extra, ", "))
 	}
 	if len(parts) == 0 {
 		return "no difference"

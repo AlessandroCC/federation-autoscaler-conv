@@ -45,7 +45,10 @@ func TestFederationCapacityMatches(t *testing.T) {
 		{"identical", cap32(0, nil, "ng-a", "ng-b"), true},
 		{"chunk still held", cap32(1, map[string]int32{"ng-a": 1}, "ng-a", "ng-b"), false},
 		{"node group vanished", cap32(0, nil, "ng-a"), false},
-		{"node group appeared", cap32(0, nil, "ng-a", "ng-b", "ng-c"), false},
+		// A late-registering or briefly-stale-then-recovered provider adds a
+		// node group that was not in the baseline. That is capacity arriving,
+		// not capacity lost, so it must not fail the check.
+		{"node group appeared", cap32(0, nil, "ng-a", "ng-b", "ng-c"), true},
 		// A provider going stale takes its reserved chunks out of the sum with
 		// it, so the total alone would read as clean. This is the case the
 		// node-group comparison exists for.
@@ -58,6 +61,26 @@ func TestFederationCapacityMatches(t *testing.T) {
 				t.Errorf("Matches() = %v, want %v", got, tc.ok)
 			}
 		})
+	}
+}
+
+func TestFederationCapacityMatchesAllowsExtraNodeGroupsWithZeroTotal(t *testing.T) {
+	// The specific scenario Matches must not abort on: a provider shows up
+	// after the baseline snapshot (or recovers from a brief stale window) and
+	// nothing is actually reserved anywhere.
+	want := cap32(0, nil, "ng-a")
+	got := cap32(0, nil, "ng-a", "ng-new")
+	if !got.Matches(want) {
+		t.Errorf("Matches() = false for an extra empty node group, want true (it holds nothing, so nothing was lost)")
+	}
+}
+
+func TestFederationCapacityMatchesStillCatchesRealLeakAlongsideNewArrival(t *testing.T) {
+	// A new provider showing up must not mask an unrelated leak elsewhere.
+	want := cap32(0, nil, "ng-a", "ng-b")
+	got := cap32(1, map[string]int32{"ng-a": 1}, "ng-a", "ng-b", "ng-new")
+	if got.Matches(want) {
+		t.Errorf("Matches() = true, want false: ng-a still holds a chunk baseline did not")
 	}
 }
 
