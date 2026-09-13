@@ -293,6 +293,52 @@ percentuale non è leggibile, perché valori simili capitano anche per fortuna.
 Se hai cambiato `carbonRefreshInterval`, passa anche `--tick-seconds` con il nuovo
 valore in secondi, altrimenti lo script raggruppa con la finestra sbagliata.
 
+### Per il test latency è un altro script
+
+```bash
+python3 tests/scripts/verifyLatencyReplayAlignment.py --input results/.../probes.csv
+```
+
+Legge `probes.csv`, non `nodegroups.csv`, e ragiona diversamente per due motivi.
+
+Il primo: qui il valore è un **RTT misurato**, non un numero esatto letto da un'API.
+Il confronto usa quindi una tolleranza (`--tolerance-ms`, default 10). La domanda a
+cui risponde è "le due fasi hanno visto condizioni comparabili?", non "coincidono al
+millisecondo": 10ms contro 13ms va benissimo, 10ms contro 400ms no. Sui dati reali la
+distinzione è netta — letture della stessa condizione stanno a ~0.1ms l'una dall'altra,
+estrazioni diverse a decine o centinaia di ms — quindi il valore esatto della
+tolleranza non è critico.
+
+Il secondo: la **Phase A del latency è strutturalmente rada**. Sotto Random il broker
+maschera su un solo provider, quindi una coppia (consumer, provider) viene misurata solo
+quando il caso la pesca — su una run 3×7 da un'ora sono state 7 finestre su 30, contro
+28 su 30 della Phase B. Per questo l'output riporta una riga **Coverage**: leggi sempre
+la percentuale insieme al numero di finestre confrontabili, perché una percentuale alta
+su pochissime celle vale poco.
+
+Nell'output trovi anche:
+
+- **Estimated refresh grid** — lo script non assume dove cadano i confini dei tick, li
+  ricava dai cambi di valore osservati (tutte le coppie cambiano insieme, su un solo
+  ticker). Se una fase è troppo rada per individuarli da sola prende in prestito la
+  stima dell'altra, e lo dichiara. Se compare un warning sull'affidabilità della griglia,
+  il resto del risultato non è interpretabile.
+- **allowing +/-1 window** — quanta parte degli scarti è solo incertezza sul confine
+  della finestra invece che un ambiente diverso. Se questo numero è molto più alto dello
+  strict, il problema è di posizionamento, non di condizioni.
+
+Se il verdetto è FAIL o un INCONCLUSIVE ostinato, guarda i valori grezzi prima di
+concludere qualcosa:
+
+```bash
+python3 tests/scripts/dumpLatencySequence.py --input results/.../probes.csv \
+  --consumer consumer-1 --provider provider-3
+```
+
+Stampa le due fasi affiancate finestra per finestra. In pochi secondi vedi se le colonne
+si somigliano (replay a posto, il punteggio sta misurando la scarsità dei campioni) o se
+sono numeri scorrelati (allora è il replay da guardare).
+
 ### Grafici
 
 ```bash

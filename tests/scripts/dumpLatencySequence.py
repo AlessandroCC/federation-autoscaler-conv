@@ -4,6 +4,13 @@ one (consumer, provider) pair, so a real replay can be told apart from two
 independent draws by eye -- a whole-phase mean/stdev summary can't do that,
 since it looks similar either way.
 
+Reach for this when verifyLatencyReplayAlignment.py reports FAIL or a stubborn
+INCONCLUSIVE. Raw values settle in seconds what summary statistics argue about:
+readings of the same replayed delay agree to a fraction of a millisecond, so if
+the two columns line up the replay is working and the score is measuring
+something else (usually Phase A's sparse sampling), while genuinely unrelated
+numbers mean the replay itself needs looking at.
+
 Usage:
     python dumpLatencySequence.py --input results/.../probes.csv --consumer consumer-1 --provider provider-1
 """
@@ -13,7 +20,7 @@ from __future__ import annotations
 import argparse
 import csv
 import sys
-from collections import Counter, defaultdict
+from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
 

@@ -38,3 +38,10 @@ results/
 *.swp
 *.swo
 *~
+
+# local thesis drafts (source of truth is the Overleaf project)
+/thesis/
+
+# Python bytecode from the tests/scripts analysis tools
+__pycache__/
+*.pyc
