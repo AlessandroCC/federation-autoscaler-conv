@@ -43,11 +43,13 @@ type DeployOpts struct {
 	LiqoProvider   string // "kind", "k3s", "kubeadm"
 
 	// EcoCacheTTL overrides the provider's carbon-intensity cache TTL (Go
-	// duration, e.g. "3m"). comparative-eco sets this to match its
+	// duration, e.g. "5s"). comparative-eco sets this well below its
 	// carbonRefreshInterval so deployed providers actually observe the
 	// harness's periodic mock-eco re-randomization within a phase, instead
-	// of serving their first-fetched value for the agent's 1h default. Zero
-	// ⇒ leave the agent's default untouched.
+	// of serving their first-fetched value for the agent's 1h default --
+	// and so the observation lag (this TTL plus the provider's 30s
+	// advertisement cycle) stays a small fraction of one refresh tick.
+	// Zero ⇒ leave the agent's default untouched.
 	EcoCacheTTL time.Duration
 }
 
