@@ -341,19 +341,29 @@ sono numeri scorrelati (allora è il replay da guardare).
 
 ### Grafici
 
+Un grafico per test, costruito nello stesso modo: **sovrapposizione diretta**, con
+Random (rosso) e la policy sotto test (verde) sullo stesso asse X, ciascuna misurata
+dall'inizio della propria fase.
+
 ```bash
-python tests/scripts/ecoDiagramMaker3.py --input results/.../reservations.csv
+python tests/scripts/ecoDiagramMaker.py     --input results/comparative-eco/<timestamp>/reservations.csv
+python tests/scripts/latencyDiagramMaker.py --input results/comparative-latency/<timestamp>/reservations.csv
 ```
 
-- `ecoDiagramMaker.py` — timeline sequenziale A → B
-- `ecoDiagramMaker2.py` — come sopra, ma comprime il tempo morto della transizione
-  (`--transition-at-minutes 60` ancora lo switch al minuto esatto)
-- `ecoDiagramMaker3.py` — **sovrapposizione diretta**: entrambe le policy sullo
-  stesso asse, ciascuna misurata dall'inizio della propria fase
+- `ecoDiagramMaker.py` — asse Y: **somma** delle carbon intensity dei provider scelti.
+  Output `carbon_intensity_comparison.*` e `carbon_summary.md`.
+- `latencyDiagramMaker.py` — asse Y: **RTT medio** verso il provider scelto, tra i
+  consumer attivi. Output `latency_comparison.*` e `latency_summary.md`.
 
-Tutti accettano `--input` e `--output-dir`, e scrivono PNG, PDF, CSV e un riepilogo
-in markdown. Servono `pandas` e `matplotlib`; `verifyReplayAlignment.py` invece usa
-solo la libreria standard.
+Gli assi Y differiscono di proposito: una somma di millisecondi non ha significato
+fisico e crescerebbe con il numero di consumer, mentre la media resta in ms reali e
+sulla stessa scala da 3×7 a 30×70.
+
+Entrambi leggono solo `reservations.csv`, accettano `--input` e `--output-dir`
+(default: una cartella `analysis/` accanto al CSV) e scrivono PNG a 300 DPI, PDF, CSV
+e un riepilogo in markdown. Se passi il CSV sbagliato escono con un messaggio che
+indica lo script giusto. Servono `pandas` e `matplotlib`; gli script di verifica
+invece usano solo la libreria standard.
 
 ---
 

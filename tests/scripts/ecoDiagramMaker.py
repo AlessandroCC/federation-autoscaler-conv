@@ -1,12 +1,21 @@
 #!/usr/bin/env python3
 """
 ecoDiagramMaker.py
-===================
+==================
 
-Aggregate per-Consumer carbon-intensity indicators over time from a
-comparative-eco `reservations.csv` log (see `tests/testlib/writer.go`,
-`ReservationRecord`), and render a thesis-ready step chart comparing the
-Random (Phase A) and Eco (Phase B) placement policies.
+Direct-comparison carbon-intensity chart for a comparative-eco run. Phase A
+(Random) and Phase B (Eco) are each measured from THEIR OWN start (elapsed
+minutes since that phase's first valid event), then plotted on the SAME X axis,
+so a viewer can compare "N minutes into the phase" directly between the two
+policies -- e.g. "at minute 5, was the federation greener under Random or under
+Eco?" -- instead of seeing them as two segments of one longer timeline.
+
+Each curve starts at its own X=0, so the dead time between the two phases never
+appears and there is nothing to remove or anchor.
+
+Its latency twin is latencyDiagramMaker.py, built the same way so the two thesis
+figures read side by side (it plots a mean rather than a sum; see its docstring
+for why).
 
 Generic by design: the number of Consumers is auto-detected from the CSV
 (nothing is hardcoded), so the exact same command works unchanged for every
@@ -20,10 +29,10 @@ experiment size, e.g.:
 Outputs (default: an `analysis/` directory next to the input file; override
 with --output-dir):
 
-    aggregate_carbon_intensity.png   -- 300+ DPI step chart
-    aggregate_carbon_intensity.pdf   -- vector version of the same chart
-    aggregate_carbon_intensity.csv   -- the underlying timeline data
-    carbon_summary.md                -- text summary + sanity-check warnings
+    carbon_intensity_comparison.png   -- 300+ DPI step chart, both policies overlaid
+    carbon_intensity_comparison.pdf   -- vector version of the same chart
+    carbon_intensity_comparison.csv   -- the underlying per-phase timeline data
+    carbon_summary.md                 -- text summary + sanity-check warnings
 
 Only `reservations.csv` is read; no other experiment output file is required.
 
@@ -62,7 +71,7 @@ REQUIRED_COLUMNS = [
 # The two phase labels this test harness always produces (testlib.PhaseA /
 # testlib.PhaseB). Hardcoding these two known literals is what lets phase
 # boundaries be "detected automatically from the phase column" without the
-# caller having to tell the script which timestamp the switch happened at.
+# caller having to tell the script which timestamp each phase started at.
 PHASE_A = "phase-a"
 PHASE_B = "phase-b"
 
@@ -71,11 +80,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog="ecoDiagramMaker.py",
         description=(
-            "Aggregate per-Consumer carbon-intensity indicators over time from a "
-            "comparative-eco reservations.csv log, and produce a thesis-ready step "
-            "chart comparing the Random (Phase A) and Eco (Phase B) placement "
-            "policies. Works unchanged for any experiment size -- the number of "
-            "Consumers is auto-detected from the CSV."
+            "Overlay Phase A (Random) and Phase B (Eco) on the SAME X axis -- "
+            "each measured as elapsed minutes since ITS OWN start -- for a direct, "
+            "point-by-point comparison between the two placement policies, instead "
+            "of plotting them sequentially on one shared timeline. Works unchanged "
+            "for any experiment size -- the number of Consumers is auto-detected "
+            "from the CSV."
         ),
         epilog=(
             "examples (identical command, only --input changes with scale):\n"
@@ -103,7 +113,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         choices=["regular", "events"],
         default="regular",
         help=(
-            "How to build the aggregation timeline. 'regular' (default) resamples "
+            "How to build each phase's own timeline. 'regular' (default) resamples "
             "onto an evenly spaced grid (see --grid-minutes); 'events' uses every "
             "distinct valid event timestamp instead, giving an exact step function "
             "at the cost of a less even spacing."
@@ -197,17 +207,6 @@ def phase_duration(df: pd.DataFrame, phase_value: str) -> pd.Timedelta | None:
     return ts.max() - ts.min()
 
 
-def detect_phase_transition(df: pd.DataFrame) -> pd.Timestamp | None:
-    """The Random-to-Eco switch instant: the first timestamp (in the RAW,
-    unfiltered data) at which Phase B activity appears. Using the raw data
-    rather than only valid rows means the boundary is correct even if the
-    very first Phase B attempt happened to fail."""
-    phase_b_ts = df.loc[df["phase"] == PHASE_B, "timestamp"]
-    if phase_b_ts.empty:
-        return None
-    return phase_b_ts.min()
-
-
 def phase_policy_name(df: pd.DataFrame, phase_value: str, default: str) -> str:
     """The policy name actually recorded for a phase (e.g. "Random", "Eco"),
     read from the data instead of hardcoded, so the chart/labels stay
@@ -277,21 +276,32 @@ def compute_aggregate(state: pd.DataFrame) -> pd.DataFrame:
     )
 
 
-def annotate_timeline(
-    timeline: pd.DataFrame,
-    transition_ts: pd.Timestamp | None,
-    t0: pd.Timestamp,
-    phase_a_label: str,
-    phase_b_label: str,
-) -> pd.DataFrame:
-    out = timeline.copy()
-    out["elapsed_minutes"] = (out["timestamp"] - t0).dt.total_seconds() / 60.0
-    if transition_ts is not None:
-        out["phase"] = [PHASE_A if t < transition_ts else PHASE_B for t in out["timestamp"]]
-    else:
-        out["phase"] = PHASE_A
-    out["policy"] = out["phase"].map({PHASE_A: phase_a_label, PHASE_B: phase_b_label})
-    return out[
+def build_phase_local_timeline(
+    valid: pd.DataFrame,
+    phase_value: str,
+    policy_label: str,
+    grid: str,
+    grid_minutes: float,
+) -> pd.DataFrame | None:
+    """Builds one phase's own aggregate timeline, measured from THAT PHASE's
+    own first valid event (elapsed_minutes == 0 there) instead of a timeline
+    shared with the other phase -- this is what makes the two curves overlay
+    for a direct comparison rather than sit end to end. Returns None if the
+    phase has no valid data at all."""
+    phase_valid = valid[valid["phase"] == phase_value]
+    if phase_valid.empty:
+        return None
+
+    wide = build_state_matrix(phase_valid)
+    t0_phase = wide.index.min()
+    target_index = build_timeline_index(wide, grid, grid_minutes)
+    state = resample_state(wide, target_index)
+
+    timeline = compute_aggregate(state)
+    timeline["elapsed_minutes"] = (timeline["timestamp"] - t0_phase).dt.total_seconds() / 60.0
+    timeline["phase"] = phase_value
+    timeline["policy"] = policy_label
+    return timeline[
         [
             "timestamp",
             "elapsed_minutes",
@@ -304,9 +314,9 @@ def annotate_timeline(
     ]
 
 
-def make_chart(
-    timeline: pd.DataFrame,
-    transition_min: float | None,
+def make_comparison_chart(
+    timeline_a: pd.DataFrame | None,
+    timeline_b: pd.DataFrame | None,
     subtitle: str,
     phase_a_label: str,
     phase_b_label: str,
@@ -329,54 +339,31 @@ def make_chart(
     )
     fig, ax = plt.subplots(figsize=(10, 5.5))
 
-    a = timeline[timeline["phase"] == PHASE_A]
-    b = timeline[timeline["phase"] == PHASE_B]
-    xmax = float(timeline["elapsed_minutes"].max())
-
-    if transition_min is not None:
-        ax.axvspan(0, transition_min, color="red", alpha=0.06, zorder=0)
-        ax.axvspan(transition_min, max(xmax, transition_min), color="green", alpha=0.06, zorder=0)
-        ax.axvline(
-            transition_min,
-            color="#333333",
-            linestyle="--",
-            linewidth=1.2,
-            label=f"Policy switch (t = {transition_min:.1f} min)",
-        )
-
-    if not a.empty:
-        seg_a = a
-        # Include Phase B's first point in the red segment too, purely for
-        # plotting, so the red step visually reaches the transition line
-        # instead of stopping one step short of it (the two colors then meet
-        # exactly at the switch instead of leaving a gap).
-        if transition_min is not None and not b.empty:
-            seg_a = pd.concat([a, b.iloc[[0]]], ignore_index=True)
+    if timeline_a is not None and not timeline_a.empty:
         ax.step(
-            seg_a["elapsed_minutes"],
-            seg_a["aggregate_carbon_intensity"],
+            timeline_a["elapsed_minutes"],
+            timeline_a["aggregate_carbon_intensity"],
             where="post",
             color="#c0392b",
             linewidth=1.8,
-            label=f"Phase A ({phase_a_label})",
+            label=f"{phase_a_label} (Phase A)",
         )
-
-    if not b.empty:
+    if timeline_b is not None and not timeline_b.empty:
         ax.step(
-            b["elapsed_minutes"],
-            b["aggregate_carbon_intensity"],
+            timeline_b["elapsed_minutes"],
+            timeline_b["aggregate_carbon_intensity"],
             where="post",
             color="#1e8449",
             linewidth=1.8,
-            label=f"Phase B ({phase_b_label})",
+            label=f"{phase_b_label} (Phase B)",
         )
 
-    ax.set_xlabel("Elapsed time [minutes]")
+    ax.set_xlabel("Elapsed time since phase start [minutes]")
     ax.set_ylabel("Sum of selected-provider carbon intensities [gCO2eq/kWh]")
     ax.set_xlim(left=0)
     ax.set_ylim(bottom=0)
 
-    fig.suptitle("Aggregate Carbon-Intensity Indicator Over Time", fontsize=13, fontweight="bold", y=0.98)
+    fig.suptitle("Carbon-Intensity Indicator by Policy — Direct Comparison", fontsize=13, fontweight="bold", y=0.98)
     ax.set_title(subtitle, fontsize=9.5, color="#555555", pad=10)
 
     ax.legend(loc="best", frameon=True, framealpha=0.9)
@@ -394,8 +381,6 @@ def write_summary(
     n_detected: int,
     valid_consumer_ids: list[str],
     missing_consumers: list[str],
-    t_first: pd.Timestamp,
-    t_last: pd.Timestamp,
     phase_a_label: str,
     phase_b_label: str,
     dur_a: pd.Timedelta | None,
@@ -430,8 +415,8 @@ def write_summary(
     mean_avg_b = timeline.loc[timeline["phase"] == PHASE_B, "average_carbon_intensity"].mean()
 
     warnings_lines: list[str] = []
-    min_active = int(timeline["active_consumers"].min())
-    max_active = int(timeline["active_consumers"].max())
+    min_active = int(timeline["active_consumers"].min()) if not timeline.empty else 0
+    max_active = int(timeline["active_consumers"].max()) if not timeline.empty else 0
     if min_active != max_active:
         warnings_lines.append(
             f"- Active Consumer count varied over the run: between {min_active} and "
@@ -448,12 +433,12 @@ def write_summary(
     grid_desc = f"regular ({grid_minutes:g} min spacing)" if grid_mode == "regular" else "events (exact timestamps)"
 
     lines = [
-        "# Carbon Intensity Analysis Summary\n\n",
+        "# Carbon Intensity Analysis Summary (direct policy comparison)\n\n",
+        "Phase A and Phase B are each measured from their own start and plotted on "
+        "the same X axis.\n\n",
         f"Input: `{input_path}`\n\n",
         f"- Detected Consumers: {n_detected}\n",
         f"- Consumers with at least one valid reservation: {len(valid_consumer_ids)}\n",
-        f"- First valid event: {t_first.isoformat()}\n",
-        f"- Last valid event: {t_last.isoformat()}\n",
         f"- Phase A ({phase_a_label}) duration: {fmt_td(dur_a)}\n",
         f"- Phase B ({phase_b_label}) duration: {fmt_td(dur_b)}\n",
         f"- Valid successful Peered reservation records: {n_valid}\n",
@@ -498,36 +483,30 @@ def main(argv: list[str] | None = None) -> None:
     n_detected = len(all_consumer_ids)
     missing_consumers = sorted(set(all_consumer_ids) - set(valid_consumer_ids))
 
-    transition_ts = detect_phase_transition(df)
-    t0 = valid["timestamp"].min()
-    t_last = valid["timestamp"].max()
-
     phase_a_label = phase_policy_name(df, PHASE_A, "Phase A")
     phase_b_label = phase_policy_name(df, PHASE_B, "Phase B")
 
-    wide = build_state_matrix(valid)
-    target_index = build_timeline_index(wide, args.grid, args.grid_minutes)
-    state = resample_state(wide, target_index)
-    timeline = compute_aggregate(state)
-    timeline = annotate_timeline(timeline, transition_ts, t0, phase_a_label, phase_b_label)
+    timeline_a = build_phase_local_timeline(valid, PHASE_A, phase_a_label, args.grid, args.grid_minutes)
+    timeline_b = build_phase_local_timeline(valid, PHASE_B, phase_b_label, args.grid, args.grid_minutes)
+    if timeline_a is None and timeline_b is None:
+        sys.exit("error: neither Phase A nor Phase B has any valid data to plot.")
 
-    transition_min = None
-    if transition_ts is not None:
-        transition_min = (transition_ts - t0).total_seconds() / 60.0
+    parts = [t for t in (timeline_a, timeline_b) if t is not None]
+    timeline = pd.concat(parts, ignore_index=True)
 
-    min_active = int(timeline["active_consumers"].min())
-    max_active = int(timeline["active_consumers"].max())
+    active_range = timeline["active_consumers"]
+    min_active, max_active = int(active_range.min()), int(active_range.max())
     if min_active == max_active:
         subtitle = f"Detected Consumers: {min_active}"
     else:
         subtitle = f"Active Consumers: {min_active}–{max_active} (of {n_detected} detected)"
 
-    png_out = output_dir / "aggregate_carbon_intensity.png"
-    pdf_out = output_dir / "aggregate_carbon_intensity.pdf"
-    csv_out = output_dir / "aggregate_carbon_intensity.csv"
+    png_out = output_dir / "carbon_intensity_comparison.png"
+    pdf_out = output_dir / "carbon_intensity_comparison.pdf"
+    csv_out = output_dir / "carbon_intensity_comparison.csv"
     summary_out = output_dir / "carbon_summary.md"
 
-    make_chart(timeline, transition_min, subtitle, phase_a_label, phase_b_label, png_out, pdf_out)
+    make_comparison_chart(timeline_a, timeline_b, subtitle, phase_a_label, phase_b_label, png_out, pdf_out)
 
     timeline_out = timeline.copy()
     timeline_out["timestamp"] = timeline_out["timestamp"].dt.strftime("%Y-%m-%dT%H:%M:%S.%f%z")
@@ -539,8 +518,6 @@ def main(argv: list[str] | None = None) -> None:
         n_detected=n_detected,
         valid_consumer_ids=valid_consumer_ids,
         missing_consumers=missing_consumers,
-        t_first=t0,
-        t_last=t_last,
         phase_a_label=phase_a_label,
         phase_b_label=phase_b_label,
         dur_a=phase_duration(df, PHASE_A),
