@@ -29,7 +29,7 @@ const earthRadiusKm = 6371.0
 // measured-RTT choice (applyLatencyTopN + internal/agent/consumer/latency);
 // distance is the coarse pre-filter, real RTT is the tiebreak.
 //
-// Exported for the ConsumerChoice end-to-end suite (tests/consumerchoice), which
+// Exported for the ConsumerChoice end-to-end suite (federation-tests/consumerchoice), which
 // judges proximity requests afterwards with the same figure the Latency policy
 // ranks on rather than a second implementation of it. The LLM itself is never
 // given a distance: it receives raw coordinates and works proximity out itself.

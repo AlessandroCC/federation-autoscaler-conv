@@ -69,7 +69,7 @@ retry() {
 # observed at ~50-cluster scale where the first install alone timed out.
 retry_liqo_install() {
   # max=2, not 3: each attempt can now run up to --timeout (20m), and this
-  # already nests inside retryDeploy's own 3 outer attempts (tests/testlib) —
+  # already nests inside retryDeploy's own 3 outer attempts (federation-tests/testlib) —
   # 3x3 at 20m each would let one stuck cluster stall for hours before the
   # run finally gives up on it.
   local max=2 sleep_s=15

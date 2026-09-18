@@ -20,14 +20,14 @@ go.work
 # Kubernetes Generated files - skip generated files, except for vendored files
 !vendor/**/zz_generated.*
 
-# Compiled test binaries (go build ./tests/comparative-*)
+# Compiled test binaries (go build ./federation-tests/comparative-*)
 /comparative-eco
 /comparative-latency
-tests/comparative-eco/comparative-eco
-tests/comparative-latency/comparative-latency
+federation-tests/comparative-eco/comparative-eco
+federation-tests/comparative-latency/comparative-latency
 # Test results generated inside test directories
-tests/comparative-eco/results/
-tests/comparative-latency/results/
+federation-tests/comparative-eco/results/
+federation-tests/comparative-latency/results/
 
 # Test results (generated per-run)
 results/
@@ -42,6 +42,6 @@ results/
 # local thesis drafts (source of truth is the Overleaf project)
 /thesis/
 
-# Python bytecode from the tests/scripts analysis tools
+# Python bytecode from the federation-tests/scripts analysis tools
 __pycache__/
 *.pyc

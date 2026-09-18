@@ -484,7 +484,7 @@ func (s *Server) handleProbe(w http.ResponseWriter, r *http.Request) {
 	// map it has already committed http.StatusOK via WriteHeader, so the
 	// failure just truncates the body to nothing instead of ever reaching
 	// the client as an error. Omit non-finite entries instead: callers
-	// already do a comma-ok map lookup (e.g. tests/comparative-latency
+	// already do a comma-ok map lookup (e.g. federation-tests/comparative-latency
 	// reading RTTs[Chosen]), so a missing key for "never answered" is
 	// already the expected, handled shape.
 	rtts := make(map[string]float64, len(result.RTTs))
@@ -696,7 +696,7 @@ func (s *Server) upsertConsumerPolicy(ctx context.Context, t autoscalingv1alpha1
 	if apierrors.IsNotFound(err) {
 		cp = autoscalingv1alpha1.ConsumerPolicy{
 			ObjectMeta: metav1.ObjectMeta{Name: consumerPolicyName, Namespace: s.ns},
-			Spec:       autoscalingv1alpha1.ConsumerPolicySpec{
+			Spec: autoscalingv1alpha1.ConsumerPolicySpec{
 				Placement:  autoscalingv1alpha1.PlacementPolicy{Type: t},
 				UserPrompt: userPrompt,
 			},

@@ -21,7 +21,7 @@ limitations under the License.
 //
 // It is used by the consumer role's localapi server when the active
 // ConsumerPolicy has placement type "ConsumerChoice", and by the ConsumerChoice
-// end-to-end suite (tests/consumerchoice), which drives the same selector so
+// end-to-end suite (federation-tests/consumerchoice), which drives the same selector so
 // that what it validates is the shipped decision logic rather than a copy. It
 // never contacts the Broker or any external service -- only the Ollama
 // endpoint it is given.
