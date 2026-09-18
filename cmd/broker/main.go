@@ -72,6 +72,7 @@ func main() {
 		apiShutdownTimeout   time.Duration
 		apiNamespace         string
 		reservationTimeout   time.Duration
+		gkResyncInterval     time.Duration
 		dashboardBindAddress string
 	)
 	flag.StringVar(&apiBindAddress, "api-bind-address", ":8443",
@@ -90,6 +91,12 @@ func main() {
 		"Deadline stamped on a new Reservation's ExpiresAt. A non-renewed reservation past this "+
 			"is moved to Expired. v1 has no renewal, so keep this longer than any workload that "+
 			"holds borrowed capacity (the old 15m value force-expired active reservations).")
+	flag.DurationVar(&gkResyncInterval, "gk-resync-interval", brokercontroller.DefaultGKResyncInterval,
+		"How often a Reservation parked in GeneratingKubeconfig re-checks for the shared "+
+			"peering-user Secret. Only affects FAN-OUT: the reservation that issued the "+
+			"GenerateKubeconfig is advanced directly by the result handler, while siblings "+
+			"that raced past the fast-path poll on this interval instead. Also floors the "+
+			"terminal-reservation GC requeue.")
 	flag.StringVar(&dashboardBindAddress, "dashboard-bind-address", ":9444",
 		"host:port for the read-only, plain-HTTP broker dashboard listener (no mTLS). Empty disables it.")
 
@@ -117,6 +124,7 @@ func main() {
 		Client:             mgr.GetClient(),
 		Scheme:             mgr.GetScheme(),
 		ReservationTimeout: reservationTimeout,
+		GKResyncInterval:   gkResyncInterval,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "Reservation")
 		os.Exit(1)

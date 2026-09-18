@@ -1,0 +1,56 @@
+---
+# Points k3s's containerd at a plain-HTTP registry mirror.
+#
+# Why this is a role and not a one-off ssh: `k3s-uninstall.sh` (which
+# 04-teardown runs) deletes /etc/rancher/k3s entirely, so a hand-written
+# registries.yaml disappears on the first teardown → bootstrap cycle and the
+# next deploy silently falls back to trying Docker Hub. Re-applying it from
+# the playbook keeps the lab reproducible across wipes.
+#
+# Ordering matters: this runs BEFORE k3s_install in 01-bootstrap, so a fresh
+# node reads the file at first start and no restart is needed. On a node where
+# k3s is already running, the handler restarts it — containerd only reads
+# registries.yaml at startup.
+#
+# No-op unless k3s_registry_mirror is set (see defaults/main.yaml), so the
+# Docker Hub path is untouched.
+
+- name: Configure a plain-HTTP registry mirror for k3s
+  when: k3s_registry_mirror | length > 0
+  become: true
+  block:
+
+    - name: Ensure /etc/rancher/k3s exists
+      ansible.builtin.file:
+        path: /etc/rancher/k3s
+        state: directory
+        mode: '0755'
+
+    # `endpoint` with an http:// scheme is what makes containerd skip TLS for
+    # this host — there is no separate "insecure" flag in k3s's registries.yaml
+    # for the mirror case.
+    - name: Write registries.yaml
+      ansible.builtin.copy:
+        dest: /etc/rancher/k3s/registries.yaml
+        mode: '0644'
+        content: |
+          # Managed by federation-autoscaler deploy/ansible/roles/k3s_registry.
+          mirrors:
+            "{{ k3s_registry_mirror }}":
+              endpoint:
+                - "http://{{ k3s_registry_mirror }}"
+      notify: Restart k3s if running
+
+    - name: Verify the registry answers from this node
+      ansible.builtin.uri:
+        url: "http://{{ k3s_registry_mirror }}/v2/"
+        status_code: [200, 401]
+        timeout: 10
+      register: registry_probe
+      retries: 3
+      delay: 5
+      until: registry_probe is succeeded
+
+    - name: "[{{ cluster_id | default(inventory_hostname) }}] registry mirror reachable"
+      ansible.builtin.debug:
+        msg: "{{ k3s_registry_mirror }} reachable from {{ cluster_id | default(inventory_hostname) }}"

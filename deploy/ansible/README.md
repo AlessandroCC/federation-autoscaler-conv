@@ -160,7 +160,7 @@ lock onto a time source. The demo itself doesn't care, but every measurement
 does: a scale-up phase typically starts from a timestamp written by one
 cluster's apiserver and ends at one written by another's, so unsynchronised
 clocks don't add noise — they add a constant error. `03-verify` prints each
-host's offset. See `deploy/bench/` for the benchmark harness that depends on
+host's offset. See `~/projects/federation-autoscaler-evaluation/` for the benchmark harness that depends on
 this.
 
 Sanity check:

@@ -1,0 +1,10 @@
+---
+# Defaults for the k3s_registry role.
+
+# Host:port of a container registry that k3s should reach over plain HTTP,
+# e.g. "192.168.122.1:5000" for a registry running on the KVM host and
+# reached across the libvirt NAT bridge.
+#
+# Empty (the default) makes this role a no-op, so a deployment that pulls
+# from Docker Hub is completely unaffected.
+k3s_registry_mirror: ""

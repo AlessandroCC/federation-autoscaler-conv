@@ -55,8 +55,14 @@ import (
 )
 
 // DefaultPollStaleAfter is the readiness threshold for the poll loop.
-// 30 s ≈ 6 missed polls at the 5 s default cadence — long enough to
-// absorb a broker restart, short enough to fail fast on a hard outage.
+// 30 s is long enough to absorb a broker restart, short enough to fail fast on
+// a hard outage.
+//
+// Deliberately NOT expressed as a multiple of the poll interval: cmd/agent
+// sizes the real window off the role's own slowest broker contact (2x heartbeat
+// for a consumer, 3x advertisement for a provider), because any successful
+// contact refreshes the gate. At the tuned 1 s poll this default would be 30
+// missed polls, which is why it is not derived from that number.
 const DefaultPollStaleAfter = 30 * time.Second
 
 // DefaultMaxHandlerInFlight bounds how long a single in-flight instruction

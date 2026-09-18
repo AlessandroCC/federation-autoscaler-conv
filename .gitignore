@@ -45,3 +45,7 @@ results/
 # Python bytecode from the federation-tests/scripts analysis tools
 __pycache__/
 *.pyc
+
+# Per-deployment Ansible inventory (VM addresses, registry, image tag).
+# inventory.yaml.example is the committed template.
+deploy/ansible/inventory.yaml

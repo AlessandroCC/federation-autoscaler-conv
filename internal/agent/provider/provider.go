@@ -117,6 +117,15 @@ type Options struct {
 	// probe endpoint. 0 ⇒ advertise no probe endpoint (see advertise.Options).
 	ProbeUDPPort int
 
+	// AdvertisementInterval overrides advertise.DefaultInterval (30 s). Exposed
+	// so the cadence can be swept without a rebuild. Two couplings to respect:
+	// the agent's readiness window is sized off it in cmd/agent, and the
+	// BROKER's staleness threshold (DefaultAdvertisementStaleAfter, 90 s) is a
+	// separate literal that does NOT follow it — raise this past 30 s and
+	// providers start flipping unavailable between publishes.
+	// Zero uses the package default.
+	AdvertisementInterval time.Duration
+
 	// ConsoleAddr is the address the (plain-HTTP, unauthenticated) config
 	// console binds to, e.g. ":9095". Empty disables the console. This is the
 	// provider role's only HTTP server; it lets an operator set this provider's
@@ -189,6 +198,7 @@ func Run(ctx context.Context, opts Options) error {
 		MockGeoURL:    opts.MockGeoURL,
 		EcoCacheTTL:   opts.EcoCacheTTL,
 		ProbeUDPPort:  opts.ProbeUDPPort,
+		Interval:      opts.AdvertisementInterval,
 		Logger:        logger.WithName("advertise"),
 		// The probe's poll-staleness gate is a "broker reachability"
 		// signal in practice, so a successful advertisement also

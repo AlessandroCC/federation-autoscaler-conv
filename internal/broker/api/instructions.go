@@ -21,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -147,14 +148,45 @@ func (s *Server) collectInstructionsForCaller(
 	return out, nil
 }
 
+// deliveryTouchInterval bounds how often LastDeliveredAt is refreshed for an
+// instruction that keeps being redelivered.
+//
+// Without a bound, this write is the single most expensive consequence of a
+// short poll interval — and it is pure waste. An instruction stays un-Enforced
+// until its result lands, so every poll in that window rewrote its status
+// unconditionally: one apiserver write, one new resourceVersion, and one watch
+// event per poll per pending instruction. Neither instruction reconciler uses
+// an event predicate, so each of those events also enqueued a reconcile of the
+// instruction AND (for owned instructions) of the parent Reservation, which
+// itself lists every Reservation in the namespace. Halving the poll interval
+// doubled all of it.
+//
+// 30 s decouples that cost from the poll interval entirely: the write rate is
+// now bounded by this constant no matter how fast agents poll. The field's
+// purpose is observability — "has this been transmitted, and roughly when" —
+// which a 30 s granularity serves just as well. Nothing branches on it.
+const deliveryTouchInterval = 30 * time.Second
+
+// deliveryTouchDue reports whether LastDeliveredAt is worth rewriting: either
+// this is the first delivery, or the recorded one has gone stale.
+func deliveryTouchDue(last *metav1.Time, now metav1.Time) bool {
+	return last == nil || now.Sub(last.Time) >= deliveryTouchInterval
+}
+
 // touchInstructionDelivered best-effort updates LastDeliveredAt so the
 // Broker can observe that the instruction has been transmitted at least
 // once. A failed write is non-fatal; the next poll will re-try.
+//
+// Rate-limited by deliveryTouchInterval — see the constant for why that matters
+// more than it looks.
 func (s *Server) touchInstructionDelivered(ctx context.Context, obj client.Object) {
 	now := metav1.Now()
 
 	switch o := obj.(type) {
 	case *autoscalingv1alpha1.ProviderInstruction:
+		if !deliveryTouchDue(o.Status.LastDeliveredAt, now) {
+			return
+		}
 		patched := o.DeepCopy()
 		patched.Status.LastDeliveredAt = &now
 		if err := s.client.Status().Update(ctx, patched); err != nil {
@@ -162,6 +194,9 @@ func (s *Server) touchInstructionDelivered(ctx context.Context, obj client.Objec
 				"name", o.Name, "err", err.Error())
 		}
 	case *autoscalingv1alpha1.ReservationInstruction:
+		if !deliveryTouchDue(o.Status.LastDeliveredAt, now) {
+			return
+		}
 		patched := o.DeepCopy()
 		patched.Status.LastDeliveredAt = &now
 		if err := s.client.Status().Update(ctx, patched); err != nil {

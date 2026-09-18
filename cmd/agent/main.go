@@ -79,29 +79,31 @@ func init() {
 // nolint:gocyclo
 func main() {
 	var (
-		role            string
-		clusterID       string
-		liqoClusterID   string
-		brokerURL       string
-		clientCertPath  string
-		clientKeyPath   string
-		brokerCAPath    string
-		pollInterval    time.Duration
-		localAPIAddr    string
-		consoleAddr     string
-		healthProbeAddr string
-		namespace       string
-		priceFile       string
-		capacityFile    string
-		renewableFile   string
-		advertisedIP    string
-		mockEcoURL      string
-		ecoCacheTTL     time.Duration
-		mockGeoURL      string
-		probeUDPPort    int
-		ollamaURL       string
-		ollamaModel     string
-		ollamaTimeout   time.Duration
+		role                  string
+		clusterID             string
+		liqoClusterID         string
+		brokerURL             string
+		clientCertPath        string
+		clientKeyPath         string
+		brokerCAPath          string
+		pollInterval          time.Duration
+		heartbeatInterval     time.Duration
+		advertisementInterval time.Duration
+		localAPIAddr          string
+		consoleAddr           string
+		healthProbeAddr       string
+		namespace             string
+		priceFile             string
+		capacityFile          string
+		renewableFile         string
+		advertisedIP          string
+		mockEcoURL            string
+		ecoCacheTTL           time.Duration
+		mockGeoURL            string
+		probeUDPPort          int
+		ollamaURL             string
+		ollamaModel           string
+		ollamaTimeout         time.Duration
 	)
 
 	flag.StringVar(&role, "role", "",
@@ -118,8 +120,21 @@ func main() {
 		"Path to the agent's mTLS client key (PEM).")
 	flag.StringVar(&brokerCAPath, "broker-ca", "",
 		"Path to the CA bundle that signs the Broker's server certificate (PEM).")
-	flag.DurationVar(&pollInterval, "poll-interval", 5*time.Second,
-		"Interval between GET /api/v1/instructions polls against the Broker.")
+	flag.DurationVar(&pollInterval, "poll-interval", poller.DefaultInterval,
+		"Interval between GET /api/v1/instructions polls against the Broker. "+
+			"This is the dominant latency knob: a work order waits on average "+
+			"half this long before the agent picks it up, and a cold scale-up "+
+			"pays that twice (provider hop, then consumer hop).")
+	flag.DurationVar(&heartbeatInterval, "heartbeat-interval", heartbeat.DefaultInterval,
+		"(consumer role only) Interval between POST /api/v1/heartbeat calls. Also "+
+			"the propagation delay for a ConsumerPolicy change, and the agent's "+
+			"readiness window is sized at 2x this value.")
+	flag.DurationVar(&advertisementInterval, "advertisement-interval", advertise.DefaultInterval,
+		"(provider role only) Interval between POST /api/v1/advertisements calls. "+
+			"The readiness window is sized at 3x this value. Do NOT raise it above "+
+			"30s without also raising the Broker's advertisement-staleness threshold "+
+			"(90s, a separate compile-time constant) or providers will flip "+
+			"unavailable between publishes.")
 	flag.StringVar(&localAPIAddr, "local-api-bind-address", "127.0.0.1:9090",
 		"(consumer role only) Address the loopback REST API binds to; consumed by the local gRPC server.")
 	flag.StringVar(&consoleAddr, "console-bind-address", "",
@@ -209,6 +224,8 @@ func main() {
 		"liqoClusterID", liqoClusterID,
 		"brokerURL", brokerURL,
 		"pollInterval", pollInterval,
+		"heartbeatInterval", heartbeatInterval,
+		"advertisementInterval", advertisementInterval,
 		"nodeName", nodeName,
 		"advertisedIP", advertisedIP)
 
@@ -249,9 +266,13 @@ func main() {
 	// zero margin — a single slow advertisement trips it — so size the
 	// window off the role's own cadence. The consumer keeps the historical
 	// 30 s (2 beats); the provider gets 3 publishes of slack.
-	staleAfter := 2 * heartbeat.DefaultInterval // consumer: 30 s, unchanged
+	// Derived from the CONFIGURED cadence, not the package defaults: the
+	// intervals are now flags, and a window sized off a constant the operator
+	// just overrode would either flap (cadence raised) or lose its slack
+	// (cadence lowered).
+	staleAfter := 2 * heartbeatInterval // consumer: 2 beats
 	if role == roleProvider {
-		staleAfter = 3 * advertise.DefaultInterval // provider: 90 s
+		staleAfter = 3 * advertisementInterval // provider: 3 publishes
 	}
 	probe := health.New(health.Options{PollStaleAfter: staleAfter})
 
@@ -292,45 +313,47 @@ func main() {
 	switch role {
 	case roleConsumer:
 		if err := consumer.Run(ctx, consumer.Options{
-			Client:        brokerClient,
-			Registry:      registry,
-			LocalClient:   localClient,
-			ClusterID:     clusterID,
-			LiqoClusterID: liqoClusterID,
-			LocalAPIAddr:  localAPIAddr,
-			ConsoleAddr:   consoleAddr,
-			OllamaURL:     ollamaURL,
-			OllamaModel:   ollamaModel,
-			OllamaTimeout: ollamaTimeout,
-			Namespace:     namespace,
-			NodeName:      nodeName,
-			AdvertisedIP:  advertisedIP,
-			MockGeoURL:    mockGeoURL,
-			Logger:        ctrl.Log.WithName("consumer"),
-			Probe:         probe,
+			Client:            brokerClient,
+			Registry:          registry,
+			LocalClient:       localClient,
+			ClusterID:         clusterID,
+			LiqoClusterID:     liqoClusterID,
+			LocalAPIAddr:      localAPIAddr,
+			HeartbeatInterval: heartbeatInterval,
+			ConsoleAddr:       consoleAddr,
+			OllamaURL:         ollamaURL,
+			OllamaModel:       ollamaModel,
+			OllamaTimeout:     ollamaTimeout,
+			Namespace:         namespace,
+			NodeName:          nodeName,
+			AdvertisedIP:      advertisedIP,
+			MockGeoURL:        mockGeoURL,
+			Logger:            ctrl.Log.WithName("consumer"),
+			Probe:             probe,
 		}); err != nil {
 			setupLog.Error(err, "failed to bootstrap consumer role")
 			os.Exit(1)
 		}
 	case roleProvider:
 		if err := provider.Run(ctx, provider.Options{
-			Client:        brokerClient,
-			Registry:      registry,
-			LocalClient:   localClient,
-			ClusterID:     clusterID,
-			LiqoClusterID: liqoClusterID,
-			PriceFile:     priceFile,
-			CapacityFile:  capacityFile,
-			RenewableFile: renewableFile,
-			NodeName:      nodeName,
-			AdvertisedIP:  advertisedIP,
-			MockEcoURL:    mockEcoURL,
-			EcoCacheTTL:   ecoCacheTTL,
-			MockGeoURL:    mockGeoURL,
-			ProbeUDPPort:  probeUDPPort,
-			ConsoleAddr:   consoleAddr,
-			Logger:        ctrl.Log.WithName("provider"),
-			Probe:         probe,
+			Client:                brokerClient,
+			Registry:              registry,
+			LocalClient:           localClient,
+			ClusterID:             clusterID,
+			LiqoClusterID:         liqoClusterID,
+			PriceFile:             priceFile,
+			CapacityFile:          capacityFile,
+			RenewableFile:         renewableFile,
+			NodeName:              nodeName,
+			AdvertisedIP:          advertisedIP,
+			MockEcoURL:            mockEcoURL,
+			EcoCacheTTL:           ecoCacheTTL,
+			MockGeoURL:            mockGeoURL,
+			ProbeUDPPort:          probeUDPPort,
+			AdvertisementInterval: advertisementInterval,
+			ConsoleAddr:           consoleAddr,
+			Logger:                ctrl.Log.WithName("provider"),
+			Probe:                 probe,
 		}); err != nil {
 			setupLog.Error(err, "failed to bootstrap provider role")
 			os.Exit(1)

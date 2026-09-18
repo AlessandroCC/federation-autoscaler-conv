@@ -75,6 +75,12 @@ type ReservationReconciler struct {
 	// as a test hook.
 	TerminalTTL time.Duration
 
+	// GKResyncInterval is how often a Reservation parked in
+	// GeneratingKubeconfig re-checks for the shared kubeconfig Secret. Zero
+	// falls back to DefaultGKResyncInterval. Exposed as a flag so the fan-out
+	// path can be swept without a rebuild.
+	GKResyncInterval time.Duration
+
 	// ReservationTimeout is how long after creation a Reservation may run
 	// before the reconciler moves it to Expired. The API create handler
 	// stamps Status.ExpiresAt, but only best-effort — that write can lose a
@@ -258,9 +264,23 @@ func (r *ReservationReconciler) handlePending(
 // GeneratingKubeconfig → KubeconfigReady (sibling fast-forward)
 // -----------------------------------------------------------------------------
 
-// gkResyncInterval is how often a Reservation parked in
-// GeneratingKubeconfig re-checks for the shared kubeconfig Secret.
-const gkResyncInterval = 5 * time.Second
+// DefaultGKResyncInterval is how often a Reservation parked in
+// GeneratingKubeconfig re-checks for the shared kubeconfig Secret when
+// ReservationReconciler.GKResyncInterval is unset.
+//
+// This only bites on a FAN-OUT: the reservation that issued the
+// GenerateKubeconfig is advanced directly by the API result handler, while
+// siblings that raced past the fast-path have no instruction of their own and
+// poll here instead. It is also the floor on the terminal-GC requeue below.
+const DefaultGKResyncInterval = 5 * time.Second
+
+// gkResync resolves GKResyncInterval against its default.
+func (r *ReservationReconciler) gkResync() time.Duration {
+	if r.GKResyncInterval > 0 {
+		return r.GKResyncInterval
+	}
+	return DefaultGKResyncInterval
+}
 
 // handleGeneratingKubeconfig advances a Reservation to KubeconfigReady
 // as soon as the shared (consumer, provider) kubeconfig Secret exists.
@@ -281,7 +301,7 @@ func (r *ReservationReconciler) handleGeneratingKubeconfig(
 	}
 	if !exists {
 		// Credential not ready yet; check back shortly.
-		return ctrl.Result{RequeueAfter: gkResyncInterval}, nil
+		return ctrl.Result{RequeueAfter: r.gkResync()}, nil
 	}
 	if err := r.advancePhase(ctx, resv, brokerv1alpha1.ReservationPhaseKubeconfigReady,
 		"peering-user kubeconfig delivered"); err != nil {
@@ -431,8 +451,8 @@ func (r *ReservationReconciler) handleTerminal(
 	// Come back to collect once the TTL elapses (floored at the short
 	// resync so a sibling-deferred pass still re-checks promptly).
 	gcRequeue := ttl - time.Since(resv.Status.TerminatedAt.Time)
-	if gcRequeue < gkResyncInterval {
-		gcRequeue = gkResyncInterval
+	if gcRequeue < r.gkResync() {
+		gcRequeue = r.gkResync()
 	}
 
 	// Release the reservation's chunk count back to the provider's
@@ -482,7 +502,7 @@ func (r *ReservationReconciler) handleTerminal(
 	if others {
 		log.V(1).Info("peering-user still in use by a sibling reservation; deferring cleanup",
 			"provider", resv.Spec.ProviderClusterID, "consumer", resv.Spec.ConsumerClusterID)
-		return ctrl.Result{RequeueAfter: gkResyncInterval}, nil
+		return ctrl.Result{RequeueAfter: r.gkResync()}, nil
 	}
 
 	if err := r.ensureProviderCleanupInstruction(ctx, resv); err != nil {
@@ -672,7 +692,38 @@ func (r *ReservationReconciler) ensureInstruction(
 		}
 		return err
 	}
+	logInstructionQueued(ctx, instruction)
 	return nil
+}
+
+// logInstructionQueued marks the instant a work order becomes fetchable.
+//
+// This is the start of every poll wait, and it is the only reliable marker for
+// one: phase transitions do not cover it. Some transitions are made by the API
+// result handler rather than this reconciler (Peering→Peered, Unpeering→
+// Released), and the Unpeer instruction is queued while the Reservation is
+// ALREADY in Unpeering, so no transition marks it at all. Pairing this with the
+// agent's "instruction.received" gives poll wait directly, per instruction,
+// without inferring anything from the phase machine.
+//
+// Status.IssuedAt is not a substitute: it is stamped by the instruction
+// reconciler on first observation, i.e. after this point, and metav1.Time is
+// second-resolution.
+func logInstructionQueued(ctx context.Context, instruction client.Object) {
+	var kind, reservationID string
+	switch o := instruction.(type) {
+	case *autoscalingv1alpha1.ProviderInstruction:
+		kind, reservationID = string(o.Spec.Kind), o.Spec.ReservationID
+	case *autoscalingv1alpha1.ReservationInstruction:
+		kind, reservationID = string(o.Spec.Kind), o.Spec.ReservationID
+	default:
+		return
+	}
+	logf.FromContext(ctx).Info("timing",
+		"event", "instruction.queued",
+		"instructionId", instruction.GetName(),
+		"kind", kind,
+		"reservationId", reservationID)
 }
 
 // ensureSharedInstruction creates an instruction with NO controller-owner
@@ -700,6 +751,7 @@ func (r *ReservationReconciler) ensureSharedInstruction(
 ) error {
 	err := r.Create(ctx, instruction)
 	if err == nil {
+		logInstructionQueued(ctx, instruction)
 		return nil
 	}
 	if !apierrors.IsAlreadyExists(err) {
@@ -729,7 +781,13 @@ func (r *ReservationReconciler) ensureSharedInstruction(
 	existing.Status.LastUpdateTime = &now
 	existing.Status.LastDeliveredAt = nil
 	existing.Status.Message = "re-armed for a new (consumer, provider) cycle"
-	return r.Status().Update(ctx, &existing)
+	if err := r.Status().Update(ctx, &existing); err != nil {
+		return err
+	}
+	// A re-arm makes an existing instruction fetchable again, so it starts a
+	// poll wait exactly as a fresh Create does.
+	logInstructionQueued(ctx, &existing)
+	return nil
 }
 
 // kubeconfigSecretExists reports whether the shared (consumer, provider)
@@ -863,7 +921,7 @@ func (r *ReservationReconciler) advancePhase(
 	// (GeneratingKubeconfig, Peering, Unpeering) is unrecoverable once a run
 	// is over. This line is the only durable record of when the machine
 	// moved, at the millisecond resolution the sub-second broker steps need;
-	// deploy/bench reconstructs the scale-up / scale-down timeline from it.
+	// The benchmark harness reconstructs the scale-up / scale-down timeline from it.
 	logf.FromContext(ctx).Info("timing",
 		"event", "reservation.phase",
 		"reservation", resv.Name,

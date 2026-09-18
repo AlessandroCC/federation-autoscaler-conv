@@ -32,12 +32,12 @@ import (
 // one-second resolution — so a cold `liqoctl peer` shows up as one opaque
 // 40-90 s block, and the sub-second steps bracketing it cannot be resolved at
 // all. These lines carry the agent's own millisecond clock, and
-// deploy/bench/collect-run.sh merges them with the broker's to reconstruct a
+// The benchmark harness's collect-run.sh merges them with the broker's to reconstruct a
 // full scale-up / scale-down timeline.
 //
 // The shape is load-bearing: message "timing", key "event" holding
 // "<handler>.<step>", and "elapsedMs" holding an integer millisecond count.
-// deploy/bench parses on exactly that, so extend the key set rather than
+// the harness parses on exactly that, so extend the key set rather than
 // renaming what is already there.
 func logStep(logger logr.Logger, handler, step string, start time.Time) {
 	logger.Info("timing",

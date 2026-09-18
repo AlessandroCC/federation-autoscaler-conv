@@ -202,8 +202,11 @@ func (s *Server) ClusterIDMiddleware(next http.Handler) http.Handler {
 // -----------------------------------------------------------------------------
 
 // RateLimitConfig tunes the token bucket applied per cluster ID. Defaults
-// follow docs/design.md §7.3.6: 10 burst tokens, 5 sustained tokens/sec —
-// enough for the 5 s instruction poll plus occasional bursts (heartbeat,
+// follow docs/design.md §7.3.6: 10 burst tokens, 5 sustained tokens/sec.
+// At the tuned 1 s poll an agent draws ~1 req/s of its 5 req/s budget; the
+// bucket only binds below roughly a 200 ms poll interval, and no 429 was
+// observed in 115 benchmark runs down to 250 ms. Sized for the instruction
+// poll plus occasional bursts (heartbeat,
 // reservation), tight enough to throttle a misbehaving agent.
 type RateLimitConfig struct {
 	BurstTokens int     // bucket size
