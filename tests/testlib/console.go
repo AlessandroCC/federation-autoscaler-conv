@@ -52,6 +52,90 @@ func (cc *ConsoleClient) SetPolicy(ctx context.Context, policyType string) error
 	return cc.post(ctx, "/api/policy", body)
 }
 
+// SetPolicyWithPrompt is SetPolicy for policies that carry a natural-language
+// request (ConsumerChoice). It must be used for them rather than SetPolicy: the
+// console overwrites spec.userPrompt on every POST, so a type-only POST would
+// wipe the prompt instead of leaving it alone.
+func (cc *ConsoleClient) SetPolicyWithPrompt(ctx context.Context, policyType, userPrompt string) error {
+	body := map[string]string{"type": policyType, "userPrompt": userPrompt}
+	return cc.post(ctx, "/api/policy", body)
+}
+
+// ConsumerState is the part of the consumer console's GET /api/state that the
+// harnesses read. Policy is a plain string on the wire.
+type ConsumerState struct {
+	ClusterID          string              `json:"clusterId"`
+	Policy             string              `json:"policy"`
+	UserPrompt         string              `json:"userPrompt,omitempty"`
+	Region             string              `json:"region"`
+	Location           *ConsumerLocation   `json:"location,omitempty"`
+	ManualReservations []ManualReservation `json:"manualReservations"`
+}
+
+// ManualReservation is one console-managed ResourceRequest as /api/state lists
+// it. Phase is the ResourceRequest phase: Pending, Reserved, Active (the
+// borrowed virtual node exists), Migrating or Failed.
+type ManualReservation struct {
+	Name     string `json:"name"`
+	Phase    string `json:"phase,omitempty"`
+	Provider string `json:"provider,omitempty"`
+	Chunks   int32  `json:"chunks,omitempty"`
+	Message  string `json:"message,omitempty"`
+}
+
+// ApplyManualReservation asks the consumer for capacity through the console
+// (POST /api/reservation, action apply), exactly as an operator would. The
+// consumer's manual-reservation controller then picks the provider through the
+// agent's local API -- the path the placement policy acts on -- and reserves it.
+func (cc *ConsoleClient) ApplyManualReservation(ctx context.Context, cpu, memory string) error {
+	body := map[string]string{"action": "apply", "cpu": cpu, "memory": memory}
+	return cc.post(ctx, "/api/reservation", body)
+}
+
+// ReleaseManualReservation releases a console-managed reservation by name.
+func (cc *ConsoleClient) ReleaseManualReservation(ctx context.Context, name string) error {
+	body := map[string]string{"action": "delete", "name": name}
+	return cc.post(ctx, "/api/reservation", body)
+}
+
+// ConsumerLocation is the consumer's auto-discovered location: the same one its
+// agent heartbeats to the Broker, and so the one the Broker's distance-based
+// logic uses. Lat and Lon are zero when the geo lookup did not succeed.
+type ConsumerLocation struct {
+	IP     string  `json:"ip,omitempty"`
+	Region string  `json:"region,omitempty"`
+	City   string  `json:"city,omitempty"`
+	Lat    float64 `json:"lat,omitempty"`
+	Lon    float64 `json:"lon,omitempty"`
+}
+
+// HasCoordinates reports whether the geo lookup produced a usable position.
+func (l *ConsumerLocation) HasCoordinates() bool {
+	return l != nil && (l.Lat != 0 || l.Lon != 0)
+}
+
+// State reads GET /api/state.
+func (cc *ConsoleClient) State(ctx context.Context) (*ConsumerState, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, cc.BaseURL+"/api/state", nil)
+	if err != nil {
+		return nil, fmt.Errorf("build state request: %w", err)
+	}
+	resp, err := cc.HTTPClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("GET /api/state: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("GET /api/state returned %d: %s", resp.StatusCode, string(body))
+	}
+	var state ConsumerState
+	if err := json.NewDecoder(resp.Body).Decode(&state); err != nil {
+		return nil, fmt.Errorf("decode /api/state: %w", err)
+	}
+	return &state, nil
+}
+
 // ProbeRequest is the body sent to POST /api/probe.
 type ProbeRequest struct {
 	Candidates []ProbeCandidate `json:"candidates"`

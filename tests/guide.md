@@ -16,6 +16,7 @@ l'intero giro, e nel caso normale l'unica cosa che tocchi è un file YAML in
 |---|---|
 | `comparative-eco/` | Harness del test Random vs Eco (carbon intensity) |
 | `comparative-latency/` | Harness del test Random vs Latency (RTT) |
+| `consumerchoice/` | Validazione end-to-end di ConsumerChoice: la scelta del provider la fa un LLM locale (Ollama). Ha un suo README |
 | `configs/` | I file YAML che descrivono gli esperimenti — **è qui che lavori** |
 | `testlib/` | Libreria condivisa: orchestrazione, deploy, client, scrittura CSV |
 | `scripts/` | Script Python di analisi e verifica dei risultati |
@@ -119,6 +120,13 @@ risultati e distrugge tutto.
 | `--skip-build` | Non ricostruisce le immagini Docker | Dalla seconda run in poi, se non hai toccato il codice Go — risparmia parecchi minuti |
 | `--keep-clusters` | Non distrugge i cluster a fine run | Debug: puoi entrare con `kubectl` a guardare cosa è successo |
 | `--run-id` | Forza il RunID invece di generarlo | Rarissimo. **Attenzione**: il RunID è il seme del replay, quindi due run con lo stesso `--run-id` vedono la stessa identica sequenza di condizioni |
+
+> **Attenzione a `--skip-build` dopo un aggiornamento del codice.** I manifest vengono
+> sempre presi dal repository, le immagini no. Il manifest del consumer ora passa all'agent
+> i flag `--ollama-url/--ollama-model/--ollama-timeout`: un'immagine dell'agent costruita
+> prima di questo cambiamento non li conosce e l'agent non parte. Dopo aver aggiornato il
+> repository, la prima run di **qualsiasi** test (eco, latency, consumerchoice) va fatta
+> senza `--skip-build`.
 
 ### Quanto dura
 
@@ -402,6 +410,19 @@ clusters` e cancellali con `kind delete cluster --name <nome>`.
 **Il deploy va in timeout.** Alza `infra.readinessTimeout` (default 10 min). Su una
 macchina carica o con molti agenti può volerci di più.
 
+**Il build delle immagini fallisce in `go mod download`** con un errore di DNS
+(`lookup proxy.golang.org … i/o timeout`). Su alcuni server i container Docker non
+risolvono i nomi, mentre l'host sì. Di solito non te ne accorgi, perché il build riusa i
+moduli già scaricati; il problema compare quando cambia `go.mod`. Rilancia costruendo con
+la rete dell'host:
+
+```bash
+DOCKER_BUILD_FLAGS=--network=host go run ./tests/comparative-eco/ --config tests/configs/eco-test.yaml
+```
+
+Vale per tutti i test, consumerchoice compreso. Per lo stesso motivo non lanciare
+`go mod tidy` senza un motivo reale: anche solo riordinare `go.mod` invalida quella cache.
+
 ---
 
 ## 10. Cose che è utile sapere prima di interpretare i risultati
@@ -422,3 +443,35 @@ giro e l'altro le due curve possono discostarsi: è atteso.
 **Il numero finale si muove tra una run e l'altra.** Con ~30 condizioni per fase,
 la media della fase Random è stimata su un campione limitato. L'ordine di grandezza
 del miglioramento è stabile; la cifra esatta no.
+
+---
+
+## 11. Il test ConsumerChoice
+
+`tests/consumerchoice/` non è un confronto a due fasi: verifica che la policy
+ConsumerChoice funzioni da capo a fondo. La Broker passa al consumer **tutti** i
+provider idonei, un LLM locale ne sceglie uno in base a una richiesta in linguaggio
+naturale, e quella scelta diventa una prenotazione vera che arriva a `Peered`.
+
+Per ogni scenario il test fa due cose: le **decisioni registrate** (l'harness chiama il
+selettore dell'agent e salva tutto: prompt, risposta, validazione) e il **percorso
+dell'agent** (una prenotazione manuale dalla console, che l'agent del consumer decide da
+solo chiedendo al modello). Il modello viene interrogato esattamente come lo interroga
+l'agent: JSON semplice, parametri di default di Ollama, stesso timeout.
+
+Anche qui è tutto automatico, **Ollama compreso**: il test avvia il suo container,
+scarica il modello la prima volta (poi resta in cache) e lo rimuove alla fine.
+
+```bash
+./tests/consumerchoice/run-consumerchoice.sh --config tests/consumerchoice/configs/default.yaml
+```
+
+Nello YAML modifichi di solito solo `scenarios[].userRequest`. Scenari, criteri di
+valutazione, metriche e file prodotti sono descritti in `tests/consumerchoice/README.md`.
+
+Due differenze pratiche rispetto a eco e latency:
+
+- la topologia standard è **1 consumer e 9 provider**, con profili fissi (carbonio,
+  prezzo, capacità, regione) scelti apposta perché nessun provider vinca su tutto;
+- la prima run dopo aver toccato codice della Broker o dell'agent **non** va lanciata
+  con `--skip-build`.

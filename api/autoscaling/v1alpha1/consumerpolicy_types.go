@@ -78,8 +78,9 @@ const (
 type PlacementPolicy struct {
 	// Type selects the placement strategy. Empty means the Broker default — the
 	// "Standard" composite (balance free capacity, prefer renewable). Supported
-	// values are "Standard", "Price" (cheapest), "Eco" (lowest carbon), and
-	// "Latency" (closest).
+	// values are "Standard", "Price" (cheapest), "Eco" (lowest carbon),
+	// "Latency" (closest), "ConsumerChoice" (a local LLM chooses from the
+	// user's natural-language request), and "Random".
 	// +optional
 	Type PlacementStrategy `json:"type,omitempty"`
 }

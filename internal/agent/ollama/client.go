@@ -17,20 +17,24 @@ limitations under the License.
 // Package ollama is a lightweight HTTP client for a local Ollama instance
 // (https://ollama.ai) used by the ConsumerChoice placement strategy. It sends
 // a structured provider list and a natural-language user request to the LLM,
-// which returns the ID of the chosen provider as a JSON object.
+// which returns a ranking of the candidate provider IDs as a JSON object.
 //
-// The client is used ONLY by the consumer role's localapi server when the
-// active ConsumerPolicy has placement type "ConsumerChoice". It never contacts
-// the Broker or any external service — it dials localhost (or an in-cluster
-// Ollama Service) only.
+// It is used by the consumer role's localapi server when the active
+// ConsumerPolicy has placement type "ConsumerChoice", and by the ConsumerChoice
+// end-to-end suite (tests/consumerchoice), which drives the same selector so
+// that what it validates is the shipped decision logic rather than a copy. It
+// never contacts the Broker or any external service -- only the Ollama
+// endpoint it is given.
 package ollama
 
 import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"sort"
 	"strings"
@@ -39,24 +43,73 @@ import (
 	brokerapi "github.com/netgroup-polito/federation-autoscaler/internal/broker/api"
 )
 
+// defaultTimeout is the per-request timeout when none is configured.
+// Generous on purpose: a small model on CPU needs tens of seconds to rank a
+// handful of providers, and a call that times out falls back to the
+// deterministic strategy instead of using the model at all.
+const defaultTimeout = 120 * time.Second
+
+// jsonMode is the `format` sent to Ollama: plain JSON mode, well-formed JSON of
+// any shape. The model is asked for the selection object in the system prompt;
+// nothing else constrains or tunes its generation (sampling stays at the
+// server's defaults), so the model decides on its own.
+const jsonMode = "json"
+
+// Options tunes a Client. The zero value is the agent's historical behaviour
+// (120 s timeout, no consumer location).
+type Options struct {
+	// Timeout bounds one /api/generate call. Zero means 120 s.
+	Timeout time.Duration
+	// ConsumerLocation, when known, is included in the prompt so the model can
+	// judge proximity from the raw coordinates itself. Nothing is derived from
+	// it on the model's behalf.
+	ConsumerLocation *Location
+}
+
 // Client calls a local Ollama instance to select a provider. Safe for
 // concurrent use; each Select call is independent.
 type Client struct {
 	baseURL string        // e.g. "http://localhost:11434"
 	model   string        // e.g. "llama3.2"
 	timeout time.Duration // per-request timeout for the /api/generate call
+	opts    Options
 	http    *http.Client
 }
 
 // New returns an Ollama Client. baseURL is the Ollama API root (e.g.
 // "http://localhost:11434"), model is the model name (e.g. "llama3.2").
 func New(baseURL, model string) *Client {
+	return NewWithOptions(baseURL, model, Options{})
+}
+
+// NewWithOptions is New with explicit Options.
+func NewWithOptions(baseURL, model string, opts Options) *Client {
+	timeout := opts.Timeout
+	if timeout <= 0 {
+		timeout = defaultTimeout
+	}
 	return &Client{
 		baseURL: strings.TrimRight(baseURL, "/"),
 		model:   model,
-		timeout: 30 * time.Second,
-		http:    &http.Client{Timeout: 30 * time.Second},
+		timeout: timeout,
+		opts:    opts,
+		http:    &http.Client{Timeout: timeout},
 	}
+}
+
+// Timeout is the upper bound on one LLM call. A caller that runs the call under
+// its own context should give it at least this long, or the call is cut short
+// before the configured timeout.
+func (c *Client) Timeout() time.Duration { return c.timeout }
+
+// WithConsumerLocation returns a copy of the client that sends loc as the
+// consumer location, for a caller that only learns where it is at run time.
+// The receiver is not modified, so one shared client stays safe to use
+// concurrently.
+func (c *Client) WithConsumerLocation(loc *Location) *Client {
+	cp := *c
+	cp.opts.ConsumerLocation = loc
+	return &cp
 }
 
 // ollamaRequest is the JSON body sent to POST /api/generate.
@@ -69,9 +122,88 @@ type ollamaRequest struct {
 }
 
 // ollamaResponse is the JSON body returned by POST /api/generate (non-streaming).
+// Beyond the generated text it carries the runtime's own timing, which is the
+// honest source for how long the model itself took versus the HTTP round trip.
 type ollamaResponse struct {
-	Response string `json:"response"`
-	Done     bool   `json:"done"`
+	Model              string    `json:"model,omitempty"`
+	CreatedAt          time.Time `json:"created_at,omitzero"`
+	Response           string    `json:"response"`
+	Done               bool      `json:"done"`
+	DoneReason         string    `json:"done_reason,omitempty"`
+	TotalDuration      int64     `json:"total_duration,omitempty"`
+	LoadDuration       int64     `json:"load_duration,omitempty"`
+	PromptEvalCount    int       `json:"prompt_eval_count,omitempty"`
+	PromptEvalDuration int64     `json:"prompt_eval_duration,omitempty"`
+	EvalCount          int       `json:"eval_count,omitempty"`
+	EvalDuration       int64     `json:"eval_duration,omitempty"`
+}
+
+// ErrorKind classifies why a selection failed, so a caller can count failures
+// by cause instead of pattern-matching error strings.
+type ErrorKind string
+
+const (
+	ErrKindNone              ErrorKind = ""
+	ErrKindNoCapacity        ErrorKind = "no_capacity"
+	ErrKindUnreachable       ErrorKind = "unreachable"
+	ErrKindTimeout           ErrorKind = "timeout"
+	ErrKindHTTPStatus        ErrorKind = "http_status"
+	ErrKindEnvelopeDecode    ErrorKind = "envelope_decode"
+	ErrKindInvalidJSON       ErrorKind = "invalid_json"
+	ErrKindEmptyProviderID   ErrorKind = "empty_provider_id"
+	ErrKindUnknownProviderID ErrorKind = "unknown_provider_id"
+)
+
+// SelectError is the error Select and SelectDetailed return: the original
+// message, plus the Kind it falls under.
+type SelectError struct {
+	Kind ErrorKind
+	Err  error
+}
+
+func (e *SelectError) Error() string { return e.Err.Error() }
+func (e *SelectError) Unwrap() error { return e.Err }
+
+func selectErr(kind ErrorKind, format string, args ...any) *SelectError {
+	return &SelectError{Kind: kind, Err: fmt.Errorf(format, args...)}
+}
+
+// Trace is the full record of one selection: what was sent, what came back,
+// when, and how it was judged. SelectDetailed returns it even when the
+// selection fails, because a failed decision is exactly the one worth
+// inspecting afterwards.
+type Trace struct {
+	Model        string             `json:"model"`
+	SystemPrompt string             `json:"systemPrompt"`
+	UserPrompt   string             `json:"userPrompt"`
+	Providers    []ProviderInfo     `json:"providers"`
+	Format       string             `json:"format,omitempty"`
+	StartedAt    time.Time          `json:"startedAt"`
+	FinishedAt   time.Time          `json:"finishedAt"`
+	HTTPStatus   int                `json:"httpStatus,omitempty"`
+	RawResponse  string             `json:"rawResponse,omitempty"`
+	RawErrorBody string             `json:"rawErrorBody,omitempty"`
+	Envelope     *ollamaResponse    `json:"envelope,omitempty"`
+	Parsed       *SelectionResponse `json:"parsed,omitempty"`
+	// Ranked is the model's ranking with unknown IDs removed, best first --
+	// what the caller acts on. UnknownIDs are the ones removed.
+	Ranked     []string `json:"ranked,omitempty"`
+	UnknownIDs []string `json:"unknownIds,omitempty"`
+	// SingleCandidate is true when only one provider had capacity and the
+	// model was therefore not called at all.
+	SingleCandidate bool      `json:"singleCandidate"`
+	ErrorKind       ErrorKind `json:"errorKind,omitempty"`
+	Error           string    `json:"error,omitempty"`
+}
+
+// Duration is how long the selection took end to end.
+func (t *Trace) Duration() time.Duration { return t.FinishedAt.Sub(t.StartedAt) }
+
+func (t *Trace) fail(err *SelectError) (*Trace, error) {
+	t.FinishedAt = time.Now()
+	t.ErrorKind = err.Kind
+	t.Error = err.Error()
+	return t, err
 }
 
 // Select sends the provider list and user prompt to Ollama and returns a
@@ -79,102 +211,152 @@ type ollamaResponse struct {
 // Returns (nil, err) on failure; the caller MUST fall back to a
 // deterministic strategy when err != nil.
 func (c *Client) Select(ctx context.Context, userPrompt string, nodeGroups []brokerapi.NodeGroupView) ([]string, error) {
+	trace, err := c.SelectDetailed(ctx, userPrompt, nodeGroups)
+	if err != nil {
+		return nil, err
+	}
+	return trace.Ranked, nil
+}
+
+// SelectDetailed is Select, returning the full Trace alongside the result.
+// The returned Trace is never nil. Its decision rules are exactly Select's.
+func (c *Client) SelectDetailed(ctx context.Context, userPrompt string, nodeGroups []brokerapi.NodeGroupView) (*Trace, error) {
+	trace := &Trace{Model: c.model, SystemPrompt: SystemPrompt, StartedAt: time.Now()}
+
 	// Build provider info list (only providers with available capacity).
-	var providers []ProviderInfo
 	validIDs := make(map[string]struct{})
 	for _, ng := range nodeGroups {
 		if ng.MaxSize > ng.CurrentReserved {
-			info := NodeGroupViewToProviderInfo(ng)
-			providers = append(providers, info)
+			trace.Providers = append(trace.Providers, NodeGroupViewToProviderInfo(ng))
 			validIDs[ng.ProviderClusterID] = struct{}{}
 		}
 	}
-	if len(providers) == 0 {
-		return nil, fmt.Errorf("no providers with available capacity")
+	if len(trace.Providers) == 0 {
+		return trace.fail(selectErr(ErrKindNoCapacity, "no providers with available capacity"))
 	}
 
 	// If there is only one provider, skip the AI call entirely.
-	if len(providers) == 1 {
-		return []string{providers[0].ProviderID}, nil
+	if len(trace.Providers) == 1 {
+		trace.SingleCandidate = true
+		trace.Ranked = []string{trace.Providers[0].ProviderID}
+		trace.FinishedAt = time.Now()
+		return trace, nil
 	}
 
-	// Build the prompt.
-	prompt := BuildUserPrompt(userPrompt, providers)
+	trace.UserPrompt = BuildUserPrompt(userPrompt, c.opts.ConsumerLocation, trace.Providers)
+	trace.Format = jsonMode
 
-	// Build the Ollama request.
+	envelope, err := c.generate(ctx, trace)
+	if err != nil {
+		return trace.fail(err)
+	}
+	trace.Envelope = envelope
+	trace.RawResponse = envelope.Response
+
+	// Parse the LLM's JSON output.
+	var selection SelectionResponse
+	if err := json.Unmarshal([]byte(envelope.Response), &selection); err != nil {
+		return trace.fail(selectErr(ErrKindInvalidJSON, "parse LLM selection JSON %q: %w", envelope.Response, err))
+	}
+	trace.Parsed = &selection
+
+	// Prefer RankedList; fall back to single ProviderID for backward compat.
+	if len(selection.RankedList) > 0 {
+		// A model caught in a repetition loop lists the same IDs over and over;
+		// the first occurrence is its ranking, the rest adds nothing.
+		ranked := make(map[string]bool, len(validIDs))
+		for _, id := range selection.RankedList {
+			switch _, ok := validIDs[id]; {
+			case !ok:
+				trace.UnknownIDs = append(trace.UnknownIDs, id)
+			case !ranked[id]:
+				ranked[id] = true
+				trace.Ranked = append(trace.Ranked, id)
+			}
+		}
+		if len(trace.Ranked) == 0 {
+			return trace.fail(selectErr(ErrKindUnknownProviderID,
+				"LLM rankedList contains no valid IDs (valid: %v)", validIDsList(validIDs)))
+		}
+		trace.FinishedAt = time.Now()
+		return trace, nil
+	}
+
+	if selection.ProviderID == "" {
+		return trace.fail(selectErr(ErrKindEmptyProviderID,
+			"LLM returned empty providerId in response %q", envelope.Response))
+	}
+
+	// Validate the returned ID exists in the input list.
+	if _, ok := validIDs[selection.ProviderID]; !ok {
+		trace.UnknownIDs = []string{selection.ProviderID}
+		return trace.fail(selectErr(ErrKindUnknownProviderID,
+			"LLM returned unknown providerId %q (valid: %v)", selection.ProviderID, validIDsList(validIDs)))
+	}
+
+	trace.Ranked = []string{selection.ProviderID}
+	trace.FinishedAt = time.Now()
+	return trace, nil
+}
+
+// generate performs the /api/generate round trip for a prepared trace.
+func (c *Client) generate(ctx context.Context, trace *Trace) (*ollamaResponse, *SelectError) {
 	reqBody := ollamaRequest{
 		Model:  c.model,
-		System: SystemPrompt,
-		Prompt: prompt,
-		Format: "json",
+		System: trace.SystemPrompt,
+		Prompt: trace.UserPrompt,
+		Format: trace.Format,
 		Stream: false,
 	}
-
 	bodyBytes, err := json.Marshal(reqBody)
 	if err != nil {
-		return nil, fmt.Errorf("marshal ollama request: %w", err)
+		return nil, selectErr(ErrKindInvalidJSON, "marshal ollama request: %w", err)
 	}
 
-	// Make the HTTP call.
 	reqCtx, cancel := context.WithTimeout(ctx, c.timeout)
 	defer cancel()
 
 	httpReq, err := http.NewRequestWithContext(reqCtx, http.MethodPost,
 		c.baseURL+"/api/generate", bytes.NewReader(bodyBytes))
 	if err != nil {
-		return nil, fmt.Errorf("build ollama HTTP request: %w", err)
+		return nil, selectErr(ErrKindUnreachable, "build ollama HTTP request: %w", err)
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 
 	resp, err := c.http.Do(httpReq)
 	if err != nil {
-		return nil, fmt.Errorf("call ollama: %w", err)
+		if isTimeout(err) {
+			return nil, selectErr(ErrKindTimeout, "call ollama: %w", err)
+		}
+		return nil, selectErr(ErrKindUnreachable, "call ollama: %w", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
+	trace.HTTPStatus = resp.StatusCode
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
-		return nil, fmt.Errorf("ollama returned status %d: %s", resp.StatusCode, string(body))
+		trace.RawErrorBody = string(body)
+		return nil, selectErr(ErrKindHTTPStatus, "ollama returned status %d: %s", resp.StatusCode, string(body))
 	}
 
-	// Parse the response.
-	var ollamaResp ollamaResponse
-	if err := json.NewDecoder(resp.Body).Decode(&ollamaResp); err != nil {
-		return nil, fmt.Errorf("decode ollama response: %w", err)
-	}
-
-	// Parse the LLM's JSON output.
-	var selection SelectionResponse
-	if err := json.Unmarshal([]byte(ollamaResp.Response), &selection); err != nil {
-		return nil, fmt.Errorf("parse LLM selection JSON %q: %w", ollamaResp.Response, err)
-	}
-
-	// Prefer RankedList; fall back to single ProviderID for backward compat.
-	if len(selection.RankedList) > 0 {
-		var filtered []string
-		for _, id := range selection.RankedList {
-			if _, ok := validIDs[id]; ok {
-				filtered = append(filtered, id)
-			}
+	var envelope ollamaResponse
+	if err := json.NewDecoder(resp.Body).Decode(&envelope); err != nil {
+		if isTimeout(err) {
+			return nil, selectErr(ErrKindTimeout, "read ollama response: %w", err)
 		}
-		if len(filtered) == 0 {
-			return nil, fmt.Errorf("LLM rankedList contains no valid IDs (valid: %v)",
-				validIDsList(validIDs))
-		}
-		return filtered, nil
+		return nil, selectErr(ErrKindEnvelopeDecode, "decode ollama response: %w", err)
 	}
+	return &envelope, nil
+}
 
-	if selection.ProviderID == "" {
-		return nil, fmt.Errorf("LLM returned empty providerId in response %q", ollamaResp.Response)
+// isTimeout reports whether err is a deadline being hit, from either the
+// request context or the http.Client timeout (which surfaces as a net.Error).
+func isTimeout(err error) bool {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
 	}
-
-	// Validate the returned ID exists in the input list.
-	if _, ok := validIDs[selection.ProviderID]; !ok {
-		return nil, fmt.Errorf("LLM returned unknown providerId %q (valid: %v)",
-			selection.ProviderID, validIDsList(validIDs))
-	}
-
-	return []string{selection.ProviderID}, nil
+	var ne net.Error
+	return errors.As(err, &ne) && ne.Timeout()
 }
 
 // validIDsList returns a sorted list of valid IDs for error messages.

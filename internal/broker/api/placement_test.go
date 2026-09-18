@@ -508,3 +508,95 @@ func TestNodeGroupsRandomPreference(t *testing.T) {
 		}
 	})
 }
+
+func withConsumerChoicePolicy(s *Server) {
+	s.consumers.Touch(consumerCluster, "liqo-c",
+		autoscalingv1alpha1.PlacementPolicy{Type: autoscalingv1alpha1.PlacementStrategyConsumerChoice}, "", "", nil, nil)
+}
+
+// TestNodeGroupsConsumerChoice pins the documented contract: the Broker leaves
+// the choice to the consumer's LLM, so it must hand over EVERY provider with
+// capacity instead of pre-picking one. Before this case existed ConsumerChoice
+// fell through to Standard, exposed a single grower, and the LLM never saw a
+// choice to make -- its selector skips the model when only one candidate is left.
+func TestNodeGroupsConsumerChoice(t *testing.T) {
+	t.Run("every provider with capacity stays growable; a full one does not", func(t *testing.T) {
+		s := newDashboardTestServer(t,
+			stdAdvCarbon("p-green", 0, 25),
+			stdAdvCarbon("p-dirty", 1, 650),
+			stdAdvCarbon("p-full", stdAdvChunks, 40))
+		withConsumerChoicePolicy(s)
+
+		hr := headroomByProvider(callNodeGroups(t, s))
+		if hr["p-green"] != stdAdvChunks {
+			t.Errorf("p-green must keep all its head-room; got %+v", hr)
+		}
+		if hr["p-dirty"] != stdAdvChunks-1 {
+			t.Errorf("p-dirty must keep its remaining head-room, not be masked; got %+v", hr)
+		}
+		if hr["p-full"] != 0 {
+			t.Errorf("an exhausted provider must stay non-growable; got %+v", hr)
+		}
+	})
+
+	t.Run("not narrowed even where Standard would pick a single winner", func(t *testing.T) {
+		// Identical advertisements: Standard breaks the tie and grows exactly one.
+		// ConsumerChoice must expose both.
+		s := newDashboardTestServer(t, stdAdv("p-a", 0, nil), stdAdv("p-b", 0, nil), stdAdv("p-c", 0, nil))
+		withConsumerChoicePolicy(s)
+
+		growable := 0
+		for _, h := range headroomByProvider(callNodeGroups(t, s)) {
+			if h > 0 {
+				growable++
+			}
+		}
+		if growable != 3 {
+			t.Errorf("all 3 providers must be growable under ConsumerChoice; %d are", growable)
+		}
+	})
+
+	t.Run("an in-flight reservation does not mask the rest", func(t *testing.T) {
+		// The gate exists to stop a single-winner policy spilling to its
+		// runner-up; ConsumerChoice has no runner-up, so a peering reservation on
+		// p-a must not hide p-b.
+		peering := &brokerv1alpha1.Reservation{
+			ObjectMeta: metav1.ObjectMeta{Name: "r-inflight-cc", Namespace: dashboardTestNS},
+			Spec: brokerv1alpha1.ReservationSpec{
+				ConsumerClusterID: consumerCluster,
+				ProviderClusterID: "p-a",
+				ChunkCount:        1,
+				ChunkType:         brokerv1alpha1.ChunkTypeStandard,
+			},
+			Status: brokerv1alpha1.ReservationStatus{Phase: brokerv1alpha1.ReservationPhasePeering},
+		}
+		s := newDashboardTestServer(t, stdAdv("p-a", 1, nil), stdAdv("p-b", 0, nil), peering)
+		withConsumerChoicePolicy(s)
+
+		hr := headroomByProvider(callNodeGroups(t, s))
+		if hr["p-a"] == 0 || hr["p-b"] == 0 {
+			t.Errorf("both providers with capacity must stay growable; got %+v", hr)
+		}
+	})
+
+	t.Run("echoes the policy and sets no metric", func(t *testing.T) {
+		s := newDashboardTestServer(t, stdAdvCarbon("p-a", 0, 25), stdAdvCarbon("p-b", 0, 650))
+		withConsumerChoicePolicy(s)
+
+		resp := callNodeGroups(t, s)
+		if resp.AppliedPlacement != autoscalingv1alpha1.PlacementStrategyConsumerChoice {
+			t.Errorf("appliedPlacement = %q, want ConsumerChoice", resp.AppliedPlacement)
+		}
+		if resp.LatencyShortlist {
+			t.Error("ConsumerChoice must not signal a latency shortlist")
+		}
+		for _, v := range resp.NodeGroups {
+			if v.HasMetric {
+				t.Errorf("ConsumerChoice ranks on no single metric; %s has %v", v.ProviderClusterID, v.PlacementMetric)
+			}
+			if v.CarbonIntensity == nil {
+				t.Errorf("%s must still carry its carbon intensity for the consumer's choice", v.ProviderClusterID)
+			}
+		}
+	})
+}

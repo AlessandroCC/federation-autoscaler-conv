@@ -87,7 +87,8 @@ func (s *Server) handleNodeGroupsList(w http.ResponseWriter, r *http.Request) {
 	// Per-consumer placement preference: narrow to the single best provider with
 	// capacity within each chunk type. "best" is the composite Standard default
 	// (most free capacity, renewable bonus) when no policy is set, or cheapest
-	// (Price) / greenest (Eco) / closest (Latency) when one is.
+	// (Price) / greenest (Eco) / closest (Latency) when one is. ConsumerChoice
+	// is the exception: it leaves the whole list unmasked for the consumer to choose.
 	consumerID := ClusterIDFromContext(ctx)
 	entry, _ := s.consumers.Lookup(consumerID) // zero ConsumerEntry ⇒ Standard default
 
@@ -123,6 +124,17 @@ func (s *Server) handleNodeGroupsList(w http.ResponseWriter, r *http.Request) {
 		distances, hasDist := consumerProviderDistances(entry, avail)
 		latencyShortlist = applyLatencyTopN(views, distances, hasDist, inflight, latencyShortlistSize)
 		setPlacementMetric(views, distances, hasDist)
+	case autoscalingv1alpha1.PlacementStrategyConsumerChoice:
+		// The choice belongs to the consumer: its agent hands every candidate
+		// plus the operator's natural-language request to a local LLM
+		// (internal/agent/ollama), so the Broker must NOT pre-pick one here
+		// (docs/design.md, placement table). No masking at all: every available
+		// provider keeps MaxSize = TotalChunks, which already leaves a full
+		// provider non-growable (MaxSize == CurrentReserved) without any help,
+		// and unavailable ones were dropped above. The in-flight gate is not
+		// applied either -- it only exists to stop a single-winner policy from
+		// spilling to the runner-up, and there is no runner-up to spill to.
+		// No PlacementMetric: there is no single metric the choice ranks on.
 	default:
 		// Empty (no ConsumerPolicy) or "Standard" → the composite default. No stable
 		// per-provider metric is exposed (Standard's most-free score wanders as
@@ -499,7 +511,7 @@ func consumerProviderDistances(entry ConsumerEntry, avail []*brokerv1alpha1.Clus
 		if t == nil || (t.Latitude == 0 && t.Longitude == 0) {
 			continue
 		}
-		distances[i] = haversineKm(entry.Latitude, entry.Longitude, t.Latitude, t.Longitude)
+		distances[i] = HaversineKm(entry.Latitude, entry.Longitude, t.Latitude, t.Longitude)
 		hasDist[i] = true
 	}
 	return distances, hasDist

@@ -18,12 +18,14 @@ package testlib
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 )
@@ -431,6 +433,15 @@ type regionLoc struct {
 	Lon  float64
 }
 
+// RegionLocation returns the city and coordinates mock-geo reports for a region
+// code, and whether the code is known at all. A config naming an unknown region
+// fails deep inside deployment (registerGeoOverrides); checking it up front
+// fails in seconds.
+func RegionLocation(code string) (city string, lat, lon float64, ok bool) {
+	loc, ok := regionLocation[code]
+	return loc.City, loc.Lat, loc.Lon, ok
+}
+
 var regionLocation = map[string]regionLoc{
 	"QC":  {"Montreal", 45.6085, -73.5493},
 	"CA":  {"San Jose", 37.3382, -121.8863},
@@ -654,6 +665,63 @@ func deployControllableMockGeo(ctx context.Context, repoRoot string, centralSpec
 		"-n", "federation-autoscaler-system",
 		"rollout", "status", "deploy/mock-geo",
 		"--timeout=120s",
+	)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
+}
+
+// SetConsumerOllama points a consumer agent at an Ollama server for the
+// ConsumerChoice policy: it writes ollamaUrl / ollamaModel / ollamaTimeout into
+// agent-config (the same keys consumer-up.sh --ollama-url sets), restarts the
+// agent so its flags pick them up, and waits for the rollout. url must be
+// reachable from inside the consumer cluster.
+func SetConsumerOllama(ctx context.Context, kubeconfig, url, model string, timeout time.Duration) error {
+	patch, err := json.Marshal(map[string]map[string]string{"data": {
+		"ollamaUrl": url, "ollamaModel": model, "ollamaTimeout": timeout.String(),
+	}})
+	if err != nil {
+		return err
+	}
+	for _, args := range [][]string{
+		{"patch", "configmap", "agent-config", "--type", "merge", "-p", string(patch)},
+		{"rollout", "restart", "deploy/agent"},
+		{"rollout", "status", "deploy/agent", "--timeout=300s"},
+	} {
+		full := append([]string{"--kubeconfig", kubeconfig, "-n", "federation-autoscaler-system"}, args...)
+		cmd := exec.CommandContext(ctx, "kubectl", full...)
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		if err := cmd.Run(); err != nil {
+			return fmt.Errorf("kubectl %s: %w", strings.Join(args[:2], " "), err)
+		}
+	}
+	return nil
+}
+
+// SetProviderPrices writes a provider's per-resource unit prices (per unit per
+// hour, e.g. {"cpu": "0.03", "memory": "0.004"}) into the agent-prices
+// ConfigMap the agent reads via --price-file. The Broker only derives a
+// per-chunk Cost when every resource of the chunk is priced, so pass at least
+// cpu and memory. Like SetProviderCapacity it takes effect on the agent's next
+// file refresh and advertisement, not immediately.
+func SetProviderPrices(ctx context.Context, kubeconfig string, prices map[string]string) error {
+	names := make([]string, 0, len(prices))
+	for name := range prices {
+		names = append(names, name)
+	}
+	sort.Strings(names) // stable file content across runs
+	var sb strings.Builder
+	for _, name := range names {
+		fmt.Fprintf(&sb, "%s: %q\n", name, prices[name])
+	}
+	patch := fmt.Sprintf(`{"data":{"prices.yaml":%q}}`, sb.String())
+	cmd := exec.CommandContext(ctx, "kubectl",
+		"--kubeconfig", kubeconfig,
+		"-n", "federation-autoscaler-system",
+		"patch", "configmap", "agent-prices",
+		"--type", "merge",
+		"-p", patch,
 	)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr

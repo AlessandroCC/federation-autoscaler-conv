@@ -101,6 +101,7 @@ func main() {
 		probeUDPPort    int
 		ollamaURL       string
 		ollamaModel     string
+		ollamaTimeout   time.Duration
 	)
 
 	flag.StringVar(&role, "role", "",
@@ -180,6 +181,10 @@ func main() {
 	flag.StringVar(&ollamaModel, "ollama-model", "llama3.2",
 		"(consumer role only) Ollama model name for ConsumerChoice selection. "+
 			"Ignored when --ollama-url is empty.")
+	flag.DurationVar(&ollamaTimeout, "ollama-timeout", 120*time.Second,
+		"(consumer role only) Upper bound on one ConsumerChoice LLM call. A call that "+
+			"exceeds it falls back to the deterministic strategy; a small model on CPU "+
+			"needs tens of seconds. Ignored when --ollama-url is empty.")
 
 	opts := zap.Options{Development: true}
 	opts.BindFlags(flag.CommandLine)
@@ -296,6 +301,7 @@ func main() {
 			ConsoleAddr:   consoleAddr,
 			OllamaURL:     ollamaURL,
 			OllamaModel:   ollamaModel,
+			OllamaTimeout: ollamaTimeout,
 			Namespace:     namespace,
 			NodeName:      nodeName,
 			AdvertisedIP:  advertisedIP,

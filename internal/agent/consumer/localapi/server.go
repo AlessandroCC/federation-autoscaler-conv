@@ -102,6 +102,12 @@ type Options struct {
 	// Nil disables AI-driven selection.
 	OllamaClient *ollama.Client
 
+	// ConsumerLocation returns where this consumer is (the location its
+	// heartbeat reports), or nil while unknown. It is sent to the LLM with the
+	// provider list so that a request like "close to me" has a referent. Nil
+	// func: no location is sent.
+	ConsumerLocation func() *ollama.Location
+
 	// ShutdownTimeout caps how long Run waits for in-flight requests
 	// to drain when ctx is cancelled. Defaults to 5 s.
 	ShutdownTimeout time.Duration
@@ -124,6 +130,7 @@ type Server struct {
 	aiTimestamp time.Time
 	aiPrompt    string
 	ollama      *ollama.Client
+	location    func() *ollama.Location
 }
 
 // New validates opts and returns a Server ready to Run. It performs no
@@ -154,6 +161,7 @@ func New(opts Options) (*Server, error) {
 		log:      logger,
 		shutdown: shutdown,
 		ollama:   opts.OllamaClient,
+		location: opts.ConsumerLocation,
 	}
 	s.srv = &http.Server{
 		Addr:              opts.BindAddress,
@@ -253,27 +261,57 @@ func (s *Server) handleNodeGroups(w http.ResponseWriter, r *http.Request) {
 				nodeGroupsCopy := make([]brokerapi.NodeGroupView, len(resp.NodeGroups))
 				copy(nodeGroupsCopy, resp.NodeGroups)
 
+				client := s.ollama
+				if s.location != nil {
+					if loc := s.location(); loc != nil {
+						client = client.WithConsumerLocation(loc)
+					}
+				}
+
 				go func(prompt string, groups []brokerapi.NodeGroupView) {
-					ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+					// Longer than the client's own timeout, so the configured
+					// --ollama-timeout is what bounds the call, never this context.
+					ctx, cancel := context.WithTimeout(context.Background(), client.Timeout()+30*time.Second)
 					defer cancel()
 
 					s.log.V(1).Info("AI selection background task started", "prompt", prompt)
-					ranked, aiErr := s.ollama.Select(ctx, prompt, groups)
+					trace, aiErr := client.SelectDetailed(ctx, prompt, groups)
 
 					s.aiMutex.Lock()
 					defer s.aiMutex.Unlock()
 					s.aiRunning = false
 
-					if aiErr != nil || len(ranked) == 0 {
-						if aiErr != nil {
-							s.log.V(1).Info("AI selection failed, using deterministic fallback", "err", aiErr.Error())
-						}
-						ranked, _ = ollama.DeterministicFallback(groups)
+					// The prompt changed while the model was answering the old one:
+					// that ranking answers a request nobody is making any more. Drop
+					// it; the next poll starts a selection for the current prompt.
+					if s.aiPrompt != prompt {
+						s.log.Info(SelectionDiscardedMessage, "prompt", prompt)
+						return
 					}
 
-					s.aiResult = ranked
+					source, ranked := SelectionSourceAI, trace.Ranked
+					if aiErr != nil || len(ranked) == 0 {
+						source = SelectionSourceFallback
+						ranked, _ = ollama.DeterministicFallback(groups)
+					}
+					s.aiResult = completeRanking(ranked, groups)
 					s.aiTimestamp = time.Now()
-					s.log.V(1).Info("AI selection background task finished", "ranked", ranked)
+
+					// One Info line per decision: what the model was asked, what it
+					// answered and what the agent will act on. It is the operator's
+					// record of every ConsumerChoice decision.
+					errMsg := ""
+					if aiErr != nil {
+						errMsg = aiErr.Error()
+					}
+					s.log.Info(SelectionFinishedMessage,
+						"source", source,
+						"prompt", prompt,
+						"ranked", s.aiResult,
+						"rawResponse", trace.RawResponse,
+						"errorKind", string(trace.ErrorKind),
+						"error", errMsg,
+						"durationMs", trace.Duration().Milliseconds())
 				}(prompt, nodeGroupsCopy)
 			}
 			s.aiMutex.Unlock()
@@ -286,6 +324,19 @@ func (s *Server) handleNodeGroups(w http.ResponseWriter, r *http.Request) {
 			s.writeJSON(w, http.StatusOK, resp)
 			return
 		}
+	}
+
+	// ConsumerChoice without an LLM decision: no --ollama-url, or the local
+	// ConsumerPolicy could not be read or has already moved on while the Broker
+	// (up to a heartbeat behind) still applies ConsumerChoice. The Broker hands
+	// that list over unmasked -- the choice is the consumer's -- so passing it
+	// through would let the Cluster Autoscaler grow every provider at once. Do
+	// what --ollama-url's help promises instead and pick with the deterministic
+	// ranking the LLM path falls back to. AppliedPlacement comes from the
+	// Broker's own response, so this costs no extra ConsumerPolicy read.
+	if resp.AppliedPlacement == autoscalingv1alpha1.PlacementStrategyConsumerChoice {
+		ranked, _ := ollama.DeterministicFallback(resp.NodeGroups)
+		maskToFirstAvailable(resp, ranked) // nil ranking (no capacity) masks everything
 	}
 
 	s.writeJSON(w, http.StatusOK, resp)
@@ -324,6 +375,39 @@ func (s *Server) maskToMeasuredWinner(ctx context.Context, resp *brokerapi.NodeG
 	}
 	s.log.V(1).Info("measured-latency: masked shortlist to lowest-RTT provider",
 		"chosen", res.Chosen, "rtts", res.RTTs)
+}
+
+// Log messages of the ConsumerChoice decision. Stable on purpose: operators grep
+// for them, and the ConsumerChoice end-to-end suite reads them to learn what the
+// agent's own LLM call decided.
+const (
+	SelectionFinishedMessage  = "ConsumerChoice selection finished"
+	SelectionDiscardedMessage = "ConsumerChoice selection discarded: prompt changed"
+	// SelectionSourceAI: the ranking is the model's. SelectionSourceFallback:
+	// the model could not be used (unreachable, timeout, invalid answer) and the
+	// deterministic ranking was used instead.
+	SelectionSourceAI       = "ai"
+	SelectionSourceFallback = "fallback"
+)
+
+// completeRanking appends, in DeterministicFallback order, every provider with
+// capacity that ranked does not mention. A model may rank only some of the
+// candidates; once those fill up, maskToFirstAvailable would otherwise mask
+// everything and stall the Cluster Autoscaler until the cached ranking expires.
+func completeRanking(ranked []string, groups []brokerapi.NodeGroupView) []string {
+	seen := make(map[string]bool, len(ranked))
+	out := append([]string(nil), ranked...)
+	for _, id := range ranked {
+		seen[id] = true
+	}
+	fallback, _ := ollama.DeterministicFallback(groups)
+	for _, id := range fallback {
+		if !seen[id] {
+			seen[id] = true
+			out = append(out, id)
+		}
+	}
+	return out
 }
 
 // maskToFirstAvailable iterates the ranked provider list in order and picks the

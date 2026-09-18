@@ -31,6 +31,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/go-logr/logr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -108,13 +109,18 @@ type Options struct {
 	// OllamaURL is the base URL of a local Ollama instance (e.g.
 	// "http://localhost:11434"). When set alongside a ConsumerPolicy with
 	// placement type ConsumerChoice, the Consumer Agent delegates provider
-	// selection to the LLM instead of letting the Broker mask. Empty disables
-	// AI-driven selection; ConsumerChoice then falls back deterministically.
+	// selection to the LLM, sending it the Broker's unmasked provider list, the
+	// user's request and the consumer's own location. Empty disables AI-driven
+	// selection; ConsumerChoice then falls back deterministically.
 	OllamaURL string
 
 	// OllamaModel is the Ollama model name (e.g. "llama3.2"). Required when
 	// OllamaURL is set; ignored otherwise.
 	OllamaModel string
+
+	// OllamaTimeout bounds one LLM call; zero means the selector's default
+	// (120 s). Ignored when OllamaURL is empty.
+	OllamaTimeout time.Duration
 
 	// Namespace is where the consumer agent creates the kubeconfig
 	// Secret, the Liqo ResourceSlice, and the VirtualNodeState CR, and
@@ -226,9 +232,10 @@ func Run(ctx context.Context, opts Options) error {
 	// Build the optional Ollama client for the ConsumerChoice strategy.
 	var ollamaClient *ollama.Client
 	if opts.OllamaURL != "" {
-		ollamaClient = ollama.New(opts.OllamaURL, opts.OllamaModel)
+		ollamaClient = ollama.NewWithOptions(opts.OllamaURL, opts.OllamaModel,
+			ollama.Options{Timeout: opts.OllamaTimeout})
 		logger.Info("ConsumerChoice AI client configured",
-			"ollamaURL", opts.OllamaURL, "model", opts.OllamaModel)
+			"ollamaURL", opts.OllamaURL, "model", opts.OllamaModel, "timeout", opts.OllamaTimeout)
 	}
 
 	localServer, err := localapi.New(localapi.Options{
@@ -238,7 +245,17 @@ func Run(ctx context.Context, opts Options) error {
 		LocalClient:  opts.LocalClient,
 		Namespace:    namespace,
 		OllamaClient: ollamaClient,
-		Logger:       logger.WithName("localapi"),
+		// The LLM is told where this consumer is -- the same location the
+		// heartbeat reports to the Broker -- so a request like "close to me"
+		// has a referent. It judges proximity from the coordinates itself.
+		ConsumerLocation: func() *ollama.Location {
+			lat, lon, region, ok := beater.LastLocation()
+			if !ok {
+				return nil
+			}
+			return &ollama.Location{Latitude: lat, Longitude: lon, Region: region}
+		},
+		Logger: logger.WithName("localapi"),
 	})
 	if err != nil {
 		return fmt.Errorf("consumer: build loopback REST server: %w", err)

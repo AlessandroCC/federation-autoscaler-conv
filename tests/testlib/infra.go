@@ -298,15 +298,24 @@ func DockerPullImages(ctx context.Context, images []string) error {
 	return nil
 }
 
-// DockerBuild runs `make docker-build` in the repo root.
+// DockerBuild runs `make docker-build` in the repo root. The environment is
+// passed through, so DOCKER_BUILD_FLAGS (see the Makefile) reaches the build.
 func DockerBuild(ctx context.Context, repoRoot string) error {
-	log.Println("[infra] building Docker images (make docker-build)")
+	log.Printf("[infra] building Docker images (make docker-build, DOCKER_BUILD_FLAGS=%q)",
+		os.Getenv("DOCKER_BUILD_FLAGS"))
 	cmd := exec.CommandContext(ctx, "make", "docker-build")
 	cmd.Dir = repoRoot
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	cmd.Env = append(os.Environ(), "IMG_PREFIX=federation-autoscaler", "TAG=latest")
-	return cmd.Run()
+	if err := cmd.Run(); err != nil {
+		// The usual cause on a restricted host: the build container cannot resolve
+		// DNS, so `go mod download` fails as soon as go.mod changes and the cached
+		// module layer no longer applies.
+		return fmt.Errorf("%w (if the build output shows a DNS or dial error while downloading "+
+			"Go modules, rerun with DOCKER_BUILD_FLAGS=--network=host)", err)
+	}
+	return nil
 }
 
 // ContainerIP returns the Docker container IP of a Kind cluster node.

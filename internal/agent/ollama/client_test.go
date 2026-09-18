@@ -328,8 +328,12 @@ func TestSelect_RankedListFiltersUnknown(t *testing.T) {
 	defer srv.Close()
 
 	c := New(srv.URL, "test-model")
+	// Two candidates, not one: with a single provider Select skips the model
+	// entirely, so a one-provider fixture would pass without ever reaching the
+	// filtering this test is named after.
 	groups := []brokerapi.NodeGroupView{
 		makeNodeGroup("provider-1", 5, 0, nil, nil, ""),
+		makeNodeGroup("provider-2", 5, 0, nil, nil, ""),
 	}
 
 	ranked, err := c.Select(context.Background(), "any", groups)
@@ -338,6 +342,35 @@ func TestSelect_RankedListFiltersUnknown(t *testing.T) {
 	}
 	if len(ranked) != 1 || ranked[0] != "provider-1" {
 		t.Fatalf("expected [provider-1] after filtering unknown IDs, got %v", ranked)
+	}
+}
+
+// A small model can loop and repeat IDs until the JSON closes; the ranking is
+// the first occurrence of each.
+func TestSelect_RankedListDropsRepeatedIDs(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		resp := ollamaResponse{
+			Response: `{"rankedList": ["provider-2", "provider-1", "provider-2", "provider-1", "provider-2"], ` +
+				`"providerId": "provider-2"}`,
+			Done: true,
+		}
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, "test-model")
+	groups := []brokerapi.NodeGroupView{
+		makeNodeGroup("provider-1", 5, 0, nil, nil, ""),
+		makeNodeGroup("provider-2", 5, 0, nil, nil, ""),
+	}
+
+	ranked, err := c.Select(context.Background(), "any", groups)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(ranked) != 2 || ranked[0] != "provider-2" || ranked[1] != "provider-1" {
+		t.Fatalf("expected [provider-2 provider-1] without repeats, got %v", ranked)
 	}
 }
 
@@ -389,7 +422,7 @@ func TestBuildUserPrompt_ContainsRequest(t *testing.T) {
 	providers := []ProviderInfo{
 		{ProviderID: "p1", AvailableChunks: 3},
 	}
-	prompt := BuildUserPrompt("give me the cheapest", providers)
+	prompt := BuildUserPrompt("give me the cheapest", nil, providers)
 
 	if !contains(prompt, "give me the cheapest") {
 		t.Fatal("prompt should contain the user request")
