@@ -31,6 +31,10 @@ import (
 // performance. Every individual record (successful or not) is still in the
 // raw CSV, so nothing is hidden — this is purely a summary-statistics
 // choice, documented here and in README.md.
+//
+// A request the harness itself cancelled (Ctrl+C) is counted apart and left
+// out of Attempts and ErrorRate: it did not get an answer from the Broker,
+// right or wrong, so it measures nothing about it.
 type OperationStats struct {
 	Operation Operation `json:"operation"`
 
@@ -38,6 +42,7 @@ type OperationStats struct {
 	Successes int `json:"successes"`
 	Failures  int `json:"failures"`
 	Timeouts  int `json:"timeouts"`
+	Cancelled int `json:"cancelledByHarness"`
 
 	MeanMS float64 `json:"meanLatencyMs"`
 	P50MS  float64 `json:"p50LatencyMs"`
@@ -58,6 +63,10 @@ func computeStats(records []Record, op Operation, phase Phase, duration time.Dur
 
 	for _, r := range records {
 		if r.Operation != op || r.Phase != phase {
+			continue
+		}
+		if r.Outcome == OutcomeCancelled {
+			stats.Cancelled++
 			continue
 		}
 		stats.Attempts++

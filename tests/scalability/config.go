@@ -112,13 +112,16 @@ func bindFlags(fs *flag.FlagSet) *Config {
 	fs.StringVar(&cfg.BrokerPodLabel, "broker-pod-label", "app.kubernetes.io/component=broker", "Label selector for `kubectl top pod` (k8s monitor mode; matches config/broker/deployment.yaml).")
 	fs.StringVar(&cfg.BrokerPod, "broker-pod", "", "Exact Broker pod name, overriding --broker-pod-label (k8s monitor mode).")
 	fs.StringVar(&cfg.BrokerContainer, "broker-container", "", "Docker container name or ID running the Broker (docker monitor mode).")
-	fs.IntVar(&cfg.BrokerPID, "broker-pid", 0, "PID of a locally-running `broker` process (process monitor mode; e.g. `go run ./cmd/broker` during a smoke test).")
+	fs.IntVar(&cfg.BrokerPID, "broker-pid", 0, "PID of the running Broker binary (process monitor mode; "+
+		"run-scalability-test.sh passes it). Not the PID of `go run`, which is the go tool's, not the Broker's.")
 	fs.StringVar(&cfg.Kubeconfig, "kubeconfig", "", "Kubeconfig path passed to kubectl (k8s monitor mode and cleanup subcommand); empty uses kubectl's default resolution.")
 
 	fs.DurationVar(&cfg.RequestTimeout, "request-timeout", 10*time.Second, "Per-HTTP-attempt timeout (matches internal/agent/client.DefaultRequestTimeout).")
-	fs.IntVar(&cfg.ClientMaxRetries, "client-max-retries", 0, "Additional attempts the agent HTTP client makes on transient failures for idempotent calls. "+
-		"Default 0 (single attempt) gives a clean per-request latency signal; the real agents default to 3 (internal/agent/client.DefaultMaxRetries) — pass "+
-		"3 here to mirror production retry behaviour exactly, at the cost of latency samples that include backoff sleeps.")
+	fs.IntVar(&cfg.ClientMaxRetries, "client-max-retries", 0, "Additional attempts the agent HTTP client makes on "+
+		"transient failures for idempotent calls. 0 (the default) means the client's own default, 3 retries, exactly as "+
+		"the real agents run (internal/agent/client treats any value <= 0 as DefaultMaxRetries): a request that fails and "+
+		"then succeeds on a retry is recorded as one success whose latency includes the backoff. A single attempt is "+
+		"not possible with the production client.")
 	fs.DurationVar(&cfg.WarmupTimeout, "warmup-timeout", 60*time.Second, "Max time to wait for every provider (then every consumer) to succeed once before starting measurement traffic.")
 
 	fs.StringVar(&cfg.ProviderCPU, "provider-cpu", "16", "Synthetic cpu quantity each logical provider advertises (resource.Quantity syntax, e.g. \"16\").")

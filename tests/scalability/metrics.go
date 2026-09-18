@@ -26,7 +26,7 @@ import (
 	agentclient "github.com/netgroup-polito/federation-autoscaler/internal/agent/client"
 )
 
-// Outcome buckets every request into exactly one of these three states, as
+// Outcome buckets every request into exactly one of these states, as
 // required by the experiment's evaluation/error metrics.
 type Outcome string
 
@@ -34,6 +34,10 @@ const (
 	OutcomeSuccess Outcome = "success"
 	OutcomeFailure Outcome = "failure"
 	OutcomeTimeout Outcome = "timeout"
+	// OutcomeCancelled is a request the harness itself cancelled (Ctrl+C,
+	// SIGTERM): it says nothing about the Broker, so it is neither a success
+	// nor an error. A deadline is a timeout, never a cancellation.
+	OutcomeCancelled Outcome = "cancelled"
 )
 
 // Operation names the four Broker calls this harness exercises. Reservation
@@ -137,7 +141,13 @@ func (c *Collector) Snapshot() []Record {
 func classify(err error) (outcome Outcome, statusCode int, category, message string) {
 	var cerr *agentclient.Error
 	if !errors.As(err, &cerr) {
+		if errors.Is(err, context.Canceled) {
+			return OutcomeCancelled, 0, "Cancelled", err.Error()
+		}
 		return OutcomeFailure, 0, "unknown", err.Error()
+	}
+	if cerr.Status == 0 && errors.Is(cerr.Cause, context.Canceled) {
+		return OutcomeCancelled, 0, "Cancelled", cerr.Message
 	}
 	if isTimeout(cerr) {
 		return OutcomeTimeout, cerr.Status, categoryName(cerr.Category), cerr.Message

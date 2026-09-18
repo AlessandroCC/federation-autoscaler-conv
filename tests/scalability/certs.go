@@ -115,8 +115,9 @@ func certCommonName(path string) (string, error) {
 // identity. ServerName, when set, overrides the host parsed from BrokerURL
 // so the Broker's server certificate — whose SANs cover only the in-cluster
 // Service DNS names (config/broker/certmanager.yaml) — still verifies when
-// dialed via `kubectl port-forward` to 127.0.0.1/localhost.
-func newAgentClient(cfg *Config, id agentIdentity, caFile string) (*agentclient.Client, error) {
+// dialed via `kubectl port-forward` to 127.0.0.1/localhost. It is a
+// variable only so tests can point the load generators at an httptest server.
+var newAgentClient = func(cfg *Config, id agentIdentity, caFile string) (*agentclient.Client, error) {
 	return agentclient.New(agentclient.Options{
 		BrokerURL: cfg.BrokerURL,
 		TLS: agentclient.TLSConfig{

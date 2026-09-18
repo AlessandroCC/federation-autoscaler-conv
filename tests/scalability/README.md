@@ -4,6 +4,57 @@ Automated scalability experiment for the federation-autoscaler **Broker** API.
 Generates synthetic Consumer and Provider HTTP traffic without deploying real
 agents, clusters, controllers, Liqo tunnels, or Cluster Autoscaler instances.
 
+## Running it
+
+Set how many agents to simulate in
+[`tests/configs/scalability.yaml`](../configs/scalability.yaml) — the only two
+settings that change between runs:
+
+```yaml
+consumers: 5
+providers: 5
+```
+
+Then, from the repository root (on Linux, for the Broker's CPU/RAM samples):
+
+```bash
+bash tests/scalability/run-scalability-test.sh
+```
+
+The script does everything: builds the Broker and the harness, generates the
+certificates, creates a Kind cluster for the Broker's CRDs, starts the Broker,
+runs the test, cleans up the test CRs and deletes the cluster. Options:
+
+| Option | Effect |
+|---|---|
+| `--config FILE` | Use another YAML file instead of `tests/configs/scalability.yaml` |
+| `--keep-cluster` | Keep the Kind cluster afterwards, so the next run skips creating it |
+
+The file accepts `consumers` and `providers` only (whole numbers, at least one
+above 0); any other key is an error. Everything else is fixed in the script, so
+every run measures the same thing and only the load changes:
+
+| Setting | Value |
+|---|---|
+| Measurement duration | 5 min, after the warm-up |
+| Provider advertisement / instruction poll | every 30 s / 5 s |
+| Consumer heartbeat / evaluation / instruction poll | every 15 s / 5 s / 5 s |
+| Per-attempt request timeout | 10 s, with the agent client's 3 retries (as in production) |
+| Synthetic provider size | 16 CPU, 32 GiB |
+| Broker CPU/RAM sampling | every 5 s from `/proc` (Linux only; skipped elsewhere) |
+| Broker API port | 9444 |
+
+Results go to `results/scalability/<UTC timestamp>/`, together with a copy of
+the YAML file used (`config.yaml`). In `summary.md`, check that:
+
+- the error rate is 0 and the Cancelled column is 0;
+- the Broker resource section has samples, with CPU in cores;
+- each operation's attempts are about agents × 300 s / interval — e.g. about
+  60 evaluations per consumer. Far fewer means the harness fell behind.
+
+To see how the Broker behaves as the load grows, run it once per scale,
+changing the two numbers each time (see [Scale Configurations](#scale-configurations)).
+
 ## Scope
 
 ### What it tests
@@ -43,6 +94,15 @@ CRD write path. See [Cleanup](#cleanup) for how to remove test-created CRs.
 > **Note:** `POST /api/v1/heartbeat` is Consumer-only. Providers do NOT call
 > this endpoint — their 30 s advertisement POST serves as their liveness signal.
 > `POST /api/v1/reservations` is explicitly excluded.
+
+**Which placement policy is measured.** Every consumer registers with the
+`Random` placement policy, so `GET /api/v1/nodegroups` is measured on that one
+policy. Most of what that request costs is common to every policy — listing
+the advertisements, computing each provider's per-chunk cost and carbon
+intensity, checking the consumer's in-flight reservations — and all of it is
+measured. What differs is the final step, and here it is Random's (one random
+pick): Price and Eco sort the providers instead, Latency also computes a
+distance to every provider, and ConsumerChoice skips the step entirely.
 
 ## Prerequisites
 
@@ -91,7 +151,11 @@ per-agent bundles from the real federation CA instead.
 > has no insecure-skip-verify option; every connection must present a valid
 > client certificate and verify the server certificate against the CA bundle.
 
-## Quick Start
+## Advanced: running the harness by hand
+
+[Running it](#running-it) is the normal way. The steps below drive the harness
+binary directly, against a Broker you started yourself, with every flag
+available (see [CLI Flags](#cli-flags)).
 
 ### Build
 
@@ -147,8 +211,46 @@ go build -o bin/broker-scalability-test .
 7. **Measurement phase:** Start consumer evaluation (`GET /api/v1/nodegroups`)
    traffic.
 8. Run for the configured duration.
-9. Gracefully stop all generators and monitoring.
+9. Stop in two steps: no new request starts once the duration is over, but a
+   request already in flight completes normally (up to `--request-timeout`);
+   only then are the generators and the monitor cancelled.
 10. Save raw metrics and generate summary.
+
+### Agents are not in lockstep
+
+Every loop of every agent (advertisement, heartbeat, instruction poll,
+evaluation) starts at its own random point of its first interval, then keeps
+its interval. Started together without this, all agents would fire in the
+same instant and the Broker would see bursts of N simultaneous requests
+followed by silence — something independently started real agents never do.
+The offsets derive from `--seed`, so the same seed reproduces the same
+schedule. Evaluations are spread over the first interval after the
+measurement starts.
+
+### What counts as an error
+
+A request's outcome is `success`, `failure` (an HTTP error or a connection
+problem), `timeout` (no answer within `--request-timeout`) or `cancelled`.
+`cancelled` means the harness itself stopped the request (Ctrl+C): it is kept
+in the CSVs but is neither an attempt nor an error in the summary, because
+the Broker never got the chance to answer it. The normal end of a run cancels
+nothing (step 9).
+
+**Retries are on, as in production.** The harness sends its requests through
+the real agent client (`internal/agent/client`), which retries a transient
+failure (a connection error, a timeout, an HTTP 5xx — not a 429 or any other
+4xx) of an idempotent call up to 3 times with exponential backoff — every call
+this harness makes is idempotent. A `timeout` outcome therefore means every
+attempt timed out. The client treats any `--client-max-retries` of 0 or less
+as that default, so a single attempt is not possible without changing the
+production client. Two consequences for reading the results:
+
+- a request that fails and then succeeds on a retry is **one success**: the
+  transient failure does not appear in the error rate. The error rate counts
+  requests that failed even after every retry — what a real agent would see;
+- the latency of such a request **includes** the failed attempts and the
+  backoff between them, so a Broker that errors transiently shows up as
+  higher latency percentiles rather than as errors.
 
 ## Warm-up Phase
 
@@ -162,15 +264,23 @@ from `POST /api/v1/advertisements`. A configurable `--warmup-timeout`
 
 ## Scale Configurations
 
-| Scale | Consumers | Providers | Total | Duration |
+A curve of the Broker's behaviour against load is one run per point, each
+with the two numbers in `tests/configs/scalability.yaml` set as below and the
+same fixed 5-minute measurement. `--keep-cluster` saves recreating the Kind
+cluster between points; delete it at the end with
+`kind delete cluster --name scaltest`.
+
+| Scale | `consumers` | `providers` | Agents | Evaluations per run (≈) |
 |---|---|---|---|---|
-| Smoke | 1 | 1 | 2 | 60 s |
-| Small | 5 | 5 | 10 | 2 min |
-| Medium | 12 | 13 | 25 | 5 min |
-| Large | 25 | 25 | 50 | 10 min |
-| XL | 50 | 50 | 100 | 10 min |
-| XXL | 75 | 75 | 150 | 10 min |
-| XXXL | 100 | 100 | 200 | 10 min |
+| Small | 5 | 5 | 10 | 300 |
+| Medium | 10 | 10 | 20 | 600 |
+| Large | 25 | 25 | 50 | 1 500 |
+| XL | 50 | 50 | 100 | 3 000 |
+| XXL | 100 | 100 | 200 | 6 000 |
+
+Evaluations per run = consumers × 300 s / 5 s. Each run restarts the Broker
+and removes the previous run's test CRs, so the points do not affect one
+another.
 
 ## CLI Flags
 
@@ -197,10 +307,10 @@ from `POST /api/v1/advertisements`. A configurable `--warmup-timeout`
 | `--broker-pod` | — | Exact pod name, overrides --broker-pod-label (k8s mode) |
 | `--broker-pod-label` | `app.kubernetes.io/component=broker` | Label selector for `kubectl top pod` (k8s mode) |
 | `--broker-namespace` | `federation-autoscaler-system` | K8s namespace (k8s mode + cleanup) |
-| `--broker-pid` | 0 | PID of a local `broker` process (process mode) |
+| `--broker-pid` | 0 | PID of a local `broker` process (process mode; `run-scalability-test.sh` passes it) |
 | `--kubeconfig` | — | Kubeconfig path for kubectl (k8s mode + cleanup) |
 | `--request-timeout` | 10s | Per-HTTP-attempt timeout |
-| `--client-max-retries` | 0 | Additional retry attempts on transient failures (0 = single attempt for clean latency; 3 mirrors production) |
+| `--client-max-retries` | 0 | Additional retry attempts on transient failures. 0 = the agent client's default, 3 retries, as in production (see "What counts as an error") |
 | `--warmup-timeout` | 60s | Max time to wait for warm-up |
 | `--provider-cpu` | `16` | Synthetic CPU quantity each provider advertises |
 | `--provider-memory` | `32Gi` | Synthetic memory quantity each provider advertises |
@@ -263,4 +373,13 @@ Press Ctrl+C during the test. The harness:
    measure request processing overhead.
 4. **No reservations.** `POST /api/v1/reservations` is not called by design.
 5. **Resource monitoring** requires access to the Broker process. Use
-   `--monitor-mode none` if unavailable.
+   `--monitor-mode none` if unavailable. `--monitor-mode process` reads the
+   Broker's `/proc/<pid>/stat` and `/proc/<pid>/status`, so it works on Linux
+   only: CPU is the process's CPU time between two samples over the wall time
+   between them, in cores (1.0 = one core busy for the whole interval), and
+   memory is its resident set size. A wrong PID or a system without `/proc`
+   fails before the run starts. (`ps %cpu` is not used: it is the average
+   over the whole life of the process, not the load of the moment.)
+6. **Run on Linux for sub-millisecond latencies.** On Windows the clock the
+   harness times requests with moves in steps of about 0.5 ms, so the fastest
+   requests read as 0.0 ms or 0.5 ms.

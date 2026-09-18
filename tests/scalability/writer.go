@@ -117,8 +117,8 @@ func writeSummaryMarkdown(dir string, s Summary, cfg *Config) error {
 	defer f.Close()
 
 	opRow := func(label string, st OperationStats) string {
-		return fmt.Sprintf("| %s | %d | %d | %d | %d | %.1f | %.1f | %.1f | %.1f | %.1f | %.2f%% |\n",
-			label, st.Attempts, st.Successes, st.Failures, st.Timeouts,
+		return fmt.Sprintf("| %s | %d | %d | %d | %d | %d | %.1f | %.1f | %.1f | %.1f | %.1f | %.2f%% |\n",
+			label, st.Attempts, st.Successes, st.Failures, st.Timeouts, st.Cancelled,
 			st.MeanMS, st.P50MS, st.P95MS, st.P99MS, st.SuccessPerMinute, st.ErrorRate*100)
 	}
 
@@ -142,15 +142,18 @@ func writeSummaryMarkdown(dir string, s Summary, cfg *Config) error {
 	fmt.Fprintf(f, "\n\n")
 
 	fmt.Fprintf(f, "## Measurement-phase traffic\n\n")
-	fmt.Fprintf(f, "| Operation | Attempts | Success | Fail | Timeout | Mean ms | p50 ms | p95 ms | p99 ms | Success/min | Error rate |\n")
-	fmt.Fprintf(f, "|---|---|---|---|---|---|---|---|---|---|---|\n")
+	fmt.Fprintf(f, "| Operation | Attempts | Success | Fail | Timeout | Cancelled | Mean ms | p50 ms | p95 ms | p99 ms "+
+		"| Success/min | Error rate |\n")
+	fmt.Fprintf(f, "|---|---|---|---|---|---|---|---|---|---|---|---|\n")
 	fmt.Fprint(f, opRow("Evaluation (GET /api/v1/nodegroups)", s.Evaluation))
 	fmt.Fprint(f, opRow("Advertisement (POST /api/v1/advertisements)", s.Advertisement))
 	fmt.Fprint(f, opRow("Heartbeat (POST /api/v1/heartbeat)", s.Heartbeat))
 	if s.InstructionPoll != nil {
 		fmt.Fprint(f, opRow("Instruction poll (GET /api/v1/instructions)", *s.InstructionPoll))
 	}
-	fmt.Fprintf(f, "\n_Latency percentiles are computed over successful requests only; error rate = (failures+timeouts)/attempts over all measurement-phase requests. See README.md for why._\n\n")
+	fmt.Fprintf(f, "\n_Latency percentiles are computed over successful requests only; error rate = "+
+		"(failures+timeouts)/attempts over all measurement-phase requests. Cancelled = stopped by the "+
+		"harness itself (Ctrl+C): not an attempt, not an error. See README.md for why._\n\n")
 
 	fmt.Fprintf(f, "## Broker resource usage (--monitor-mode=%s)\n\n", s.BrokerResourceUsage.Mode)
 	if s.BrokerResourceUsage.SampleCount == 0 {

@@ -83,8 +83,14 @@ func run(cfg *Config) error {
 		return fmt.Errorf("write configuration.json: %w", err)
 	}
 
+	// rootCtx ends only on Ctrl+C/SIGTERM and is what every request runs
+	// under. genCtx ends when the measurement does and only stops the load
+	// generators from starting new requests: one already in flight completes,
+	// so the end of the run is not recorded as a burst of Broker errors.
 	rootCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	genCtx, stopGenerators := context.WithCancel(rootCtx)
+	defer stopGenerators()
 
 	collector := NewCollector()
 	var monitorSamples []ResourceSample
@@ -112,7 +118,7 @@ func run(cfg *Config) error {
 		agentsWG.Add(1)
 		go func(id agentIdentity, index int) {
 			defer agentsWG.Done()
-			runProvider(rootCtx, cfg, id, index, collector, providerWarmupCh)
+			runProvider(genCtx, rootCtx, cfg, id, index, collector, providerWarmupCh)
 		}(id, i+1)
 	}
 	providerWarmup := collectWarmup(len(providers), providerWarmupCh)
@@ -128,7 +134,7 @@ func run(cfg *Config) error {
 		agentsWG.Add(1)
 		go func(id agentIdentity, index int) {
 			defer agentsWG.Done()
-			runConsumer(rootCtx, cfg, id, index, collector, consumerWarmupCh, evalGate)
+			runConsumer(genCtx, rootCtx, cfg, id, index, collector, consumerWarmupCh, evalGate)
 		}(id, i+1)
 	}
 	consumerWarmup := collectWarmup(len(consumers), consumerWarmupCh)
@@ -153,11 +159,13 @@ func run(cfg *Config) error {
 	}
 	measurementEnd := time.Now()
 
-	// Graceful shutdown: cancel every generator/monitor goroutine, then wait
-	// (bounded) for them to actually return before snapshotting the
-	// collector, so no in-flight request writes a record after the snapshot.
+	// Graceful shutdown, in two steps. First stop the generators from
+	// starting new requests and let the ones in flight finish (bounded by
+	// the per-request timeout); only then cancel everything else. Waiting
+	// before the snapshot also means no request writes a record after it.
+	stopGenerators()
+	waitWithTimeout(&agentsWG, drainTimeout(cfg), "load generators")
 	stop()
-	waitWithTimeout(&agentsWG, 10*time.Second, "load generators")
 	waitWithTimeout(&monitorWG, 5*time.Second, "resource monitor")
 	if monitor != nil {
 		monitorSamples, monitorErrs = monitor.samples, monitor.errs
@@ -277,6 +285,22 @@ func collectWarmup(n int, ch <-chan warmupOutcome) WarmupStats {
 	}
 	stats.ElapsedMS = float64(time.Since(start)) / float64(time.Millisecond)
 	return stats
+}
+
+// drainTimeout bounds how long the end of the run waits for the requests
+// still in flight. One request can take every attempt the agent client makes
+// -- the first plus its retries, each up to the per-attempt timeout, with a
+// backoff of at most DefaultMaxBackoff between them -- and cutting it short
+// would record it as cancelled rather than as the error it may turn into.
+// The client treats a retry count of 0 or less as its default, and so does
+// this bound.
+func drainTimeout(cfg *Config) time.Duration {
+	retries := cfg.ClientMaxRetries
+	if retries <= 0 {
+		retries = agentclient.DefaultMaxRetries
+	}
+	return time.Duration(retries+1)*cfg.RequestTimeout + time.Duration(retries)*agentclient.DefaultMaxBackoff +
+		5*time.Second
 }
 
 func waitWithTimeout(wg *sync.WaitGroup, timeout time.Duration, what string) {

@@ -21,7 +21,7 @@ l'intero giro, e nel caso normale l'unica cosa che tocchi è un file YAML in
 | `testlib/` | Libreria condivisa: orchestrazione, deploy, client, scrittura CSV |
 | `scripts/` | Script Python di analisi e verifica dei risultati |
 | `mock-eco-test/`, `mock-geo-test/` | Servizi finti che rispondono con carbon intensity e geolocalizzazione; li deploya l'harness, non li lanci tu |
-| `scalability/` | Test di carico sull'API del Broker, indipendente da tutto il resto (ha un suo README) |
+| `scalability/` | Test di carico sull'API del Broker, indipendente da tutto il resto. Si configura in `configs/scalability.yaml` (solo quanti consumer e provider); ha un suo README |
 
 ---
 
@@ -475,3 +475,43 @@ Due differenze pratiche rispetto a eco e latency:
   prezzo, capacità, regione) scelti apposta perché nessun provider vinca su tutto;
 - la prima run dopo aver toccato codice della Broker o dell'agent **non** va lanciata
   con `--skip-build`.
+
+---
+
+## 12. Il test di scalabilità
+
+`tests/scalability/` misura come risponde il Broker al crescere del carico. Niente
+agenti veri, cluster provider o Liqo: un programma simula tanti consumer e provider
+che parlano con un solo Broker, con i certificati e il client HTTP veri degli agent
+e gli stessi intervalli (annunci, heartbeat, polling delle istruzioni, richieste
+`/nodegroups`). Misura latenze, errori e throughput di ogni endpoint, più CPU e RAM
+del Broker.
+
+L'unica cosa da toccare è `tests/configs/scalability.yaml`:
+
+```yaml
+consumers: 5
+providers: 5
+```
+
+Poi:
+
+```bash
+bash tests/scalability/run-scalability-test.sh
+```
+
+Tutto il resto è fisso nello script (5 minuti di misura, intervalli, timeout), così
+cambia solo il carico. Il file accetta solo quelle due chiavi: qualunque altra dà
+errore.
+
+- **Per la curva** fai una run per ogni scala, cambiando i due numeri (per esempio
+  5, 10, 25, 50, 100 per tipo). Con `--keep-cluster` il cluster Kind resta tra una run
+  e l'altra; alla fine `kind delete cluster --name scaltest`.
+- **CPU e RAM del Broker** si misurano solo su Linux: altrove lo script lo dice e va
+  avanti senza.
+- **Risultati** in `results/scalability/<data-ora>/`. In `summary.md` controlla che
+  errori e colonna Cancelled siano a 0, che ci siano i campioni di CPU/RAM e che i
+  tentativi siano circa quelli attesi (circa 60 valutazioni per consumer).
+
+I dettagli (cosa conta come errore, retry, policy misurata) sono in
+`tests/scalability/README.md`.

@@ -51,11 +51,12 @@ func consumerPayload(clusterID string, index int, cfg *Config) *brokerapi.Heartb
 
 // runConsumer drives one logical Consumer's traffic for the whole run: a
 // retried warm-up heartbeat, then the steady-state heartbeat and
-// (optionally) instruction-poll tickers immediately, and the evaluation
-// ticker only once evalGate is closed by the orchestrator (main.go) — i.e.
-// once every consumer's warm-up heartbeat has landed, per the required
-// lifecycle (README "Warm-up Phase").
-func runConsumer(ctx context.Context, cfg *Config, id agentIdentity, index int, collector *Collector, warmupCh chan<- warmupOutcome, evalGate <-chan struct{}) {
+// (optionally) instruction-poll loops immediately, and the evaluation loop
+// only once evalGate is closed by the orchestrator (main.go) — i.e. once
+// every consumer's warm-up heartbeat has landed, per the required lifecycle
+// (README "Warm-up Phase"). genCtx and reqCtx are as in runProvider.
+func runConsumer(genCtx, reqCtx context.Context, cfg *Config, id agentIdentity, index int, collector *Collector,
+	warmupCh chan<- warmupOutcome, evalGate <-chan struct{}) {
 	client, err := newAgentClient(cfg, id, brokerCAFile)
 	if err != nil {
 		warmupCh <- warmupOutcome{ClusterID: id.ClusterID, OK: false, Err: err}
@@ -64,64 +65,57 @@ func runConsumer(ctx context.Context, cfg *Config, id agentIdentity, index int, 
 
 	req := consumerPayload(id.ClusterID, index, cfg)
 
-	warmupCtx, cancel := context.WithTimeout(ctx, cfg.WarmupTimeout)
+	warmupCtx, cancel := context.WithTimeout(genCtx, cfg.WarmupTimeout)
 	ok := retryUntilSuccess(warmupCtx, func() error {
-		return doHeartbeat(ctx, client, id, req, collector, PhaseWarmup)
+		return doHeartbeat(reqCtx, client, id, req, collector, PhaseWarmup)
 	})
 	cancel()
-	warmupCh <- warmupOutcome{ClusterID: id.ClusterID, OK: ok, Err: ctx.Err()}
-	if !ok || ctx.Err() != nil {
+	warmupCh <- warmupOutcome{ClusterID: id.ClusterID, OK: ok, Err: genCtx.Err()}
+	if !ok || genCtx.Err() != nil {
 		return
 	}
 
-	hbTicker := time.NewTicker(cfg.HeartbeatInterval)
-	defer hbTicker.Stop()
-
-	var instrTicker *time.Ticker
+	hbC := staggeredTicker(genCtx, cfg.HeartbeatInterval,
+		startOffset(cfg.Seed, "consumer", index, OpHeartbeat, cfg.HeartbeatInterval))
 	var instrC <-chan time.Time
 	if cfg.InstructionPoll {
-		instrTicker = time.NewTicker(cfg.InstructionPollInterval)
-		defer instrTicker.Stop()
-		instrC = instrTicker.C
+		instrC = staggeredTicker(genCtx, cfg.InstructionPollInterval,
+			startOffset(cfg.Seed, "consumer", index, OpInstructions, cfg.InstructionPollInterval))
 	}
 
-	// The evaluation ticker only starts once every consumer has completed
-	// its warm-up heartbeat, so GET /api/v1/nodegroups traffic never begins
-	// while some consumers are still unregistered — but a consumer's own
+	// The evaluation loop only starts once every consumer has completed its
+	// warm-up heartbeat, so GET /api/v1/nodegroups traffic never begins while
+	// some consumers are still unregistered — but a consumer's own
 	// heartbeat/instruction-poll traffic starts immediately, matching a real
 	// Consumer Agent that heartbeats on its own cadence regardless of what
-	// other clusters are doing.
-	var evalTicker *time.Ticker
+	// other clusters are doing. Its offset counts from the gate, so the
+	// consumers' evaluations spread over the first interval of the
+	// measurement instead of all landing on its first instant.
 	var evalC <-chan time.Time
-	evalStarted := false
-	startEval := func() {
-		if evalStarted {
-			return
-		}
-		evalStarted = true
-		evalTicker = time.NewTicker(cfg.ConsumerEvalInterval)
-		evalC = evalTicker.C
-	}
-	defer func() {
-		if evalTicker != nil {
-			evalTicker.Stop()
-		}
-	}()
-
 	localEvalGate := evalGate
 	for {
 		select {
-		case <-ctx.Done():
+		case <-genCtx.Done():
 			return
 		case <-localEvalGate:
 			localEvalGate = nil // consume once
-			startEval()
-		case <-hbTicker.C:
-			_ = doHeartbeat(ctx, client, id, req, collector, PhaseMeasurement)
+			evalC = staggeredTicker(genCtx, cfg.ConsumerEvalInterval,
+				startOffset(cfg.Seed, "consumer", index, OpEvaluation, cfg.ConsumerEvalInterval))
+		case <-hbC:
+			if genCtx.Err() != nil { // the tick and the stop can arrive together
+				return
+			}
+			_ = doHeartbeat(reqCtx, client, id, req, collector, PhaseMeasurement)
 		case <-instrC:
-			_ = doInstructionPoll(ctx, client, "consumer", id, collector, PhaseMeasurement)
+			if genCtx.Err() != nil {
+				return
+			}
+			_ = doInstructionPoll(reqCtx, client, "consumer", id, collector, PhaseMeasurement)
 		case <-evalC:
-			_ = doEvaluation(ctx, client, id, collector, PhaseMeasurement)
+			if genCtx.Err() != nil {
+				return
+			}
+			_ = doEvaluation(reqCtx, client, id, collector, PhaseMeasurement)
 		}
 	}
 }

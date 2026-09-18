@@ -27,8 +27,12 @@ limitations under the License.
 //     kind/minikube-on-Docker node and the caller supplies the container
 //     name directly (this repository does not run the Broker as a bare
 //     Docker container in any script);
-//   - direct process sampling via `ps`, useful only for a manual
-//     `go run ./cmd/broker` smoke test outside Kubernetes.
+//   - direct process sampling from Linux /proc, for a Broker running as a
+//     local process -- which is how run-scalability-test.sh runs it. CPU is
+//     the difference in the process's CPU time between two samples over the
+//     wall time between them: the load of that interval, in cores. (`ps
+//     %cpu`, used before, is the average over the whole life of the process
+//     and would hide the load the test puts on it.)
 //
 // A fourth, unimplemented option is worth recording for future work: the
 // manager's controller-runtime metrics server (--metrics-bind-address,
@@ -48,6 +52,7 @@ import (
 	"bufio"
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -82,7 +87,10 @@ func newMonitor(cfg *Config) (*MonitorRunner, error) {
 	case "docker":
 		fn = dockerSampler(cfg)
 	case "process":
-		fn = processSampler(cfg)
+		var err error
+		if fn, err = processSampler(cfg.BrokerPID); err != nil {
+			return nil, err
+		}
 	default:
 		return nil, fmt.Errorf("monitor: unknown mode %q", cfg.MonitorMode)
 	}
@@ -227,30 +235,107 @@ func parseDockerMem(s string) float64 {
 	}
 }
 
-// --- process: ps -p <pid> ----------------------------------------------------
+// --- process: Linux /proc/<pid> ---------------------------------------------
 
-func processSampler(cfg *Config) func(ctx context.Context) (ResourceSample, error) {
-	pid := strconv.Itoa(cfg.BrokerPID)
-	return func(ctx context.Context) (ResourceSample, error) {
-		// %cpu is a percentage of one core (standard BSD/GNU ps semantics);
-		// rss is resident set size in KiB. Requires a POSIX `ps` (Linux/macOS,
-		// or Git Bash/WSL on Windows) — see README Limitations.
-		out, err := exec.CommandContext(ctx, "ps", "-o", "%cpu=,rss=", "-p", pid).Output()
-		if err != nil {
-			return ResourceSample{}, fmt.Errorf("ps -p %s: %w", pid, err)
-		}
-		fields := strings.Fields(string(out))
-		if len(fields) != 2 {
-			return ResourceSample{}, fmt.Errorf("ps -p %s: unexpected output %q", pid, string(out))
-		}
-		cpuPct, _ := strconv.ParseFloat(fields[0], 64)
-		rssKiB, _ := strconv.ParseFloat(fields[1], 64)
-		return ResourceSample{
-			Timestamp: time.Now(),
-			CPUValue:  cpuPct,
-			CPUUnit:   "percent",
-			MemMiB:    rssKiB / 1024,
-			Source:    "ps pid=" + pid,
-		}, nil
+// userHZ is the unit of utime/stime in /proc/<pid>/stat. Linux reports them
+// in USER_HZ clock ticks, fixed at 100 for every userspace interface
+// whatever the kernel's internal tick rate.
+const userHZ = 100
+
+// procReadFile reads a /proc file; tests swap it for canned content.
+var procReadFile = os.ReadFile
+
+// processSampler samples the Broker process from /proc. It takes the first
+// CPU reading right away, as the baseline the first sample is measured from,
+// so a wrong PID or a system without /proc fails here, before the run,
+// rather than as a column of sampling errors afterwards.
+func processSampler(pid int) (func(ctx context.Context) (ResourceSample, error), error) {
+	prevTicks, err := procCPUTicks(pid)
+	if err != nil {
+		return nil, fmt.Errorf("monitor-mode=process reads the Broker's /proc/<pid> and needs Linux "+
+			"and the Broker's own PID: %w", err)
 	}
+	prevAt := time.Now()
+	return func(context.Context) (ResourceSample, error) {
+		ticks, err := procCPUTicks(pid)
+		if err != nil {
+			return ResourceSample{}, err
+		}
+		rss, err := procRSSMiB(pid)
+		if err != nil {
+			return ResourceSample{}, err
+		}
+		now := time.Now()
+		cores := cpuCores(prevTicks, ticks, now.Sub(prevAt))
+		prevTicks, prevAt = ticks, now
+		return ResourceSample{
+			Timestamp: now,
+			CPUValue:  cores,
+			CPUUnit:   "cores",
+			MemMiB:    rss,
+			Source:    fmt.Sprintf("/proc pid=%d", pid),
+		}, nil
+	}, nil
+}
+
+// cpuCores is the CPU the process used between two readings, in cores: 1.0
+// is one core busy for the whole interval.
+func cpuCores(prevTicks, ticks uint64, elapsed time.Duration) float64 {
+	if elapsed <= 0 || ticks < prevTicks {
+		return 0
+	}
+	return float64(ticks-prevTicks) / userHZ / elapsed.Seconds()
+}
+
+// procCPUTicks returns utime+stime of pid, in USER_HZ ticks. The fields are
+// counted after the last ')' because the second field, the command name in
+// parentheses, may itself contain spaces and parentheses.
+func procCPUTicks(pid int) (uint64, error) {
+	path := fmt.Sprintf("/proc/%d/stat", pid)
+	raw, err := procReadFile(path)
+	if err != nil {
+		return 0, err
+	}
+	s := string(raw)
+	end := strings.LastIndex(s, ")")
+	if end < 0 {
+		return 0, fmt.Errorf("%s: no command name in %q", path, s)
+	}
+	// After ')' come field 3 (state) onwards: utime is field 14, stime 15.
+	fields := strings.Fields(s[end+1:])
+	const utime, stime = 14 - 3, 15 - 3
+	if len(fields) <= stime {
+		return 0, fmt.Errorf("%s: only %d fields after the command name", path, len(fields))
+	}
+	u, err := strconv.ParseUint(fields[utime], 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("%s: utime: %w", path, err)
+	}
+	st, err := strconv.ParseUint(fields[stime], 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("%s: stime: %w", path, err)
+	}
+	return u + st, nil
+}
+
+// procRSSMiB returns the resident set size of pid (VmRSS in
+// /proc/<pid>/status, reported in kB) in MiB.
+func procRSSMiB(pid int) (float64, error) {
+	path := fmt.Sprintf("/proc/%d/status", pid)
+	raw, err := procReadFile(path)
+	if err != nil {
+		return 0, err
+	}
+	sc := bufio.NewScanner(strings.NewReader(string(raw)))
+	for sc.Scan() {
+		fields := strings.Fields(sc.Text())
+		if len(fields) >= 2 && fields[0] == "VmRSS:" {
+			kb, err := strconv.ParseFloat(fields[1], 64)
+			if err != nil {
+				return 0, fmt.Errorf("%s: VmRSS: %w", path, err)
+			}
+			return kb / 1024, nil
+		}
+	}
+	return 0, fmt.Errorf("%s: no VmRSS line", path)
 }

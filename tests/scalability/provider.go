@@ -106,8 +106,15 @@ func providerPayload(clusterID string, index int, cfg *Config) *brokerapi.Advert
 
 // runProvider drives one logical Provider's traffic for the whole run: a
 // retried warm-up advertisement, then the steady-state advertisement and
-// (optionally) instruction-poll tickers until ctx is cancelled.
-func runProvider(ctx context.Context, cfg *Config, id agentIdentity, index int, collector *Collector, warmupCh chan<- warmupOutcome) {
+// (optionally) instruction-poll loops.
+//
+// Two contexts, because stopping and cancelling are different things. genCtx
+// ends when the measurement does: no new request starts after it. reqCtx is
+// what requests run under, and ends only on Ctrl+C/SIGTERM, so a request
+// already in flight when the measurement ends completes normally instead of
+// being cut off and recorded as a Broker error.
+func runProvider(genCtx, reqCtx context.Context, cfg *Config, id agentIdentity, index int, collector *Collector,
+	warmupCh chan<- warmupOutcome) {
 	client, err := newAgentClient(cfg, id, brokerCAFile)
 	if err != nil {
 		warmupCh <- warmupOutcome{ClusterID: id.ClusterID, OK: false, Err: err}
@@ -116,35 +123,38 @@ func runProvider(ctx context.Context, cfg *Config, id agentIdentity, index int, 
 
 	req := providerPayload(id.ClusterID, index, cfg)
 
-	warmupCtx, cancel := context.WithTimeout(ctx, cfg.WarmupTimeout)
+	warmupCtx, cancel := context.WithTimeout(genCtx, cfg.WarmupTimeout)
 	ok := retryUntilSuccess(warmupCtx, func() error {
-		return doAdvertisement(ctx, client, id, req, collector, PhaseWarmup)
+		return doAdvertisement(reqCtx, client, id, req, collector, PhaseWarmup)
 	})
 	cancel()
-	warmupCh <- warmupOutcome{ClusterID: id.ClusterID, OK: ok, Err: ctx.Err()}
-	if !ok || ctx.Err() != nil {
+	warmupCh <- warmupOutcome{ClusterID: id.ClusterID, OK: ok, Err: genCtx.Err()}
+	if !ok || genCtx.Err() != nil {
 		return
 	}
 
-	advTicker := time.NewTicker(cfg.AdvertisementInterval)
-	defer advTicker.Stop()
-
-	var instrTicker *time.Ticker
+	advC := staggeredTicker(genCtx, cfg.AdvertisementInterval,
+		startOffset(cfg.Seed, "provider", index, OpAdvertisement, cfg.AdvertisementInterval))
 	var instrC <-chan time.Time
 	if cfg.InstructionPoll {
-		instrTicker = time.NewTicker(cfg.InstructionPollInterval)
-		defer instrTicker.Stop()
-		instrC = instrTicker.C
+		instrC = staggeredTicker(genCtx, cfg.InstructionPollInterval,
+			startOffset(cfg.Seed, "provider", index, OpInstructions, cfg.InstructionPollInterval))
 	}
 
 	for {
 		select {
-		case <-ctx.Done():
+		case <-genCtx.Done():
 			return
-		case <-advTicker.C:
-			_ = doAdvertisement(ctx, client, id, req, collector, PhaseMeasurement)
+		case <-advC:
+			if genCtx.Err() != nil { // the tick and the stop can arrive together
+				return
+			}
+			_ = doAdvertisement(reqCtx, client, id, req, collector, PhaseMeasurement)
 		case <-instrC:
-			_ = doInstructionPoll(ctx, client, "provider", id, collector, PhaseMeasurement)
+			if genCtx.Err() != nil {
+				return
+			}
+			_ = doInstructionPoll(reqCtx, client, "provider", id, collector, PhaseMeasurement)
 		}
 	}
 }
