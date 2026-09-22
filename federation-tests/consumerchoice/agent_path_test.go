@@ -34,6 +34,9 @@ import (
 // agentLog is the consumer agent's log as zap's development console encoder
 // writes it (time, level, logger, caller, message, fields), with unrelated
 // lines around the decisions.
+// providerOne is the provider these tests reserve on or rank last.
+const providerOne = "provider-1"
+
 const agentLog = "2026-09-15T18:29:58.000000000Z\tINFO\tconsumer.heartbeat\theartbeat/heartbeat.go:240\tbeat\t{}\n" +
 	"2026-09-15T18:30:00.100000000Z\tINFO\tconsumer.localapi\tlocalapi/server.go:320\t" +
 	"ConsumerChoice selection finished\t{\"source\": \"ai\", \"prompt\": \"close to me\", " +
@@ -117,13 +120,13 @@ func agentSnapshot() *brokerapi.NodeGroupListResponse {
 			MaxSize: maxSize, CurrentReserved: reserved}
 	}
 	return &brokerapi.NodeGroupListResponse{NodeGroups: []brokerapi.NodeGroupView{
-		ng("provider-1", 2, 0), ng("provider-2", 2, 2), ng("provider-3", 3, 0),
+		ng(providerOne, 2, 0), ng("provider-2", 2, 2), ng("provider-3", 3, 0),
 	}}
 }
 
 func TestEvaluateAgentPath(t *testing.T) {
 	aiRanking := &AgentSelection{Source: localapi.SelectionSourceAI,
-		Ranked: []string{"provider-2", "provider-3", "provider-1"}}
+		Ranked: []string{"provider-2", "provider-3", providerOne}}
 	ok := func() *AgentPathResult {
 		// provider-2 was full, so the agent's masking let provider-3 through.
 		return &AgentPathResult{Selection: aiRanking, FinalPhase: manualPhaseActive,
@@ -140,12 +143,12 @@ func TestEvaluateAgentPath(t *testing.T) {
 	// fell back, and must reserve the fallback ranking's first free provider.
 	res = ok()
 	res.Selection = &AgentSelection{Source: localapi.SelectionSourceFallback, ErrorKind: "timeout",
-		Ranked: []string{"provider-2", "provider-3", "provider-1"}}
+		Ranked: []string{"provider-2", "provider-3", providerOne}}
 	evaluateAgentPath(res, agentSnapshot())
 	if !res.Passed || !res.ModelAnswerFailure || res.ExpectedProvider != "provider-3" {
 		t.Errorf("a fallback after the model's own failure must pass and be marked, got %+v", res)
 	}
-	res.ReservedProvider = "provider-1"
+	res.ReservedProvider = providerOne
 	evaluateAgentPath(res, agentSnapshot())
 	if res.Passed || !strings.Contains(strings.Join(res.Failures, ","), failAgentOtherProvider) {
 		t.Errorf("after a fallback the reservation must still follow its ranking, got %+v", res)
@@ -164,7 +167,7 @@ func TestEvaluateAgentPath(t *testing.T) {
 				Ranked: []string{"provider-3"}}
 		}, failAgentUsedFallback},
 		"never became Active": {func(r *AgentPathResult) { r.FinalPhase = "Pending" }, failAgentNotActive},
-		"landed elsewhere":    {func(r *AgentPathResult) { r.ReservedProvider = "provider-1" }, failAgentOtherProvider},
+		"landed elsewhere":    {func(r *AgentPathResult) { r.ReservedProvider = providerOne }, failAgentOtherProvider},
 		"not given back":      {func(r *AgentPathResult) { r.ReleasedAndSettled = false }, failAgentReleaseFailed},
 	} {
 		t.Run(name, func(t *testing.T) {

@@ -32,6 +32,12 @@ import (
 
 // --- helpers ---
 
+// Provider IDs shared by the fixtures below.
+const (
+	providerOne = "provider-1"
+	providerTwo = "provider-2"
+)
+
 func makeNodeGroup(providerID string, maxSize, reserved int32, cost *float64, carbon *float64, region string) brokerapi.NodeGroupView {
 	ng := brokerapi.NodeGroupView{
 		ID:                providerID + "-standard",
@@ -77,15 +83,15 @@ func TestSelect_ValidResponse(t *testing.T) {
 
 	c := New(srv.URL, "test-model")
 	groups := []brokerapi.NodeGroupView{
-		makeNodeGroup("provider-1", 5, 2, floatPtr(0.10), floatPtr(100), "IDF"),
-		makeNodeGroup("provider-2", 5, 1, floatPtr(0.05), floatPtr(40), "QC"),
+		makeNodeGroup(providerOne, 5, 2, floatPtr(0.10), floatPtr(100), "IDF"),
+		makeNodeGroup(providerTwo, 5, 1, floatPtr(0.05), floatPtr(40), "QC"),
 	}
 
 	ranked, err := c.Select(context.Background(), "cheapest provider", groups)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(ranked) == 0 || ranked[0] != "provider-2" {
+	if len(ranked) == 0 || ranked[0] != providerTwo {
 		t.Fatalf("expected [provider-2, ...], got %v", ranked)
 	}
 }
@@ -103,8 +109,8 @@ func TestSelect_InvalidProviderID(t *testing.T) {
 
 	c := New(srv.URL, "test-model")
 	groups := []brokerapi.NodeGroupView{
-		makeNodeGroup("provider-1", 5, 2, nil, nil, ""),
-		makeNodeGroup("provider-2", 5, 0, nil, nil, ""),
+		makeNodeGroup(providerOne, 5, 2, nil, nil, ""),
+		makeNodeGroup(providerTwo, 5, 0, nil, nil, ""),
 	}
 
 	_, err := c.Select(context.Background(), "any", groups)
@@ -126,8 +132,8 @@ func TestSelect_InvalidJSON(t *testing.T) {
 
 	c := New(srv.URL, "test-model")
 	groups := []brokerapi.NodeGroupView{
-		makeNodeGroup("provider-1", 5, 0, nil, nil, ""),
-		makeNodeGroup("provider-2", 5, 0, nil, nil, ""),
+		makeNodeGroup(providerOne, 5, 0, nil, nil, ""),
+		makeNodeGroup(providerTwo, 5, 0, nil, nil, ""),
 	}
 
 	_, err := c.Select(context.Background(), "any", groups)
@@ -149,8 +155,8 @@ func TestSelect_EmptyProviderID(t *testing.T) {
 
 	c := New(srv.URL, "test-model")
 	groups := []brokerapi.NodeGroupView{
-		makeNodeGroup("provider-1", 5, 0, nil, nil, ""),
-		makeNodeGroup("provider-2", 5, 0, nil, nil, ""),
+		makeNodeGroup(providerOne, 5, 0, nil, nil, ""),
+		makeNodeGroup(providerTwo, 5, 0, nil, nil, ""),
 	}
 
 	_, err := c.Select(context.Background(), "any", groups)
@@ -170,14 +176,14 @@ func TestSelect_SingleProvider_SkipsAI(t *testing.T) {
 
 	c := New(srv.URL, "test-model")
 	groups := []brokerapi.NodeGroupView{
-		makeNodeGroup("provider-1", 5, 0, nil, nil, ""),
+		makeNodeGroup(providerOne, 5, 0, nil, nil, ""),
 	}
 
 	ranked, err := c.Select(context.Background(), "any", groups)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(ranked) != 1 || ranked[0] != "provider-1" {
+	if len(ranked) != 1 || ranked[0] != providerOne {
 		t.Fatalf("expected [provider-1], got %v", ranked)
 	}
 	if called {
@@ -188,7 +194,7 @@ func TestSelect_SingleProvider_SkipsAI(t *testing.T) {
 func TestSelect_NoCapacity(t *testing.T) {
 	c := New("http://localhost:11434", "test-model")
 	groups := []brokerapi.NodeGroupView{
-		makeNodeGroup("provider-1", 5, 5, nil, nil, ""), // full
+		makeNodeGroup(providerOne, 5, 5, nil, nil, ""), // full
 	}
 
 	_, err := c.Select(context.Background(), "any", groups)
@@ -206,8 +212,8 @@ func TestSelect_OllamaDown(t *testing.T) {
 
 	c := New(srv.URL, "test-model")
 	groups := []brokerapi.NodeGroupView{
-		makeNodeGroup("provider-1", 5, 0, nil, nil, ""),
-		makeNodeGroup("provider-2", 5, 0, nil, nil, ""),
+		makeNodeGroup(providerOne, 5, 0, nil, nil, ""),
+		makeNodeGroup(providerTwo, 5, 0, nil, nil, ""),
 	}
 
 	_, err := c.Select(context.Background(), "any", groups)
@@ -303,15 +309,15 @@ func TestSelect_RankedList(t *testing.T) {
 
 	c := New(srv.URL, "test-model")
 	groups := []brokerapi.NodeGroupView{
-		makeNodeGroup("provider-1", 5, 0, floatPtr(0.10), nil, ""),
-		makeNodeGroup("provider-2", 5, 0, floatPtr(0.05), nil, ""),
+		makeNodeGroup(providerOne, 5, 0, floatPtr(0.10), nil, ""),
+		makeNodeGroup(providerTwo, 5, 0, floatPtr(0.05), nil, ""),
 	}
 
 	ranked, err := c.Select(context.Background(), "cheapest", groups)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(ranked) != 2 || ranked[0] != "provider-2" || ranked[1] != "provider-1" {
+	if len(ranked) != 2 || ranked[0] != providerTwo || ranked[1] != providerOne {
 		t.Fatalf("expected [provider-2 provider-1], got %v", ranked)
 	}
 }
@@ -332,15 +338,15 @@ func TestSelect_RankedListFiltersUnknown(t *testing.T) {
 	// entirely, so a one-provider fixture would pass without ever reaching the
 	// filtering this test is named after.
 	groups := []brokerapi.NodeGroupView{
-		makeNodeGroup("provider-1", 5, 0, nil, nil, ""),
-		makeNodeGroup("provider-2", 5, 0, nil, nil, ""),
+		makeNodeGroup(providerOne, 5, 0, nil, nil, ""),
+		makeNodeGroup(providerTwo, 5, 0, nil, nil, ""),
 	}
 
 	ranked, err := c.Select(context.Background(), "any", groups)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(ranked) != 1 || ranked[0] != "provider-1" {
+	if len(ranked) != 1 || ranked[0] != providerOne {
 		t.Fatalf("expected [provider-1] after filtering unknown IDs, got %v", ranked)
 	}
 }
@@ -361,15 +367,15 @@ func TestSelect_RankedListDropsRepeatedIDs(t *testing.T) {
 
 	c := New(srv.URL, "test-model")
 	groups := []brokerapi.NodeGroupView{
-		makeNodeGroup("provider-1", 5, 0, nil, nil, ""),
-		makeNodeGroup("provider-2", 5, 0, nil, nil, ""),
+		makeNodeGroup(providerOne, 5, 0, nil, nil, ""),
+		makeNodeGroup(providerTwo, 5, 0, nil, nil, ""),
 	}
 
 	ranked, err := c.Select(context.Background(), "any", groups)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(ranked) != 2 || ranked[0] != "provider-2" || ranked[1] != "provider-1" {
+	if len(ranked) != 2 || ranked[0] != providerTwo || ranked[1] != providerOne {
 		t.Fatalf("expected [provider-2 provider-1] without repeats, got %v", ranked)
 	}
 }

@@ -23,18 +23,54 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 )
 
-func writeJSONFile(dir, name string, v any) error {
+// writeJSONFile writes v as pretty-printed JSON. Closing the file is part of
+// the result: a failed Close can leave truncated JSON behind, which nothing
+// downstream can parse.
+func writeJSONFile(dir, name string, v any) (err error) {
 	f, err := os.Create(filepath.Join(dir, name))
 	if err != nil {
 		return err
 	}
-	defer f.Close()
+	defer func() {
+		if cerr := f.Close(); err == nil {
+			err = cerr
+		}
+	}()
+
 	enc := json.NewEncoder(f)
 	enc.SetIndent("", "  ")
 	return enc.Encode(v)
+}
+
+// writeCSVFile writes header plus rows to dir/name, reporting a failed close
+// as an error: a truncated CSV would otherwise read as a run with fewer
+// requests in it.
+func writeCSVFile(dir, name string, header []string, rows [][]string) (err error) {
+	f, err := os.Create(filepath.Join(dir, name))
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if cerr := f.Close(); err == nil {
+			err = cerr
+		}
+	}()
+
+	w := csv.NewWriter(f)
+	if err := w.Write(header); err != nil {
+		return err
+	}
+	for _, row := range rows {
+		if err := w.Write(row); err != nil {
+			return err
+		}
+	}
+	w.Flush()
+	return w.Error()
 }
 
 var recordCSVHeader = []string{
@@ -59,62 +95,37 @@ func recordCSVRow(r Record) []string {
 
 // writeRecordCSV writes every record matching filter (nil = all) to name.
 func writeRecordCSV(dir, name string, records []Record, filter func(Record) bool) error {
-	f, err := os.Create(filepath.Join(dir, name))
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-	w := csv.NewWriter(f)
-	defer w.Flush()
-
-	if err := w.Write(recordCSVHeader); err != nil {
-		return err
-	}
+	rows := make([][]string, 0, len(records))
 	for _, r := range records {
 		if filter != nil && !filter(r) {
 			continue
 		}
-		if err := w.Write(recordCSVRow(r)); err != nil {
-			return err
-		}
+		rows = append(rows, recordCSVRow(r))
 	}
-	return w.Error()
+	return writeCSVFile(dir, name, recordCSVHeader, rows)
 }
 
 func writeResourceUsageCSV(dir string, samples []ResourceSample) error {
-	f, err := os.Create(filepath.Join(dir, "broker_resource_usage.csv"))
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-	w := csv.NewWriter(f)
-	defer w.Flush()
-
-	if err := w.Write([]string{"timestamp", "cpu_value", "cpu_unit", "mem_mib", "source"}); err != nil {
-		return err
-	}
+	rows := make([][]string, 0, len(samples))
 	for _, s := range samples {
-		row := []string{
+		rows = append(rows, []string{
 			s.Timestamp.UTC().Format(time.RFC3339Nano),
 			strconv.FormatFloat(s.CPUValue, 'f', 4, 64),
 			s.CPUUnit,
 			strconv.FormatFloat(s.MemMiB, 'f', 3, 64),
 			s.Source,
-		}
-		if err := w.Write(row); err != nil {
-			return err
-		}
+		})
 	}
-	return w.Error()
+	header := []string{"timestamp", "cpu_value", "cpu_unit", "mem_mib", "source"}
+	return writeCSVFile(dir, "broker_resource_usage.csv", header, rows)
 }
 
 // writeSummaryMarkdown renders a human-readable companion to summary.json.
 func writeSummaryMarkdown(dir string, s Summary, cfg *Config) error {
-	f, err := os.Create(filepath.Join(dir, "summary.md"))
-	if err != nil {
-		return err
-	}
-	defer f.Close()
+	// Rendered into a buffer first: writing to memory cannot fail, so the
+	// summary reaches the disk whole or not at all, and the one error that
+	// matters — the write itself — is the one returned.
+	f := &strings.Builder{}
 
 	opRow := func(label string, st OperationStats) string {
 		return fmt.Sprintf("| %s | %d | %d | %d | %d | %d | %.1f | %.1f | %.1f | %.1f | %.1f | %.2f%% |\n",
@@ -167,5 +178,5 @@ func writeSummaryMarkdown(dir string, s Summary, cfg *Config) error {
 		fmt.Fprintf(f, "- %d sampling error(s) occurred (see summary.json for detail).\n", len(s.BrokerResourceUsage.Errors))
 	}
 
-	return nil
+	return os.WriteFile(filepath.Join(dir, "summary.md"), []byte(f.String()), 0o644)
 }

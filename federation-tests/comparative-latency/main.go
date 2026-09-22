@@ -86,27 +86,117 @@ func run() error {
 	return nil
 }
 
+// collectProbeEndpoints reads the UDP echo endpoint each provider advertises,
+// which is what the consumers probe to measure RTT. Fewer than two of them
+// means there is nothing to compare, so the run stops here rather than
+// producing a one-provider "comparison".
+func collectProbeEndpoints(ctx context.Context, clients *testlib.ExperimentClients) (map[string]string, error) {
+	ngResp, err := clients.Broker.GetNodeGroups(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("get nodegroups: %w", err)
+	}
+	endpoints := make(map[string]string)
+	for _, ng := range ngResp.NodeGroups {
+		if ng.ProbeEndpoint != "" {
+			endpoints[ng.ProviderClusterID] = ng.ProbeEndpoint
+		}
+	}
+	if len(endpoints) < 2 {
+		return nil, fmt.Errorf("need >= 2 providers with ProbeEndpoint, got %d (check udpecho deployment)", len(endpoints))
+	}
+	log.Printf("probe endpoints: %v", endpoints)
+	return endpoints, nil
+}
+
+// applyConsumerTCDelays installs the per-(consumer, provider) delay matrix
+// with tc inside each consumer container, and restores whatever it managed to
+// apply if one of them fails.
+//
+// Every consumer's matrix names the same providers, so each provider
+// container's IP is resolved once and reused: ContainerIP shells out to
+// `docker inspect`, and looking it up inside the inner loop cost one inspect
+// per (consumer, provider) pair — 2100 of them at 30 consumers x 70
+// providers, for 70 distinct answers.
+func applyConsumerTCDelays(ctx context.Context, orch *testlib.Orchestrator,
+	delays []testlib.ConsumerDelayConfig) ([]*testlib.TCConsumerDelay, error) {
+
+	applied := make([]*testlib.TCConsumerDelay, 0, len(delays))
+	provIPs := make(map[int]string, len(delays))
+	for _, cd := range delays {
+		containerName := orch.ConsumerContainerName(cd.ConsumerIndex)
+		entries := make([]testlib.ProviderDelayEntry, 0, len(cd.ProviderDelays))
+		for _, pd := range cd.ProviderDelays {
+			provIP, ok := provIPs[pd.ProviderIndex]
+			if !ok {
+				provContainer := orch.ProviderContainerName(pd.ProviderIndex)
+				ip, err := testlib.ContainerIP(ctx, provContainer)
+				if err != nil {
+					return nil, fmt.Errorf("get IP for provider-%d (%s): %w", pd.ProviderIndex, provContainer, err)
+				}
+				provIPs[pd.ProviderIndex] = ip
+				provIP = ip
+			}
+			entries = append(entries, testlib.ProviderDelayEntry{
+				ProviderIP: provIP,
+				DelayMs:    pd.DelayMs,
+				Label:      fmt.Sprintf("provider-%d", pd.ProviderIndex),
+			})
+		}
+		tc := &testlib.TCConsumerDelay{
+			ContainerName:  containerName,
+			Interface:      "eth0",
+			ProviderDelays: entries,
+		}
+		if err := tc.Apply(); err != nil {
+			for _, done := range applied {
+				_ = done.Restore()
+			}
+			return nil, fmt.Errorf("apply consumer tc on %s: %w", containerName, err)
+		}
+		applied = append(applied, tc)
+	}
+	return applied, nil
+}
+
+// applyProviderTCDelays installs one uniform delay per provider container
+// (legacy mode), restoring what it applied if one of them fails.
+func applyProviderTCDelays(orch *testlib.Orchestrator,
+	delays []testlib.TCDelayAutoConfig) ([]*testlib.TCDelayKind, error) {
+
+	applied := make([]*testlib.TCDelayKind, 0, len(delays))
+	for _, tcd := range delays {
+		containerName := orch.ProviderContainerName(tcd.ProviderIndex)
+		iface := tcd.Interface
+		if iface == "" {
+			iface = "eth0"
+		}
+		tc := &testlib.TCDelayKind{
+			ContainerName: containerName,
+			Interface:     iface,
+			DelayMs:       tcd.DelayMs,
+		}
+		log.Printf("  tc: %s +%dms", containerName, tcd.DelayMs)
+		if err := tc.Apply(); err != nil {
+			for _, done := range applied {
+				_ = done.Restore()
+			}
+			return nil, fmt.Errorf("apply tc on %s: %w", containerName, err)
+		}
+		applied = append(applied, tc)
+	}
+	return applied, nil
+}
+
 func runExperiment(ctx context.Context, orch *testlib.Orchestrator) error {
 	startTime := time.Now()
 	cfg := orch.Config
 	exp := cfg.Experiment
 	clients := orch.Clients
 
-	// Collect probe endpoints from initial nodegroups.
-	ngResp, err := clients.Broker.GetNodeGroups(ctx)
+	probeEndpoints, err := collectProbeEndpoints(ctx, clients)
 	if err != nil {
-		return fmt.Errorf("get nodegroups: %w", err)
+		return err
 	}
-	probeEndpoints := make(map[string]string)
-	for _, ng := range ngResp.NodeGroups {
-		if ng.ProbeEndpoint != "" {
-			probeEndpoints[ng.ProviderClusterID] = ng.ProbeEndpoint
-		}
-	}
-	if len(probeEndpoints) < 2 {
-		return fmt.Errorf("need >= 2 providers with ProbeEndpoint, got %d (check udpecho deployment)", len(probeEndpoints))
-	}
-	log.Printf("probe endpoints: %v", probeEndpoints)
 
 	// Clear stale policies.
 	if err := clients.SetPolicyAll(ctx, "None", 0); err != nil {
@@ -119,46 +209,9 @@ func runExperiment(ctx context.Context, orch *testlib.Orchestrator) error {
 	var consumerTCs []*testlib.TCConsumerDelay
 	var providerTCs []*testlib.TCDelayKind
 	if len(exp.ConsumerDelays) > 0 {
-		// Consumer-side tc: per-consumer × per-provider delay matrix.
-		//
-		// Every consumer's matrix names the same providers, so resolve each
-		// provider container's IP once and reuse it: ContainerIP shells out to
-		// `docker inspect`, and looking it up inside the inner loop cost one
-		// inspect per (consumer, provider) pair — 2100 of them at 30
-		// consumers x 70 providers, for 70 distinct answers.
-		provIPs := make(map[int]string, len(exp.ConsumerDelays))
-		for _, cd := range exp.ConsumerDelays {
-			containerName := orch.ConsumerContainerName(cd.ConsumerIndex)
-			var entries []testlib.ProviderDelayEntry
-			for _, pd := range cd.ProviderDelays {
-				provIP, ok := provIPs[pd.ProviderIndex]
-				if !ok {
-					provContainer := orch.ProviderContainerName(pd.ProviderIndex)
-					ip, err := testlib.ContainerIP(ctx, provContainer)
-					if err != nil {
-						return fmt.Errorf("get IP for provider-%d (%s): %w", pd.ProviderIndex, provContainer, err)
-					}
-					provIPs[pd.ProviderIndex] = ip
-					provIP = ip
-				}
-				entries = append(entries, testlib.ProviderDelayEntry{
-					ProviderIP: provIP,
-					DelayMs:    pd.DelayMs,
-					Label:      fmt.Sprintf("provider-%d", pd.ProviderIndex),
-				})
-			}
-			tc := &testlib.TCConsumerDelay{
-				ContainerName:  containerName,
-				Interface:      "eth0",
-				ProviderDelays: entries,
-			}
-			if err := tc.Apply(); err != nil {
-				for _, applied := range consumerTCs {
-					_ = applied.Restore()
-				}
-				return fmt.Errorf("apply consumer tc on %s: %w", containerName, err)
-			}
-			consumerTCs = append(consumerTCs, tc)
+		var err error
+		if consumerTCs, err = applyConsumerTCDelays(ctx, orch, exp.ConsumerDelays); err != nil {
+			return err
 		}
 		defer func() {
 			for _, tc := range consumerTCs {
@@ -169,26 +222,9 @@ func runExperiment(ctx context.Context, orch *testlib.Orchestrator) error {
 			}
 		}()
 	} else {
-		// Provider-side tc: uniform delay per provider (legacy mode).
-		for _, tcd := range exp.TCDelaysAuto {
-			containerName := orch.ProviderContainerName(tcd.ProviderIndex)
-			iface := tcd.Interface
-			if iface == "" {
-				iface = "eth0"
-			}
-			tc := &testlib.TCDelayKind{
-				ContainerName: containerName,
-				Interface:     iface,
-				DelayMs:       tcd.DelayMs,
-			}
-			log.Printf("  tc: %s +%dms", containerName, tcd.DelayMs)
-			if err := tc.Apply(); err != nil {
-				for _, applied := range providerTCs {
-					_ = applied.Restore()
-				}
-				return fmt.Errorf("apply tc on %s: %w", containerName, err)
-			}
-			providerTCs = append(providerTCs, tc)
+		var err error
+		if providerTCs, err = applyProviderTCDelays(orch, exp.TCDelaysAuto); err != nil {
+			return err
 		}
 		defer func() {
 			for _, tc := range providerTCs {
@@ -272,7 +308,7 @@ func runExperiment(ctx context.Context, orch *testlib.Orchestrator) error {
 
 	var phaseASel []testlib.SelectionRecord
 	var phaseAProbe []testlib.ProbeRecord
-	if mode == "reserve" {
+	if mode == testlib.ModeReserve {
 		var phaseARes []testlib.ReservationRecord
 		var phaseAFed []testlib.FederationSampleRecord
 		phaseASel, phaseAProbe, phaseARes, phaseAFed, err = runReservePhase(ctx, orch, clients, probeEndpoints, testlib.PhaseA, "Random")
@@ -345,7 +381,7 @@ func runExperiment(ctx context.Context, orch *testlib.Orchestrator) error {
 
 	var phaseBSel []testlib.SelectionRecord
 	var phaseBProbe []testlib.ProbeRecord
-	if mode == "reserve" {
+	if mode == testlib.ModeReserve {
 		var phaseBRes []testlib.ReservationRecord
 		var phaseBFed []testlib.FederationSampleRecord
 		phaseBSel, phaseBProbe, phaseBRes, phaseBFed, err = runReservePhase(ctx, orch, clients, probeEndpoints, testlib.PhaseB, "Latency")
@@ -370,22 +406,64 @@ func runExperiment(ctx context.Context, orch *testlib.Orchestrator) error {
 	}
 
 	// --- Write results ---
+	summary, err := writeResults(ctx, orch, startTime, experimentRecords{
+		mode:         mode,
+		selections:   allSelections,
+		probes:       allProbes,
+		reservations: allReservations,
+		federation:   allFederation,
+		phaseASel:    phaseASel,
+		phaseAProbe:  phaseAProbe,
+		phaseBSel:    phaseBSel,
+		phaseBProbe:  phaseBProbe,
+	})
+	if err != nil {
+		return err
+	}
+
+	log.Println("=== DONE ===")
+	printSummary(summary)
+	return nil
+}
+
+// experimentRecords is everything a finished run has to write out.
+type experimentRecords struct {
+	mode         string
+	selections   []testlib.SelectionRecord
+	probes       []testlib.ProbeRecord
+	reservations []testlib.ReservationRecord
+	federation   []testlib.FederationSampleRecord
+	phaseASel    []testlib.SelectionRecord
+	phaseAProbe  []testlib.ProbeRecord
+	phaseBSel    []testlib.SelectionRecord
+	phaseBProbe  []testlib.ProbeRecord
+}
+
+// writeResults writes every CSV plus summary.json/summary.md, and returns the
+// summary it wrote so the caller can print it.
+func writeResults(ctx context.Context, orch *testlib.Orchestrator, startTime time.Time,
+	rec experimentRecords) (testlib.ExperimentSummary, error) {
+
+	cfg := orch.Config
+	exp := cfg.Experiment
+	clients := orch.Clients
 	outputDir := orch.OutputDir
 	log.Printf("writing results to %s", outputDir)
-	if err := testlib.WriteSelectionCSV(outputDir, "selections.csv", allSelections); err != nil {
-		return fmt.Errorf("write selections CSV: %w", err)
+
+	if err := testlib.WriteSelectionCSV(outputDir, "selections.csv", rec.selections); err != nil {
+		return testlib.ExperimentSummary{}, fmt.Errorf("write selections CSV: %w", err)
 	}
-	if err := testlib.WriteProbeCSV(outputDir, "probes.csv", allProbes); err != nil {
-		return fmt.Errorf("write probes CSV: %w", err)
+	if err := testlib.WriteProbeCSV(outputDir, "probes.csv", rec.probes); err != nil {
+		return testlib.ExperimentSummary{}, fmt.Errorf("write probes CSV: %w", err)
 	}
-	if mode == "reserve" && len(allReservations) > 0 {
-		if err := testlib.WriteReservationCSV(outputDir, "reservations.csv", allReservations); err != nil {
-			return fmt.Errorf("write reservations CSV: %w", err)
+	if rec.mode == testlib.ModeReserve && len(rec.reservations) > 0 {
+		if err := testlib.WriteReservationCSV(outputDir, "reservations.csv", rec.reservations); err != nil {
+			return testlib.ExperimentSummary{}, fmt.Errorf("write reservations CSV: %w", err)
 		}
 	}
-	if len(allFederation) > 0 {
-		if err := testlib.WriteFederationCSV(outputDir, "federation.csv", allFederation); err != nil {
-			return fmt.Errorf("write federation CSV: %w", err)
+	if len(rec.federation) > 0 {
+		if err := testlib.WriteFederationCSV(outputDir, "federation.csv", rec.federation); err != nil {
+			return testlib.ExperimentSummary{}, fmt.Errorf("write federation CSV: %w", err)
 		}
 	}
 
@@ -412,19 +490,16 @@ func runExperiment(ctx context.Context, orch *testlib.Orchestrator) error {
 		TimerConfigured:    timerConfigured,
 		PhaseAPolicy:       "Random",
 		PhaseBPolicy:       "Latency",
-		PhaseASummary:      summarizeLatencyPhase(phaseASel, phaseAProbe),
-		PhaseBSummary:      summarizeLatencyPhase(phaseBSel, phaseBProbe),
+		PhaseASummary:      summarizeLatencyPhase(rec.phaseASel, rec.phaseAProbe),
+		PhaseBSummary:      summarizeLatencyPhase(rec.phaseBSel, rec.phaseBProbe),
 	}
 	if err := testlib.WriteJSONFile(outputDir, "summary.json", summary); err != nil {
-		return fmt.Errorf("write summary: %w", err)
+		return testlib.ExperimentSummary{}, fmt.Errorf("write summary: %w", err)
 	}
 	if err := testlib.WriteSummaryMarkdown(outputDir, summary); err != nil {
-		return fmt.Errorf("write markdown: %w", err)
+		return testlib.ExperimentSummary{}, fmt.Errorf("write markdown: %w", err)
 	}
-
-	log.Println("=== DONE ===")
-	printSummary(summary)
-	return nil
+	return summary, nil
 }
 
 // runLatencyPhase drives one probe/select cycle per iteration. Consumers are
@@ -564,7 +639,7 @@ func runLatencyConsumerIteration(ctx context.Context, clients *testlib.Experimen
 		if rtt, ok := probeResp.RTTs[probeResp.Chosen]; ok {
 			rec.RTTMs = rtt
 		}
-		rec.Outcome = "success"
+		rec.Outcome = testlib.OutcomeSuccess
 		rec.DurationMs = msSince(start)
 		appendSel(rec)
 
@@ -612,7 +687,7 @@ func runLatencyConsumerIteration(ctx context.Context, clients *testlib.Experimen
 			}
 		}
 
-		rec.Outcome = "success"
+		rec.Outcome = testlib.OutcomeSuccess
 		rec.DurationMs = msSince(start)
 		appendSel(rec)
 	}
@@ -896,6 +971,188 @@ const raceRetryBackoff = 750 * time.Millisecond
 // runLatencyReserveConsumerIteration is the per-consumer, per-iteration body
 // of runReservePhase, safe to run concurrently with other consumers' calls:
 // every access to shared state goes through state's own locking.
+// latencyChoiceInput is what picking a provider for one iteration needs: the
+// clients to talk to, where to record the outcome, and the iteration's own
+// identity for the records it writes.
+type latencyChoiceInput struct {
+	ctx               context.Context
+	console           *testlib.ConsoleClient
+	state             *latencyReservePhaseState
+	endpoints         map[string]string
+	phase             string
+	policy            string
+	consID            string
+	iteration         int
+	attempt           int
+	start             time.Time
+	initialProvider   string
+	cur               *testlib.ConsumerReservation
+	keepNoAlternative func(reason string)
+}
+
+// latencyChoice is the provider one iteration decided to aim for, with the
+// RTT measurement that led there.
+type latencyChoice struct {
+	providerID  string
+	nodeGroupID string
+	rtt         float64
+	probe       *testlib.ProbeRecord
+	// hadAlternatives is false when the Broker offered nowhere to move to.
+	// The Random branch always yields a winner distinct from the incumbent's
+	// masking, so only the shortlist branch can find itself with the
+	// incumbent as the sole candidate.
+	hadAlternatives bool
+}
+
+// chooseLatencyProvider picks the provider this iteration should end up on:
+// by probing the Broker's shortlist under the Latency policy, or by taking
+// the single winner the Broker masked to under Random. The second return
+// value is true when the iteration's outcome has already been recorded (no
+// candidate, no winner, probe failure) and the caller must stop.
+func chooseLatencyProvider(it latencyChoiceInput, ngResp *brokerapi.NodeGroupListResponse) (latencyChoice, bool) {
+	if ngResp.LatencyShortlist {
+		return chooseByProbe(it, ngResp)
+	}
+	return chooseBrokerWinner(it, ngResp)
+}
+
+// chooseByProbe measures every shortlisted provider from the consumer's own
+// network namespace and takes the fastest.
+func chooseByProbe(it latencyChoiceInput, ngResp *brokerapi.NodeGroupListResponse) (latencyChoice, bool) {
+	growable := testlib.GrowableNodeGroups(ngResp.NodeGroups)
+	candidates := make([]testlib.ProbeCandidate, 0, len(growable)+1)
+	for _, ng := range growable {
+		if ep, ok := it.endpoints[ng.ProviderClusterID]; ok {
+			candidates = append(candidates, testlib.ProbeCandidate{
+				ProviderClusterID: ng.ProviderClusterID,
+				Endpoint:          ep,
+			})
+		}
+	}
+	// Whether the Broker offered anywhere to move to, decided before the
+	// incumbent is added below so a lone incumbent still reads as "nothing
+	// else was free".
+	choice := latencyChoice{hadAlternatives: len(candidates) > 0}
+
+	// Probe the provider we are already on, even though the Broker masked it.
+	// Its shortlist only carries providers with head-room, and a consumer
+	// holding the last chunk of its own provider fills it — so the incumbent
+	// never appeared, was never measured, and the switch test (which requires
+	// the incumbent's RTT) could only ever answer "keep". Measuring it makes
+	// the choice a real comparison between where we are and where we could
+	// go, and gives the keep rows the RTT of the provider actually kept
+	// instead of some other candidate's.
+	if it.cur != nil {
+		if ep, ok := it.endpoints[it.cur.ProviderClusterID]; ok && !hasCandidate(candidates, it.cur.ProviderClusterID) {
+			candidates = append(candidates, testlib.ProbeCandidate{
+				ProviderClusterID: it.cur.ProviderClusterID,
+				Endpoint:          ep,
+			})
+		}
+	}
+
+	if len(candidates) == 0 {
+		if it.cur != nil {
+			it.keepNoAlternative(fmt.Sprintf("growable=%d, none with ProbeEndpoint", len(growable)))
+			return choice, true
+		}
+		it.state.addSelection(it.record("no-candidates", "no growable with ProbeEndpoint"))
+		log.Printf("[%s] iter %d %s: no probe candidates (growable=%d)",
+			it.phase, it.iteration, it.consID, len(growable))
+		return choice, true
+	}
+
+	probeResp, err := it.console.Probe(it.ctx, candidates)
+	if err != nil {
+		it.state.addSelection(it.record("probe-error", err.Error()))
+		return choice, true
+	}
+
+	choice.providerID = probeResp.Chosen
+	if ng := testlib.FindNodeGroupByProvider(ngResp.NodeGroups, probeResp.Chosen); ng != nil {
+		choice.nodeGroupID = ng.ID
+	}
+	if rtt, ok := probeResp.RTTs[probeResp.Chosen]; ok {
+		choice.rtt = rtt
+	}
+	choice.probe = it.probeRecord(probeResp.Chosen, probeResp.RTTs, probeResp.Duration)
+	return choice, false
+}
+
+// chooseBrokerWinner takes the single provider the Broker masked to (Random
+// phase) and measures it, so the baseline rows carry an RTT too.
+func chooseBrokerWinner(it latencyChoiceInput, ngResp *brokerapi.NodeGroupListResponse) (latencyChoice, bool) {
+	choice := latencyChoice{hadAlternatives: true}
+
+	winner := testlib.FindWinner(ngResp.NodeGroups)
+	if winner == nil {
+		growable := testlib.GrowableNodeGroups(ngResp.NodeGroups)
+		if it.cur != nil {
+			it.keepNoAlternative(fmt.Sprintf("growable=%d", len(growable)))
+			return choice, true
+		}
+		it.state.addSelection(it.record("no-winner",
+			fmt.Sprintf("growable=%d applied=%s", len(growable), ngResp.AppliedPlacement)))
+		log.Printf("[%s] iter %d %s: no single winner (growable=%d)", it.phase, it.iteration, it.consID, len(growable))
+		return choice, true
+	}
+	choice.providerID = winner.ProviderClusterID
+	choice.nodeGroupID = winner.ID
+
+	if ep, ok := it.endpoints[winner.ProviderClusterID]; ok {
+		probeResp, err := it.console.Probe(it.ctx, []testlib.ProbeCandidate{{
+			ProviderClusterID: winner.ProviderClusterID,
+			Endpoint:          ep,
+		}})
+		if err == nil {
+			if rtt, ok := probeResp.RTTs[winner.ProviderClusterID]; ok {
+				choice.rtt = rtt
+			}
+			choice.probe = it.probeRecord(winner.ProviderClusterID, probeResp.RTTs, probeResp.Duration)
+		}
+	}
+	return choice, false
+}
+
+func hasCandidate(candidates []testlib.ProbeCandidate, providerID string) bool {
+	for _, c := range candidates {
+		if c.ProviderClusterID == providerID {
+			return true
+		}
+	}
+	return false
+}
+
+// record builds the selection row for an iteration that ended without a
+// reservation attempt.
+func (it latencyChoiceInput) record(outcome, message string) testlib.SelectionRecord {
+	return testlib.SelectionRecord{
+		Timestamp:         it.start,
+		ConsumerID:        it.consID,
+		Phase:             it.phase,
+		Policy:            it.policy,
+		Iteration:         it.iteration,
+		Outcome:           outcome,
+		ErrorMessage:      message,
+		DurationMs:        msSince(it.start),
+		InitialProviderID: it.initialProvider,
+		RetryCount:        it.attempt,
+	}
+}
+
+func (it latencyChoiceInput) probeRecord(chosen string, rtts map[string]float64, durationMs float64) *testlib.ProbeRecord {
+	return &testlib.ProbeRecord{
+		Timestamp:  it.start,
+		ConsumerID: it.consID,
+		Phase:      it.phase,
+		Policy:     it.policy,
+		Iteration:  it.iteration,
+		Chosen:     chosen,
+		RTTs:       rtts,
+		DurationMs: durationMs,
+	}
+}
+
 func runLatencyReserveConsumerIteration(ctx context.Context, orch *testlib.Orchestrator, clients *testlib.ExperimentClients, endpoints map[string]string, phase, policy string, i int, consID string, pollInterval time.Duration, exp testlib.TestParams, state *latencyReservePhaseState) {
 	console := clients.Consoles[consID]
 	broker := clients.BrokerFor(consID)
@@ -978,159 +1235,30 @@ func runLatencyReserveConsumerIteration(ctx context.Context, orch *testlib.Orche
 				phase, i, consID, cur.ProviderClusterID, reason)
 		}
 
-		// The Random/Eco branch always yields a winner distinct from the
-		// incumbent's masking, so it always had somewhere to go; only the
-		// shortlist branch can find itself with the incumbent as the sole
-		// candidate.
-		hadAlternatives := true
-
-		if ngResp.LatencyShortlist {
-			growable := testlib.GrowableNodeGroups(ngResp.NodeGroups)
-			var candidates []testlib.ProbeCandidate
-			for _, ng := range growable {
-				if ep, ok := endpoints[ng.ProviderClusterID]; ok {
-					candidates = append(candidates, testlib.ProbeCandidate{
-						ProviderClusterID: ng.ProviderClusterID,
-						Endpoint:          ep,
-					})
-				}
-			}
-			// Whether the Broker offered anywhere to move to, decided before
-			// the incumbent is added below so a lone incumbent still reads as
-			// "nothing else was free".
-			hadAlternatives = len(candidates) > 0
-
-			// Probe the provider we are already on, even though the Broker
-			// masked it. Its shortlist only carries providers with head-room,
-			// and a consumer holding the last chunk of its own provider fills
-			// it — so the incumbent never appeared, was never measured, and
-			// the switch test below (which requires the incumbent's RTT)
-			// could only ever answer "keep". Measuring it makes the choice a
-			// real comparison between where we are and where we could go, and
-			// gives the keep rows the RTT of the provider actually kept
-			// instead of some other candidate's.
-			if cur != nil {
-				if ep, ok := endpoints[cur.ProviderClusterID]; ok {
-					already := false
-					for _, c := range candidates {
-						if c.ProviderClusterID == cur.ProviderClusterID {
-							already = true
-							break
-						}
-					}
-					if !already {
-						candidates = append(candidates, testlib.ProbeCandidate{
-							ProviderClusterID: cur.ProviderClusterID,
-							Endpoint:          ep,
-						})
-					}
-				}
-			}
-
-			if len(candidates) == 0 {
-				if cur != nil {
-					keepNoAlternative(fmt.Sprintf("growable=%d, none with ProbeEndpoint", len(growable)))
-					return
-				}
-				state.addSelection(testlib.SelectionRecord{
-					Timestamp:         start,
-					ConsumerID:        consID,
-					Phase:             phase,
-					Policy:            policy,
-					Iteration:         i,
-					Outcome:           "no-candidates",
-					ErrorMessage:      "no growable with ProbeEndpoint",
-					DurationMs:        msSince(start),
-					InitialProviderID: initialProvider,
-					RetryCount:        attempt,
-				})
-				log.Printf("[%s] iter %d %s: no probe candidates (growable=%d)",
-					phase, i, consID, len(growable))
-				return
-			}
-
-			probeResp, err := console.Probe(ctx, candidates)
-			if err != nil {
-				state.addSelection(testlib.SelectionRecord{
-					Timestamp:         start,
-					ConsumerID:        consID,
-					Phase:             phase,
-					Policy:            policy,
-					Iteration:         i,
-					Outcome:           "probe-error",
-					ErrorMessage:      err.Error(),
-					DurationMs:        msSince(start),
-					InitialProviderID: initialProvider,
-					RetryCount:        attempt,
-				})
-				return
-			}
-
-			chosenProviderID = probeResp.Chosen
-			if ng := testlib.FindNodeGroupByProvider(ngResp.NodeGroups, probeResp.Chosen); ng != nil {
-				chosenNodeGroupID = ng.ID
-			}
-			if rtt, ok := probeResp.RTTs[probeResp.Chosen]; ok {
-				chosenRTT = rtt
-			}
-			probeRec = &testlib.ProbeRecord{
-				Timestamp:  start,
-				ConsumerID: consID,
-				Phase:      phase,
-				Policy:     policy,
-				Iteration:  i,
-				Chosen:     probeResp.Chosen,
-				RTTs:       probeResp.RTTs,
-				DurationMs: probeResp.Duration,
-			}
-		} else {
-			winner := testlib.FindWinner(ngResp.NodeGroups)
-			if winner == nil {
-				growable := testlib.GrowableNodeGroups(ngResp.NodeGroups)
-				if cur != nil {
-					keepNoAlternative(fmt.Sprintf("growable=%d", len(growable)))
-					return
-				}
-				state.addSelection(testlib.SelectionRecord{
-					Timestamp:         start,
-					ConsumerID:        consID,
-					Phase:             phase,
-					Policy:            policy,
-					Iteration:         i,
-					Outcome:           "no-winner",
-					ErrorMessage:      fmt.Sprintf("growable=%d applied=%s", len(growable), ngResp.AppliedPlacement),
-					DurationMs:        msSince(start),
-					InitialProviderID: initialProvider,
-					RetryCount:        attempt,
-				})
-				log.Printf("[%s] iter %d %s: no single winner (growable=%d)", phase, i, consID, len(growable))
-				return
-			}
-			chosenProviderID = winner.ProviderClusterID
-			chosenNodeGroupID = winner.ID
-
-			if ep, ok := endpoints[winner.ProviderClusterID]; ok {
-				probeResp, err := console.Probe(ctx, []testlib.ProbeCandidate{{
-					ProviderClusterID: winner.ProviderClusterID,
-					Endpoint:          ep,
-				}})
-				if err == nil {
-					if rtt, ok := probeResp.RTTs[winner.ProviderClusterID]; ok {
-						chosenRTT = rtt
-					}
-					probeRec = &testlib.ProbeRecord{
-						Timestamp:  start,
-						ConsumerID: consID,
-						Phase:      phase,
-						Policy:     policy,
-						Iteration:  i,
-						Chosen:     winner.ProviderClusterID,
-						RTTs:       probeResp.RTTs,
-						DurationMs: probeResp.Duration,
-					}
-				}
-			}
+		it := latencyChoiceInput{
+			ctx:               ctx,
+			console:           console,
+			state:             state,
+			endpoints:         endpoints,
+			phase:             phase,
+			policy:            policy,
+			consID:            consID,
+			iteration:         i,
+			attempt:           attempt,
+			start:             start,
+			initialProvider:   initialProvider,
+			cur:               cur,
+			keepNoAlternative: keepNoAlternative,
 		}
+		choice, recorded := chooseLatencyProvider(it, ngResp)
+		if recorded {
+			return
+		}
+		chosenProviderID = choice.providerID
+		chosenNodeGroupID = choice.nodeGroupID
+		chosenRTT = choice.rtt
+		probeRec = choice.probe
+		hadAlternatives := choice.hadAlternatives
 
 		if initialProvider == "" && chosenProviderID != "" {
 			initialProvider = chosenProviderID
@@ -1195,7 +1323,7 @@ func runLatencyReserveConsumerIteration(ctx context.Context, orch *testlib.Orche
 		if !shouldSwitch {
 			// Distinguish "stayed because it was the best" from "stayed
 			// because the Broker offered nowhere to go".
-			outcome := "success"
+			outcome := testlib.OutcomeSuccess
 			reason := ""
 			if !hadAlternatives {
 				outcome = testlib.OutcomeKeepNoAlternative
@@ -1362,7 +1490,7 @@ func runLatencyReserveConsumerIteration(ctx context.Context, orch *testlib.Orche
 			NodeGroupID:       chosenNodeGroupID,
 			ReservationID:     resID,
 			RTTMs:             chosenRTT,
-			Outcome:           "success",
+			Outcome:           testlib.OutcomeSuccess,
 			DurationMs:        msSince(start),
 			InitialProviderID: initialProvider,
 			RetryCount:        attempt,
@@ -1383,7 +1511,7 @@ func runLatencyReserveConsumerIteration(ctx context.Context, orch *testlib.Orche
 			TotalMs:           msSince(start),
 			FinalPhase:        string(resp.Status),
 			RTTMs:             chosenRTT,
-			Outcome:           "success",
+			Outcome:           testlib.OutcomeSuccess,
 			InitialProviderID: initialProvider,
 			RetryCount:        attempt,
 		})
@@ -1403,7 +1531,7 @@ func summarizeLatencyPhase(selections []testlib.SelectionRecord, _ []testlib.Pro
 		// A keep-no-alternative iteration ended with the consumer holding
 		// working capacity, so it counts as a success here; selections.csv
 		// keeps the two apart for anyone who needs the distinction.
-		if r.Outcome == "success" || r.Outcome == testlib.OutcomeKeepNoAlternative {
+		if r.Outcome == testlib.OutcomeSuccess || r.Outcome == testlib.OutcomeKeepNoAlternative {
 			s.Successes++
 			s.SelectionCounts[r.SelectedID]++
 			if r.RTTMs > 0 && !math.IsInf(r.RTTMs, 1) {

@@ -205,7 +205,7 @@ func (rt *ollamaRuntime) waitReady(ctx context.Context, timeout time.Duration) e
 			return err
 		}
 	}
-	return fmt.Errorf("Ollama at %s not ready after %s: %w", redactURL(rt.baseURL), timeout, lastErr)
+	return fmt.Errorf("timed out waiting for Ollama at %s after %s: %w", redactURL(rt.baseURL), timeout, lastErr)
 }
 
 // serverVersion is the version the server reported, or "" before it answered.
@@ -499,7 +499,7 @@ func (rt *ollamaRuntime) repointHarness(ctx context.Context, containerURL string
 	}
 	chosen, err := firstAnswering(ctx, candidates, rt.probeVersion, 45*time.Second, 3*time.Second)
 	if err != nil {
-		return fmt.Errorf("Ollama is unreachable from the harness after joining the Kind network (tried %v): %w",
+		return fmt.Errorf("cannot reach Ollama from the harness after joining the Kind network (tried %v): %w",
 			candidates, err)
 	}
 	if chosen != rt.baseURL {

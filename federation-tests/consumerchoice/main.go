@@ -47,6 +47,13 @@ import (
 
 const consumerID = "consumer-1"
 
+// The two verdicts a run can end with, as written in summary.json/summary.md
+// and reflected in the process exit status.
+const (
+	verdictPass = "PASS"
+	verdictFail = "FAIL"
+)
+
 func main() {
 	if err := run(); err != nil {
 		log.Fatal(err)
@@ -409,7 +416,7 @@ func (s *suiteRun) finish(fatal error) error {
 	if fatal != nil {
 		return errors.Join(append([]error{fatal}, writeErrs...)...)
 	}
-	if verdict != "PASS" {
+	if verdict != verdictPass {
 		failed := fmt.Errorf("ConsumerChoice validation failed; see %s", filepath.Join(out, "summary.md"))
 		return errors.Join(append([]error{failed}, writeErrs...)...)
 	}
@@ -466,9 +473,9 @@ func (s *suiteRun) verdict(m RunMetrics, outcomes []RepetitionOutcome, fatal err
 		reasons = append(reasons, "no repetition ran")
 	}
 	if len(reasons) > 0 {
-		return "FAIL", reasons
+		return verdictFail, reasons
 	}
-	return "PASS", nil
+	return verdictPass, nil
 }
 
 // noUsableAnswer reports a run in which the model was asked and never answered

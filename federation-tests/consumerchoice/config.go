@@ -373,6 +373,16 @@ func (c *ChoiceConfig) validate(shared *testlib.AutoConfig, regionsExplicit bool
 		errs = append(errs, fmt.Errorf("providerProfiles has %d entries, providers is %d: they must match one to one",
 			len(c.ProviderProfiles), shared.Providers))
 	}
+	errs = append(errs, c.validateProviders(shared)...)
+	errs = append(errs, c.validateModelSettings()...)
+	errs = append(errs, c.validateScenarios()...)
+	return errors.Join(errs...)
+}
+
+// validateProviders checks the provider catalogue: the regions it places
+// providers in, and each profile's carbon, prices and capacity.
+func (c *ChoiceConfig) validateProviders(shared *testlib.AutoConfig) []error {
+	var errs []error
 	seen := map[string]int{}
 	for i, region := range shared.ProviderRegions {
 		if _, _, _, ok := testlib.RegionLocation(region); !ok {
@@ -405,6 +415,13 @@ func (c *ChoiceConfig) validate(shared *testlib.AutoConfig, regionsExplicit bool
 			errs = append(errs, fmt.Errorf("providerProfiles[%d].capacity is below one chunk (2 CPU / 4Gi)", i))
 		}
 	}
+	return errs
+}
+
+// validateModelSettings checks how the model is reached and what happens
+// when it cannot be used.
+func (c *ChoiceConfig) validateModelSettings() []error {
+	var errs []error
 	switch c.Fallback.Mode {
 	case fallbackFail, fallbackAgentDefault, fallbackCheapest, fallbackLowestCarbon:
 	default:
@@ -415,6 +432,12 @@ func (c *ChoiceConfig) validate(shared *testlib.AutoConfig, regionsExplicit bool
 		errs = append(errs, errors.New("ollama.baseUrl is required when ollama.managed is false"))
 	}
 	errs = append(errs, c.AgentPath.validate(c.Ollama)...)
+	return errs
+}
+
+// validateScenarios checks each scenario's name, request and success criterion.
+func (c *ChoiceConfig) validateScenarios() []error {
+	var errs []error
 	if len(c.Scenarios) == 0 {
 		errs = append(errs, errors.New("at least one scenario is required"))
 	}
@@ -444,5 +467,5 @@ func (c *ChoiceConfig) validate(shared *testlib.AutoConfig, regionsExplicit bool
 			errs = append(errs, fmt.Errorf("scenarios[%d].referenceWeights must be non-negative and not all zero", i))
 		}
 	}
-	return errors.Join(errs...)
+	return errs
 }

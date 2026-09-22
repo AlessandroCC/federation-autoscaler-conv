@@ -63,7 +63,7 @@ func TestComputeStats_CancelledIsNotAnError(t *testing.T) {
 		return Record{Operation: OpEvaluation, Phase: PhaseMeasurement, Outcome: o, LatencyMS: 1}
 	}
 	records := []Record{rec(OutcomeSuccess), rec(OutcomeSuccess), rec(OutcomeFailure), rec(OutcomeCancelled)}
-	st := computeStats(records, OpEvaluation, PhaseMeasurement, time.Minute)
+	st := computeStats(records, OpEvaluation, time.Minute)
 	if st.Attempts != 3 || st.Cancelled != 1 || st.Failures != 1 {
 		t.Errorf("attempts %d, cancelled %d, failures %d; want 3, 1, 1", st.Attempts, st.Cancelled, st.Failures)
 	}

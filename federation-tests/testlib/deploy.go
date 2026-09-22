@@ -82,10 +82,10 @@ func DeployAll(ctx context.Context, opts DeployOpts) error {
 	}
 
 	// Replace static mocks with controllable versions for tests.
-	if err := deployControllableMockEco(ctx, opts.RepoRoot, centralSpec, centralIP); err != nil {
+	if err := deployControllableMockEco(ctx, opts.RepoRoot, centralSpec); err != nil {
 		return fmt.Errorf("deploy controllable mock-eco: %w", err)
 	}
-	if err := deployControllableMockGeo(ctx, opts.RepoRoot, centralSpec, centralIP); err != nil {
+	if err := deployControllableMockGeo(ctx, opts.RepoRoot, centralSpec); err != nil {
 		return fmt.Errorf("deploy controllable mock-geo: %w", err)
 	}
 
@@ -144,6 +144,11 @@ func DeployAll(ctx context.Context, opts DeployOpts) error {
 	return nil
 }
 
+// liqoProviderKind is the InfraConfig.LiqoProvider value these tests run on:
+// the deploy scripts pass provider-specific flags to liqoctl, and only the
+// Kind path is exercised here.
+const liqoProviderKind = "kind"
+
 // deployMaxAttempts / deployRetryDelay bound retryDeploy below.
 const deployMaxAttempts = 3
 const deployRetryDelay = 15 * time.Second
@@ -198,7 +203,7 @@ func deployCentral(ctx context.Context, standaloneDir string, spec ClusterSpec, 
 		"--registry", opts.ImgPrefix,
 		"--tag", opts.ImgTag,
 	}
-	return runScript(ctx, "bash", args...)
+	return runBashScript(ctx, args...)
 }
 
 func deployMocks(ctx context.Context, standaloneDir string, spec ClusterSpec, opts DeployOpts) error {
@@ -210,7 +215,7 @@ func deployMocks(ctx context.Context, standaloneDir string, spec ClusterSpec, op
 		"--registry", opts.ImgPrefix,
 		"--tag", opts.ImgTag,
 	}
-	return runScript(ctx, "bash", args...)
+	return runBashScript(ctx, args...)
 }
 
 func mintJoinBundle(ctx context.Context, standaloneDir, caDir, clusterID, bundleDir string) error {
@@ -224,7 +229,7 @@ func mintJoinBundle(ctx context.Context, standaloneDir, caDir, clusterID, bundle
 		"--ca-dir", caDir,
 		"--out", outPath,
 	}
-	return runScript(ctx, "bash", args...)
+	return runBashScript(ctx, args...)
 }
 
 func deployConsumer(ctx context.Context, standaloneDir string, spec ClusterSpec, clusterID, bundlePath, consumerIP, mockGeoURL string, opts DeployOpts) error {
@@ -243,10 +248,10 @@ func deployConsumer(ctx context.Context, standaloneDir string, spec ClusterSpec,
 		"--skip-liqo-dashboard",
 		"--skip-cluster-autoscaler",
 	}
-	if opts.LiqoProvider != "kind" {
+	if opts.LiqoProvider != liqoProviderKind {
 		args = append(args, "--pod-cidr", spec.PodCIDR, "--service-cidr", spec.SvcCIDR)
 	}
-	return runScript(ctx, "bash", args...)
+	return runBashScript(ctx, args...)
 }
 
 func deployProvider(ctx context.Context, standaloneDir string, spec ClusterSpec, clusterID, bundlePath, mockEcoURL, mockGeoURL string, opts DeployOpts) error {
@@ -266,18 +271,21 @@ func deployProvider(ctx context.Context, standaloneDir string, spec ClusterSpec,
 	if opts.EcoCacheTTL > 0 {
 		args = append(args, "--eco-cache-ttl", opts.EcoCacheTTL.String())
 	}
-	if opts.LiqoProvider != "kind" {
+	if opts.LiqoProvider != liqoProviderKind {
 		args = append(args, "--pod-cidr", spec.PodCIDR, "--service-cidr", spec.SvcCIDR)
 	}
-	return runScript(ctx, "bash", args...)
+	return runBashScript(ctx, args...)
 }
 
-func runScript(ctx context.Context, name string, args ...string) error {
-	cmd := exec.CommandContext(ctx, name, args...)
+// runBashScript runs one of the deploy/standalone scripts, whose first
+// argument is the script path, with its output going to this process's own
+// stdout/stderr so a failing deploy is readable in the harness log.
+func runBashScript(ctx context.Context, args ...string) error {
+	cmd := exec.CommandContext(ctx, "bash", args...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("run %s %s: %w", name, strings.Join(args[:1], " "), err)
+		return fmt.Errorf("run bash %s: %w", strings.Join(args[:1], " "), err)
 	}
 	return nil
 }
@@ -377,7 +385,7 @@ func tryBuildClients(ctx context.Context, brokerURL, serverName string, consoleU
 
 // deployControllableMockEco builds the controllable mock-eco image, loads it
 // into the central Kind cluster, and patches the mock-eco Deployment to use it.
-func deployControllableMockEco(ctx context.Context, repoRoot string, centralSpec ClusterSpec, centralIP string) error {
+func deployControllableMockEco(ctx context.Context, repoRoot string, centralSpec ClusterSpec) error {
 	imgName := "federation-autoscaler/mock-eco-test:latest"
 
 	log.Println("[deploy] building controllable mock-eco image")
@@ -601,7 +609,7 @@ func postGeoOverride(ctx context.Context, client *http.Client, mockGeoURL, ip, r
 			}
 			return fmt.Errorf("after %d attempts: %w", maxAttempts, lastErr)
 		}
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		if resp.StatusCode != http.StatusOK {
 			return fmt.Errorf("admin/geo returned %d", resp.StatusCode)
 		}
@@ -624,7 +632,7 @@ func sleepOrCtx(ctx context.Context, d time.Duration) error {
 
 // deployControllableMockGeo builds the controllable mock-geo image, loads it
 // into the central Kind cluster, and patches the mock-geo Deployment to use it.
-func deployControllableMockGeo(ctx context.Context, repoRoot string, centralSpec ClusterSpec, centralIP string) error {
+func deployControllableMockGeo(ctx context.Context, repoRoot string, centralSpec ClusterSpec) error {
 	imgName := "federation-autoscaler/mock-geo-test:latest"
 
 	log.Println("[deploy] building controllable mock-geo image")

@@ -147,7 +147,9 @@ func TestLoadConfigRejectsUnknownKeys(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, key := range []string{"temperature: 0", "jsonSchema: true", "tempreature: 0"} {
+	// The third key is misspelled on purpose: a typo must be refused
+	// just like a removed key, instead of being silently ignored.
+	for _, key := range []string{"temperature: 0", "jsonSchema: true", "tempreature: 0"} { //nolint:misspell // deliberate typo, see above
 		t.Run(key, func(t *testing.T) {
 			text := strings.Replace(string(data), "    warmupTimeout: 5m", "    warmupTimeout: 5m\n    "+key, 1)
 			path := filepath.Join(t.TempDir(), "cfg.yaml")

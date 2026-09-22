@@ -47,26 +47,26 @@ func modelFailure(rep int, category string, peered bool) RepetitionOutcome {
 }
 
 func TestVerdict_UnusableAnswers(t *testing.T) {
-	if v, r := verdictOf(t, []RepetitionOutcome{aiOutcome(), modelFailure(2, "timeout", true)}); v != "PASS" {
+	if v, r := verdictOf(t, []RepetitionOutcome{aiOutcome(), modelFailure(2, "timeout", true)}); v != verdictPass {
 		t.Errorf("a model loop covered by a Peered fallback is a result about the model, not a failure:\n%s", r)
 	}
 
 	unpeered := []RepetitionOutcome{aiOutcome(), modelFailure(2, "invalid_json", false)}
 	const unpeeredReason = "eco rep 2: the model's answer was unusable and the fallback's reservation did not reach Peered"
-	if v, r := verdictOf(t, unpeered); v != "FAIL" || !strings.Contains(r, unpeeredReason) {
+	if v, r := verdictOf(t, unpeered); v != verdictFail || !strings.Contains(r, unpeeredReason) {
 		t.Errorf("the fallback must still reserve: got %s\n%s", v, r)
 	}
 
 	unreachable := RepetitionOutcome{Scenario: "eco", Repetition: 2, AICalled: true, Source: sourceFallback,
 		FallbackUsed: true, ReservationAttempt: true, Peered: true, ReleasedAndSettled: true,
 		FailureCategories: []string{"unreachable"}}
-	if v, r := verdictOf(t, []RepetitionOutcome{aiOutcome(), unreachable}); v != "FAIL" ||
+	if v, r := verdictOf(t, []RepetitionOutcome{aiOutcome(), unreachable}); v != verdictFail ||
 		!strings.Contains(r, "1 of 2 model answers were rejected for a reason outside the model") {
 		t.Errorf("an unreachable Ollama is the system's failure: got %s\n%s", v, r)
 	}
 
 	allUnusable := []RepetitionOutcome{modelFailure(1, "timeout", true), modelFailure(2, "unknown_provider_id", true)}
-	if v, r := verdictOf(t, allUnusable); v != "FAIL" || !strings.Contains(r, "never gave a usable answer") {
+	if v, r := verdictOf(t, allUnusable); v != verdictFail || !strings.Contains(r, "never gave a usable answer") {
 		t.Errorf("a model that never answers usably points at the setup: got %s\n%s", v, r)
 	}
 }

@@ -57,12 +57,15 @@ type OperationStats struct {
 	ErrorRate        float64 `json:"errorAndTimeoutRate"` // (failures+timeouts)/attempts, 0..1
 }
 
-func computeStats(records []Record, op Operation, phase Phase, duration time.Duration) OperationStats {
+// computeStats aggregates one operation's records over the measurement phase.
+// Warm-up records are deliberately left out: they are the federation coming
+// up, not the steady-state load the run is there to measure.
+func computeStats(records []Record, op Operation, duration time.Duration) OperationStats {
 	stats := OperationStats{Operation: op}
 	var successLatencies []float64
 
 	for _, r := range records {
-		if r.Operation != op || r.Phase != phase {
+		if r.Operation != op || r.Phase != PhaseMeasurement {
 			continue
 		}
 		if r.Outcome == OutcomeCancelled {
@@ -210,13 +213,13 @@ func buildSummary(cfg *Config, records []Record, measurementDuration time.Durati
 		Providers:                        cfg.Providers,
 		ProviderWarmup:                   providerWarmup,
 		ConsumerWarmup:                   consumerWarmup,
-		Evaluation:                       computeStats(records, OpEvaluation, PhaseMeasurement, measurementDuration),
-		Advertisement:                    computeStats(records, OpAdvertisement, PhaseMeasurement, measurementDuration),
-		Heartbeat:                        computeStats(records, OpHeartbeat, PhaseMeasurement, measurementDuration),
+		Evaluation:                       computeStats(records, OpEvaluation, measurementDuration),
+		Advertisement:                    computeStats(records, OpAdvertisement, measurementDuration),
+		Heartbeat:                        computeStats(records, OpHeartbeat, measurementDuration),
 		BrokerResourceUsage:              resUsage,
 	}
 	if cfg.InstructionPoll {
-		st := computeStats(records, OpInstructions, PhaseMeasurement, measurementDuration)
+		st := computeStats(records, OpInstructions, measurementDuration)
 		s.InstructionPoll = &st
 	}
 	return s

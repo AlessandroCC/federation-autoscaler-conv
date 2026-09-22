@@ -108,7 +108,7 @@ func KindCreateCluster(ctx context.Context, spec *ClusterSpec, kubeconfigDir str
 	if err != nil {
 		return fmt.Errorf("write kind config for %s: %w", spec.Name, err)
 	}
-	defer os.Remove(configFile)
+	defer func() { _ = os.Remove(configFile) }()
 
 	kcPath := filepath.Join(kubeconfigDir, spec.Role+".kubeconfig")
 
@@ -147,10 +147,14 @@ func writeKindConfig(spec *ClusterSpec) (string, error) {
 		return "", err
 	}
 	if _, err := f.WriteString(sb.String()); err != nil {
-		f.Close()
+		_ = f.Close()
 		return "", err
 	}
-	f.Close()
+	// Checked: kind reads this file right after, so a failed close would show
+	// up as a confusing "invalid cluster config" instead of a write error.
+	if err := f.Close(); err != nil {
+		return "", err
+	}
 	return f.Name(), nil
 }
 
@@ -276,7 +280,7 @@ func DockerPullImages(ctx context.Context, images []string) error {
 	if err != nil {
 		return fmt.Errorf("create temp dir: %w", err)
 	}
-	defer os.RemoveAll(tmpDir)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	for i, img := range images {
 		log.Printf("[infra] pulling %s (linux/amd64, via crane)", img)
@@ -293,7 +297,8 @@ func DockerPullImages(ctx context.Context, images []string) error {
 		if err := load.Run(); err != nil {
 			return fmt.Errorf("docker load %s: %w", img, err)
 		}
-		os.Remove(tarPath)
+		// Best-effort: frees disk as we go; the deferred RemoveAll gets the rest.
+		_ = os.Remove(tarPath)
 	}
 	return nil
 }
@@ -343,7 +348,7 @@ func CheckPrerequisites() error {
 	cmd.Stdout = nil
 	cmd.Stderr = nil
 	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("Docker is not running: %w", err)
+		return fmt.Errorf("docker is not running: %w", err)
 	}
 	return nil
 }

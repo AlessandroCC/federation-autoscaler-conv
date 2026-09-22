@@ -78,7 +78,7 @@ func (t *TCConsumerDelay) Apply() error {
 
 // UpdateDelays changes the netem delay on each per-provider qdisc in place.
 func (t *TCConsumerDelay) UpdateDelays(newDelays []ProviderDelayEntry) error {
-	var cmds [][]string
+	cmds := make([][]string, 0, len(newDelays))
 	for i, pd := range newDelays {
 		if i >= len(t.ProviderDelays) {
 			break

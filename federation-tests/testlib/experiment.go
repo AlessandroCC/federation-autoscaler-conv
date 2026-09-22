@@ -53,18 +53,6 @@ func autoGenerateRegions(n int) []string {
 	return regions
 }
 
-func autoGenerateTCDelays(n int) []TCDelayAutoConfig {
-	delays := make([]TCDelayAutoConfig, n)
-	for i := range delays {
-		delays[i] = TCDelayAutoConfig{
-			ProviderIndex: i + 1,
-			DelayMs:       1 + rand.Intn(300),
-			Interface:     "eth0",
-		}
-	}
-	return delays
-}
-
 // RandomDelayMs draws one simulated one-way delay uniformly from [minMs, maxMs]
 // using rng. Used both to seed the matrix and to redraw it on every refresh,
 // so the nearest provider genuinely moves between iterations instead of
@@ -241,7 +229,7 @@ type TestParams struct {
 // (with consumers iterating independently) instead of a fixed Iterations
 // count.
 func (t TestParams) IsTimeBased() bool {
-	return t.Duration == "time"
+	return t.Duration == DurationTime
 }
 
 // TCDelayAutoConfig is the automated tc delay config (uses providerIndex).
@@ -305,21 +293,37 @@ const advertisementCycle = 30 * time.Second
 // of BOTH phases so neither begins with a warmer cache than the other.
 const ProberCacheTTL = 15 * time.Second
 
+// applyDefaults fills in every unset field with the value the suites run
+// with. It is split by area so each group stays readable on its own.
 func (c *AutoConfig) applyDefaults() {
+	c.applyTopologyDefaults()
+	c.applyExperimentDefaults()
+	c.applyEcoDefaults()
+	c.applyLatencyDefaults()
+	c.applyInfraDefaults()
+	c.applyGeneratedDefaults()
+}
+
+// applyTopologyDefaults sizes the federation.
+func (c *AutoConfig) applyTopologyDefaults() {
 	if c.Consumers <= 0 {
 		c.Consumers = 1
 	}
 	if c.Providers <= 0 {
 		c.Providers = 2
 	}
+}
+
+// applyExperimentDefaults fills the phase pacing and reservation timeouts.
+func (c *AutoConfig) applyExperimentDefaults() {
 	if c.Experiment.Mode == "" {
-		c.Experiment.Mode = "observe"
+		c.Experiment.Mode = ModeObserve
 	}
 	if c.Experiment.Iterations <= 0 {
 		c.Experiment.Iterations = 10
 	}
 	if c.Experiment.Duration == "" {
-		c.Experiment.Duration = "iterations"
+		c.Experiment.Duration = DurationIterations
 	}
 	if c.Experiment.PhasePause <= 0 {
 		c.Experiment.PhasePause = 30 * time.Second
@@ -339,6 +343,10 @@ func (c *AutoConfig) applyDefaults() {
 	if c.Experiment.ReservationTimeout <= 0 {
 		c.Experiment.ReservationTimeout = 10 * time.Minute
 	}
+}
+
+// applyEcoDefaults fills the carbon generator's range and cadence.
+func (c *AutoConfig) applyEcoDefaults() {
 	if c.Experiment.CarbonLow <= 0 {
 		c.Experiment.CarbonLow = 50
 	}
@@ -368,6 +376,10 @@ func (c *AutoConfig) applyDefaults() {
 			"point-by-point comparable. Lower ecoCacheTTL or raise carbonRefreshInterval.",
 			c.Experiment.EcoCacheTTL, advertisementCycle, lag, c.Experiment.CarbonRefreshInterval)
 	}
+}
+
+// applyLatencyDefaults fills the simulated-delay range and cadence.
+func (c *AutoConfig) applyLatencyDefaults() {
 	if c.Experiment.LatencyRefreshInterval <= 0 {
 		c.Experiment.LatencyRefreshInterval = 3 * time.Minute
 	}
@@ -385,6 +397,10 @@ func (c *AutoConfig) applyDefaults() {
 	if c.Experiment.LatencyMaxMs <= c.Experiment.LatencyMinMs {
 		c.Experiment.LatencyMaxMs = 250
 	}
+}
+
+// applyInfraDefaults fills sampling, output and cluster-side settings.
+func (c *AutoConfig) applyInfraDefaults() {
 	if c.Experiment.FederationSampleInterval <= 0 {
 		c.Experiment.FederationSampleInterval = time.Minute
 	}
@@ -395,12 +411,17 @@ func (c *AutoConfig) applyDefaults() {
 		c.Infra.ReadinessTimeout = 10 * time.Minute
 	}
 	if c.Infra.LiqoProvider == "" {
-		c.Infra.LiqoProvider = "kind"
+		c.Infra.LiqoProvider = liqoProviderKind
 	}
 	if c.Cleanup == nil {
 		t := true
 		c.Cleanup = &t
 	}
+}
+
+// applyGeneratedDefaults draws the values that are not fixed numbers:
+// provider regions and the consumer-to-provider delay matrix.
+func (c *AutoConfig) applyGeneratedDefaults() {
 	if len(c.ProviderRegions) == 0 {
 		c.ProviderRegions = autoGenerateRegions(c.Providers)
 		log.Printf("[config] auto-generated regions: %v", c.ProviderRegions)
@@ -441,10 +462,10 @@ func (c *AutoConfig) Validate() error {
 	if len(c.ProviderRegions) > 0 && len(c.ProviderRegions) != c.Providers {
 		return fmt.Errorf("providerRegions length (%d) must match providers (%d)", len(c.ProviderRegions), c.Providers)
 	}
-	if c.Experiment.Mode != "observe" && c.Experiment.Mode != "reserve" {
+	if c.Experiment.Mode != ModeObserve && c.Experiment.Mode != ModeReserve {
 		return fmt.Errorf("experiment.mode must be observe or reserve (got %q)", c.Experiment.Mode)
 	}
-	if c.Experiment.Duration != "iterations" && c.Experiment.Duration != "time" {
+	if c.Experiment.Duration != DurationIterations && c.Experiment.Duration != DurationTime {
 		return fmt.Errorf("experiment.duration must be iterations or time (got %q)", c.Experiment.Duration)
 	}
 	if c.Experiment.IsTimeBased() && c.Experiment.Timer <= 0 {
@@ -685,7 +706,8 @@ func (o *Orchestrator) resolveIdentities() (map[string]Identity, string, error) 
 
 		cmd := exec.Command("tar", "-xzf", bundlePath, "-C", extractDir)
 		if err := cmd.Run(); err != nil {
-			os.RemoveAll(extractDir)
+			// Best-effort: the extraction error is the one worth reporting.
+			_ = os.RemoveAll(extractDir)
 			return nil, "", fmt.Errorf("extract bundle for %s: %w", cid, err)
 		}
 
@@ -694,7 +716,8 @@ func (o *Orchestrator) resolveIdentities() (map[string]Identity, string, error) 
 
 		id, err := ResolveIdentityFromFiles(certFile, keyFile, filepath.Join(extractDir, "ca.crt"))
 		if err != nil {
-			os.RemoveAll(extractDir)
+			// Best-effort: the identity error is the one worth reporting.
+			_ = os.RemoveAll(extractDir)
 			return nil, "", fmt.Errorf("resolve identity for %s: %w", cid, err)
 		}
 		identities[cid] = id
@@ -724,11 +747,13 @@ func (o *Orchestrator) Teardown(ctx context.Context) {
 		}
 	}
 
+	// Best-effort: cleanup runs after the results are already written, and a
+	// leftover temp directory is not worth failing the run over.
 	if o.KubeconfigDir != "" {
-		os.RemoveAll(o.KubeconfigDir)
+		_ = os.RemoveAll(o.KubeconfigDir)
 	}
 	if o.CADir != "" {
-		os.RemoveAll(o.CADir)
+		_ = os.RemoveAll(o.CADir)
 	}
 	log.Println("[cleanup] done")
 }
@@ -858,13 +883,13 @@ func (c *ExperimentConfig) applyDefaults() {
 		c.Certs.Prefix = "scaltest"
 	}
 	if c.Experiment.Mode == "" {
-		c.Experiment.Mode = "observe"
+		c.Experiment.Mode = ModeObserve
 	}
 	if c.Experiment.Iterations <= 0 {
 		c.Experiment.Iterations = 10
 	}
 	if c.Experiment.Duration == "" {
-		c.Experiment.Duration = "iterations"
+		c.Experiment.Duration = DurationIterations
 	}
 	if c.Experiment.PhasePause <= 0 {
 		c.Experiment.PhasePause = 30 * time.Second
@@ -946,7 +971,7 @@ func (c *ExperimentConfig) ValidateLegacy() error {
 	if c.Certs.Dir == "" && (c.Certs.CertFile == "" || c.Certs.KeyFile == "" || c.Certs.CAFile == "") {
 		return fmt.Errorf("certs: either dir or certFile+keyFile+caFile is required")
 	}
-	if c.Experiment.Mode != "observe" && c.Experiment.Mode != "reserve" {
+	if c.Experiment.Mode != ModeObserve && c.Experiment.Mode != ModeReserve {
 		return fmt.Errorf("experiment.mode must be observe or reserve (got %q)", c.Experiment.Mode)
 	}
 	return nil

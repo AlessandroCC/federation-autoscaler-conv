@@ -81,7 +81,7 @@ func catalogueCandidates(t *testing.T, path string) (*ChoiceConfig, []CandidateM
 	_, clat, clon, _ := testlib.RegionLocation(shared.ProviderRegions[0])
 	consumer := &ollama.Location{Latitude: clat, Longitude: clon, Region: shared.ProviderRegions[0]}
 
-	var infos []ollama.ProviderInfo
+	infos := make([]ollama.ProviderInfo, 0, len(cc.ProviderProfiles))
 	for i, p := range cc.ProviderProfiles {
 		_, lat, lon, _ := testlib.RegionLocation(shared.ProviderRegions[i])
 		cpu, _ := strconv.ParseFloat(p.Prices["cpu"], 64)

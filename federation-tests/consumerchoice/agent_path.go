@@ -313,7 +313,10 @@ func (s *suiteRun) agentSelections(ctx context.Context, prompt string) ([]AgentS
 //
 //	<RFC 3339 time>\tINFO\t<logger>\tConsumerChoice selection finished\t{"source": "ai", ...}
 func parseAgentSelections(logText, prompt string) []AgentSelection {
-	var out []AgentSelection
+	// Not pre-allocated on purpose: an agent log is thousands of lines and
+	// only a handful of them are selections, so sizing to the log would
+	// allocate far more than this ever holds.
+	var out []AgentSelection //nolint:prealloc // see above
 	for _, line := range strings.Split(logText, "\n") {
 		line = strings.TrimRight(line, "\r")
 		at := strings.Index(line, localapi.SelectionFinishedMessage)

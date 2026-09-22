@@ -387,7 +387,7 @@ func DeterministicFallback(nodeGroups []brokerapi.NodeGroupView) ([]string, bool
 		available int32
 	}
 
-	var candidates []candidate
+	candidates := make([]candidate, 0, len(nodeGroups))
 	for _, ng := range nodeGroups {
 		avail := ng.MaxSize - ng.CurrentReserved
 		if avail <= 0 {

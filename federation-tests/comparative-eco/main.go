@@ -170,7 +170,7 @@ func runExperiment(ctx context.Context, orch *testlib.Orchestrator) error {
 	}
 
 	var phaseARecords []testlib.SelectionRecord
-	if mode == "reserve" {
+	if mode == testlib.ModeReserve {
 		var phaseARes []testlib.ReservationRecord
 		var phaseASnaps []testlib.NodeGroupSnapshotRecord
 		var phaseAFed []testlib.FederationSampleRecord
@@ -237,7 +237,7 @@ func runExperiment(ctx context.Context, orch *testlib.Orchestrator) error {
 	}
 
 	var phaseBRecords []testlib.SelectionRecord
-	if mode == "reserve" {
+	if mode == testlib.ModeReserve {
 		var phaseBRes []testlib.ReservationRecord
 		var phaseBSnaps []testlib.NodeGroupSnapshotRecord
 		var phaseBFed []testlib.FederationSampleRecord
@@ -273,7 +273,7 @@ func runExperiment(ctx context.Context, orch *testlib.Orchestrator) error {
 	if err := testlib.WriteSelectionCSV(outputDir, "selections.csv", allRecords); err != nil {
 		return fmt.Errorf("write CSV: %w", err)
 	}
-	if mode == "reserve" && len(allReservations) > 0 {
+	if mode == testlib.ModeReserve && len(allReservations) > 0 {
 		if err := testlib.WriteReservationCSV(outputDir, "reservations.csv", allReservations); err != nil {
 			return fmt.Errorf("write reservations CSV: %w", err)
 		}
@@ -482,7 +482,7 @@ func runObserveConsumerIteration(ctx context.Context, clients *testlib.Experimen
 		NodeGroupID:    winner.ID,
 		PlacementValue: winner.PlacementMetric,
 		HasMetric:      winner.HasMetric,
-		Outcome:        "success",
+		Outcome:        testlib.OutcomeSuccess,
 		DurationMs:     msSince(start),
 	}
 	mu.Lock()
@@ -942,7 +942,7 @@ func runReserveConsumerIteration(ctx context.Context, orch *testlib.Orchestrator
 				ReservationID:     cur.ReservationID,
 				PlacementValue:    curMetric,
 				HasMetric:         curHasMetric,
-				Outcome:           "success",
+				Outcome:           testlib.OutcomeSuccess,
 				DurationMs:        msSince(start),
 				InitialProviderID: initialProvider,
 				RetryCount:        attempt,
@@ -961,7 +961,7 @@ func runReserveConsumerIteration(ctx context.Context, orch *testlib.Orchestrator
 				PlacementMetric:   curMetric,
 				CarbonIntensity:   curCarbon,
 				HasCarbon:         curHasCarbon,
-				Outcome:           "success",
+				Outcome:           testlib.OutcomeSuccess,
 				TotalMs:           msSince(start),
 				InitialProviderID: initialProvider,
 				RetryCount:        attempt,
@@ -1086,7 +1086,7 @@ func runReserveConsumerIteration(ctx context.Context, orch *testlib.Orchestrator
 			ReservationID:     resID,
 			PlacementValue:    winner.PlacementMetric,
 			HasMetric:         winner.HasMetric,
-			Outcome:           "success",
+			Outcome:           testlib.OutcomeSuccess,
 			DurationMs:        msSince(start),
 			InitialProviderID: initialProvider,
 			RetryCount:        attempt,
@@ -1109,7 +1109,7 @@ func runReserveConsumerIteration(ctx context.Context, orch *testlib.Orchestrator
 			PlacementMetric:   winner.PlacementMetric,
 			CarbonIntensity:   winnerCarbon,
 			HasCarbon:         winnerHasCarbon,
-			Outcome:           "success",
+			Outcome:           testlib.OutcomeSuccess,
 			InitialProviderID: initialProvider,
 			RetryCount:        attempt,
 		})
@@ -1130,7 +1130,7 @@ func summarizePhase(records []testlib.SelectionRecord) testlib.PhaseSummary {
 		// A keep-no-alternative iteration ended with the consumer holding
 		// working capacity, so it counts as a success here; selections.csv
 		// keeps the two apart for anyone who needs the distinction.
-		if r.Outcome == "success" || r.Outcome == testlib.OutcomeKeepNoAlternative {
+		if r.Outcome == testlib.OutcomeSuccess || r.Outcome == testlib.OutcomeKeepNoAlternative {
 			s.Successes++
 			s.SelectionCounts[r.SelectedID]++
 			if r.HasMetric {

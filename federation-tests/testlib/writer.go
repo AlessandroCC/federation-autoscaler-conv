@@ -23,8 +23,23 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 )
+
+// Experiment modes and phase-duration modes, as written in the YAML config
+// (TestParams.Mode and TestParams.Duration).
+const (
+	ModeObserve = "observe"
+	ModeReserve = "reserve"
+
+	DurationIterations = "iterations"
+	DurationTime       = "time"
+)
+
+// OutcomeSuccess marks an iteration that ended with the consumer holding the
+// capacity it asked for.
+const OutcomeSuccess = "success"
 
 // Phase labels used throughout the comparative tests.
 const (
@@ -106,25 +121,40 @@ func selectionCSVRow(r SelectionRecord) []string {
 	}
 }
 
-// WriteSelectionCSV writes selection records to a CSV file in the output dir.
-func WriteSelectionCSV(dir, name string, records []SelectionRecord) error {
+// writeCSVFile writes header plus rows to dir/name. Closing the file is part
+// of the result: a failed Close can leave a truncated CSV behind, which the
+// analysis scripts would read as a run that simply produced fewer rows.
+func writeCSVFile(dir, name string, header []string, rows [][]string) (err error) {
 	f, err := os.Create(filepath.Join(dir, name))
 	if err != nil {
 		return err
 	}
-	defer f.Close()
-	w := csv.NewWriter(f)
-	defer w.Flush()
+	defer func() {
+		if cerr := f.Close(); err == nil {
+			err = cerr
+		}
+	}()
 
-	if err := w.Write(selectionCSVHeader); err != nil {
+	w := csv.NewWriter(f)
+	if err := w.Write(header); err != nil {
 		return err
 	}
-	for _, r := range records {
-		if err := w.Write(selectionCSVRow(r)); err != nil {
+	for _, row := range rows {
+		if err := w.Write(row); err != nil {
 			return err
 		}
 	}
+	w.Flush()
 	return w.Error()
+}
+
+// WriteSelectionCSV writes selection records to a CSV file in the output dir.
+func WriteSelectionCSV(dir, name string, records []SelectionRecord) error {
+	rows := make([][]string, 0, len(records))
+	for _, r := range records {
+		rows = append(rows, selectionCSVRow(r))
+	}
+	return writeCSVFile(dir, name, selectionCSVHeader, rows)
 }
 
 // ProbeRecord captures one RTT measurement session.
@@ -141,21 +171,12 @@ type ProbeRecord struct {
 
 // WriteProbeCSV writes probe measurement records to a CSV file.
 func WriteProbeCSV(dir, name string, records []ProbeRecord) error {
-	f, err := os.Create(filepath.Join(dir, name))
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-	w := csv.NewWriter(f)
-	defer w.Flush()
-
 	header := []string{"timestamp", "consumer_id", "phase", "policy", "iteration", "chosen", "duration_ms", "provider_id", "rtt_ms"}
-	if err := w.Write(header); err != nil {
-		return err
-	}
+
+	rows := make([][]string, 0, len(records))
 	for _, r := range records {
 		for providerID, rtt := range r.RTTs {
-			row := []string{
+			rows = append(rows, []string{
 				r.Timestamp.UTC().Format(time.RFC3339Nano),
 				r.ConsumerID,
 				r.Phase,
@@ -165,13 +186,10 @@ func WriteProbeCSV(dir, name string, records []ProbeRecord) error {
 				strconv.FormatFloat(r.DurationMs, 'f', 3, 64),
 				providerID,
 				strconv.FormatFloat(rtt, 'f', 3, 64),
-			}
-			if err := w.Write(row); err != nil {
-				return err
-			}
+			})
 		}
 	}
-	return w.Error()
+	return writeCSVFile(dir, name, header, rows)
 }
 
 // ExperimentSummary is the top-level JSON summary of a comparative run.
@@ -208,13 +226,20 @@ type PhaseSummary struct {
 	MeanPlacementVal float64        `json:"meanPlacementValue,omitempty"`
 }
 
-// WriteJSONFile writes an arbitrary value as pretty-printed JSON.
-func WriteJSONFile(dir, name string, v any) error {
+// WriteJSONFile writes an arbitrary value as pretty-printed JSON. Closing the
+// file is part of the result: a failed Close can leave truncated JSON behind,
+// which the analysis scripts cannot parse at all.
+func WriteJSONFile(dir, name string, v any) (err error) {
 	f, err := os.Create(filepath.Join(dir, name))
 	if err != nil {
 		return err
 	}
-	defer f.Close()
+	defer func() {
+		if cerr := f.Close(); err == nil {
+			err = cerr
+		}
+	}()
+
 	enc := json.NewEncoder(f)
 	enc.SetIndent("", "  ")
 	return enc.Encode(v)
@@ -222,11 +247,10 @@ func WriteJSONFile(dir, name string, v any) error {
 
 // WriteSummaryMarkdown renders a human-readable companion to summary.json.
 func WriteSummaryMarkdown(dir string, s ExperimentSummary) error {
-	f, err := os.Create(filepath.Join(dir, "summary.md"))
-	if err != nil {
-		return err
-	}
-	defer f.Close()
+	// Rendered into a buffer first: writing to memory cannot fail, so the
+	// summary reaches the disk whole or not at all, and the one error that
+	// matters — the write itself — is the one returned.
+	f := &strings.Builder{}
 
 	fmt.Fprintf(f, "# Comparative Test Summary: %s\n\n", s.TestType)
 	fmt.Fprintf(f, "- Run ID: `%s`\n", s.RunID)
@@ -239,7 +263,7 @@ func WriteSummaryMarkdown(dir string, s ExperimentSummary) error {
 	// carries the config's iterations value, which that mode ignores entirely --
 	// reporting it as if it described the run made the summary say "15" for a
 	// phase that actually ran 830 iterations.
-	if s.DurationMode == "time" {
+	if s.DurationMode == DurationTime {
 		fmt.Fprintf(f, "- Phase length: %s (wall clock; configured iterations ignored)\n\n", s.TimerConfigured)
 	} else {
 		fmt.Fprintf(f, "- Iterations per phase: %d\n\n", s.IterationsPerPhase)
@@ -269,7 +293,7 @@ func WriteSummaryMarkdown(dir string, s ExperimentSummary) error {
 		}
 		fmt.Fprintf(f, "\n")
 	}
-	return nil
+	return os.WriteFile(filepath.Join(dir, "summary.md"), []byte(f.String()), 0o644)
 }
 
 // ReservationRecord captures one reservation lifecycle event in reserve mode.
@@ -355,23 +379,11 @@ func reservationCSVRow(r ReservationRecord) []string {
 
 // WriteReservationCSV writes reservation lifecycle records to a CSV file.
 func WriteReservationCSV(dir, name string, records []ReservationRecord) error {
-	f, err := os.Create(filepath.Join(dir, name))
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-	w := csv.NewWriter(f)
-	defer w.Flush()
-
-	if err := w.Write(reservationCSVHeader); err != nil {
-		return err
-	}
+	rows := make([][]string, 0, len(records))
 	for _, r := range records {
-		if err := w.Write(reservationCSVRow(r)); err != nil {
-			return err
-		}
+		rows = append(rows, reservationCSVRow(r))
 	}
-	return w.Error()
+	return writeCSVFile(dir, name, reservationCSVHeader, rows)
 }
 
 // NodeGroupSnapshotRecord captures one provider's nodegroup state at a given
@@ -430,23 +442,11 @@ func nodegroupCSVRow(r NodeGroupSnapshotRecord) []string {
 
 // WriteNodeGroupCSV writes nodegroup snapshot records to a CSV file.
 func WriteNodeGroupCSV(dir, name string, records []NodeGroupSnapshotRecord) error {
-	f, err := os.Create(filepath.Join(dir, name))
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-	w := csv.NewWriter(f)
-	defer w.Flush()
-
-	if err := w.Write(nodegroupCSVHeader); err != nil {
-		return err
-	}
+	rows := make([][]string, 0, len(records))
 	for _, r := range records {
-		if err := w.Write(nodegroupCSVRow(r)); err != nil {
-			return err
-		}
+		rows = append(rows, nodegroupCSVRow(r))
 	}
-	return w.Error()
+	return writeCSVFile(dir, name, nodegroupCSVHeader, rows)
 }
 
 // FederationSampleRecord is one periodic snapshot of a single consumer's
@@ -494,23 +494,11 @@ func federationCSVRow(r FederationSampleRecord) []string {
 
 // WriteFederationCSV writes federation-wide periodic sample records to a CSV file.
 func WriteFederationCSV(dir, name string, records []FederationSampleRecord) error {
-	f, err := os.Create(filepath.Join(dir, name))
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-	w := csv.NewWriter(f)
-	defer w.Flush()
-
-	if err := w.Write(federationCSVHeader); err != nil {
-		return err
-	}
+	rows := make([][]string, 0, len(records))
 	for _, r := range records {
-		if err := w.Write(federationCSVRow(r)); err != nil {
-			return err
-		}
+		rows = append(rows, federationCSVRow(r))
 	}
-	return w.Error()
+	return writeCSVFile(dir, name, federationCSVHeader, rows)
 }
 
 // EnsureOutputDir creates the output directory for a test run.
