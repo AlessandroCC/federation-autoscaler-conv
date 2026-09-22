@@ -134,7 +134,7 @@ Three kinds of cluster take part, plus an optional fourth for demo mock services
 
 Every ranking input (price, carbon, renewable flag, capacity, coordinates) is **self-declared by the provider and verified by nobody**; only cluster identity is authenticated. The chosen ranking value is stamped on each view as `placementMetric`/`hasMetric`, which is what the migration loop (§5) later compares.
 
-> **Implemented in:** `cmd/broker/`, `internal/broker/api/` (`server.go` routes, `nodegroups.go` placement + masking, `pricing.go`, `geo.go`, `registry.go`, `advertisement.go`, `heartbeat.go`, `reservation.go`, `instructions.go`, `middleware.go`, `tls.go`, `dashboard.go` + `dashboard_runnable.go`), `internal/broker/chunk/`, `internal/controller/broker/` (`reservation_controller.go` phase machine + terminal GC, `clusteradvertisement_controller.go` freshness), `internal/controller/autoscaling/` (`providerinstruction_controller.go`, `reservationinstruction_controller.go`, `instruction.go`). Deployed via `config/broker/`.
+> **Implemented in:** `cmd/broker/`, `internal/broker/api/` (`server.go` routes, `nodegroups.go` placement + masking, `pricing.go`, `geo.go`, `registry.go`, `advertisement.go`, `heartbeat.go`, `reservation.go`, `instructions.go`, `middleware.go`, `tls.go`, `dashboard.go` + `dashboard_runnable.go`), `internal/broker/chunk/`, `internal/agent/ollama/` (ConsumerChoice: prompt, LLM client, answer validation, deterministic fallback), `internal/controller/broker/` (`reservation_controller.go` phase machine + terminal GC, `clusteradvertisement_controller.go` freshness), `internal/controller/autoscaling/` (`providerinstruction_controller.go`, `reservationinstruction_controller.go`, `instruction.go`). Deployed via `config/broker/`.
 
 ---
 
@@ -588,7 +588,6 @@ Measured on the demo: about **84 s** from workload delete to node gone, dominate
 **Known gaps (v2 candidates):**
 
 - **No reservation renewal.** Expiry at the 24 h default evicts live workloads with no drain; the timeout is a blunt instrument.
-- **Concurrent-acquire race.** Two consumers grabbing the last chunk at the same time can both get a 201 (check-then-create race on the capacity counter).
 - **Reconcile instructions are defined but never emitted.** Agents implement the handlers; the Broker does not yet send `Reconcile` on startup/leader change, and has no diff-apply pass.
 - **Partial release unsupported** (`?chunks=` returns 501); moot while one reservation is one chunk, real again if that changes.
 - **Chunk sizes are compile-time**; the designed `chunk-config` ConfigMap is not read (§7).

@@ -505,7 +505,6 @@
       document.getElementById("clusterId").textContent = "cluster: " + (st.clusterId || "\u2014");
       document.getElementById("liqoId").textContent = st.liqoClusterId ? "liqo: " + st.liqoClusterId : "";
       current.policy = st.policy || "";
-      current.region = st.region || "";
       current.userPrompt = st.userPrompt || "";
       selectedPolicy = current.policy;
       renderPolicyCards();

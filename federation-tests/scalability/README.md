@@ -44,6 +44,14 @@ every run measures the same thing and only the load changes:
 | Broker CPU/RAM sampling | every 5 s from `/proc` (Linux only; skipped elsewhere) |
 | Broker API port | 9444 |
 
+> **On the instruction-poll interval.** The harness polls every 5 s, which is
+> what the agents defaulted to when the published numbers were measured. The
+> agent default is now 1 s (`--poll-interval`, `FA_POLL_INTERVAL`), so a
+> deployment left at the default sends five times as many instruction polls as
+> this measures. To measure that instead, pass
+> `--instruction-poll-interval 1s` to the harness binary (see
+> [running the harness by hand](#advanced-running-the-harness-by-hand)).
+
 Results go to `results/scalability/<UTC timestamp>/`, together with a copy of
 the YAML file used (`config.yaml`). In `summary.md`, check that:
 
@@ -90,6 +98,9 @@ CRD write path. See [Cleanup](#cleanup) for how to remove test-created CRs.
 | **Consumer** | `/api/v1/heartbeat` | POST | 15 s | Liveness + policy + location |
 | **Consumer** | `/api/v1/nodegroups` | GET | configurable | Evaluation (the metric under test) |
 | **Consumer** | `/api/v1/instructions` | GET | 5 s | Instruction poll |
+
+The cadences above are the harness's own; the agent's current default
+instruction poll is 1 s (see the note in [Running it](#running-it)).
 
 > **Note:** `POST /api/v1/heartbeat` is Consumer-only. Providers do NOT call
 > this endpoint — their 30 s advertisement POST serves as their liveness signal.

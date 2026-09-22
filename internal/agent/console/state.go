@@ -43,7 +43,6 @@ type consumerState struct {
 	LiqoClusterID      string                  `json:"liqoClusterId"`
 	Policy             string                  `json:"policy"`
 	UserPrompt         string                  `json:"userPrompt,omitempty"`
-	Region             string                  `json:"region"`
 	Location           *discoveredLocation     `json:"location,omitempty"`
 	Workload           workloadInfo            `json:"workload"`
 	ManualReservations []manualReservationInfo `json:"manualReservations"`
