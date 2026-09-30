@@ -220,7 +220,8 @@ def load_reservations(path: Path) -> pd.DataFrame:
             + f"\n  found columns: {', '.join(df.columns)}"
             + "\n  this script expects a comparative-eco reservations.csv "
             "(see federation-tests/testlib/writer.go, ReservationRecord) -- a "
-            "comparative-latency reservations.csv has no carbon data."
+            "comparative-latency reservations.csv has no carbon data. Use "
+            "federation-tests/scripts/latencyDiagramMaker.py for it."
         )
 
     # Robust ISO-8601 parsing: Go's time.RFC3339Nano (what writes these
@@ -1045,8 +1046,11 @@ def main(argv: list[str] | None = None) -> None:
     if valid.empty:
         sys.exit(
             "error: no valid rows found (need outcome=='success', "
-            "final_phase=='Peered', and a numeric carbon_intensity). "
-            "Is this a comparative-eco reservations.csv?"
+            "final_phase=='Peered', and a numeric carbon_intensity).\n"
+            "  The two suites share these columns but not the data, so a "
+            "comparative-latency reservations.csv gets this far and then has no "
+            "carbon to plot. Use federation-tests/scripts/latencyDiagramMaker.py "
+            "for it."
         )
 
     all_consumer_ids = sorted(df["consumer_id"].dropna().unique())

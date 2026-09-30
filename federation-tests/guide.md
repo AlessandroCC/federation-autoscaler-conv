@@ -41,7 +41,7 @@ bash federation-tests/scalability/run-scalability-test.sh
 | `configs/` | The YAML files describing the experiments — **this is where you work** |
 | `testlib/` | Shared library: orchestration, deployment, clients, CSV writing |
 | `scripts/` | Python scripts to analyse and verify the results |
-| `mock-eco-test/`, `mock-geo-test/` | Fake services answering with carbon intensity and geolocation; the harness deploys them, you do not run them |
+| `mock-eco-test/`, `mock-geo-test/` | The **controllable** carbon-intensity and geolocation services. They answer like the production mocks but also expose `POST /admin/carbon` and `POST /admin/geo`, which is how the harness sets the conditions and replays the same sequence in both phases (section 4). It builds them, loads them into the central cluster and patches the mock deployments over: you never run them by hand |
 | `scalability/` | Load test of the Broker API, independent of everything else. Configured in `configs/scalability.yaml` (only how many consumers and providers); has its own README |
 
 ---
@@ -143,6 +143,8 @@ To achieve it the harness does two things:
    eco, `tc netem` delays in latency) is restarted at the beginning of each phase with the
    **same random seed**, derived from the RunID. Phase B therefore replays exactly the
    values Phase A produced, at the same instants relative to the start of its own phase.
+   In eco the values reach the federation through the controllable mocks' admin API
+   (`mock-eco-test/`, `mock-geo-test/`): that is what those two services are for.
 
 2. **Symmetric waits.** Every pause before sampling is identical in the two phases. If
    one phase waited even a few seconds longer, its samples would fall on a different
@@ -200,10 +202,16 @@ go run ./federation-tests/comparative-latency/ --config federation-tests/configs
 That is all. From here on the harness works on its own, in this order:
 
 ```
-PREREQUISITES → BUILD IMAGES → RETAG → PRELOAD LIQO+UDPECHO → CREATE CLUSTERS
-→ LOAD IMAGES → DEPLOY COMPONENTS → CAP PROVIDER CAPACITY → WAIT FOR READINESS
-→ PHASE A → TRANSITION → PHASE B → EXPERIMENT CLEANUP → CLEANUP → DONE
+PREREQUISITES → BUILD IMAGES → RETAG IMAGES → PRELOAD LIQO + UDPECHO IMAGES
+→ CREATE CLUSTERS → LOAD IMAGES → DEPLOY COMPONENTS → CAP PROVIDER CAPACITY
+→ WAIT FOR READINESS → [APPLY TC DELAYS] → PHASE A: Random → TRANSITION
+→ PHASE B: Eco|Latency → EXPERIMENT CLEANUP → DONE → CLEANUP
 ```
+
+`APPLY TC DELAYS` belongs to the latency test only: it is where the simulated delays are
+installed. `CLEANUP` comes **after** `DONE` because tearing the clusters down is a
+deferred step: the results are already written when it starts, so interrupting it costs
+you the clusters, not the run.
 
 It creates one Kind cluster for the broker, one for each consumer and one for each
 provider, generates the PKI, deploys broker/agents/mocks, runs the two phases, writes the
@@ -214,7 +222,7 @@ results and tears everything down.
 | Flag | Effect | When you need it |
 |---|---|---|
 | `--config` | Path of the YAML file | Always |
-| `--skip-build` | Does not rebuild the Docker images | From the second run on, if you have not touched the Go code — saves several minutes |
+| `--skip-build` | Skips `make docker-build`, so the broker and agent images are reused | From the second run on, if you have not touched the Go code — saves several minutes. The two controllable mock images are rebuilt either way: they are quick, and the replay depends on them |
 | `--keep-clusters` | Does not destroy the clusters at the end of the run | Debugging: you can go in with `kubectl` and look at what happened |
 | `--run-id` | Forces the RunID instead of generating it | Very rare. **Careful**: the RunID is the replay seed, so two runs with the same `--run-id` see exactly the same sequence of conditions |
 
@@ -237,8 +245,25 @@ With `timer: 1h` and 100 agents it is about **2 h 20 min**.
 
 ## 6. The config: what to change
 
-In the normal case you edit **only** a file in `federation-tests/configs/`. Every omitted
-key takes a sensible default.
+In the normal case you edit **only** a file in `federation-tests/configs/`.
+
+**The blocks below are the shipped configs, not the defaults.** They reproduce
+`configs/eco-test.yaml` and `configs/latency-test.yaml`, which is what you want for the
+charts. An omitted key does take a default, but the code's defaults are the conservative
+ones a bare config would get, and several differ from what the experiments use:
+
+| Key | In the shipped configs | Default if omitted |
+|---|---|---|
+| `mode` | `reserve` | **`observe`** |
+| `duration` | `time` | **`iterations`** |
+| `iterations` | 15 | 10 |
+| `phasePause` | 35s | 30s |
+| `policyPropagationWait` | 35s | 20s |
+| `carbonRefreshInterval` / `latencyRefreshInterval` | 2m | 3m |
+
+The first row is the one that bites: write a config from scratch, leave `mode` out, and
+you get an observe run — no reservations, no `reservations.csv`, nothing to chart. Start
+from a shipped config rather than from an empty file.
 
 ### Topology
 
@@ -310,6 +335,28 @@ slower provider would be unreachable and disappear from the CSVs instead of show
 | `phasePause` | `35s` | Below 30 s you sample faster than the environment changes |
 | `latencyMaxMs` | `250` | Ceiling set by the prober's deadline |
 
+### The other keys
+
+These appear in every shipped config without needing to be touched. They are listed here
+so that a key you see in a YAML file is never a mystery.
+
+| Key | Default | What it is |
+|---|---|---|
+| `cleanup` | `true` | Destroy the clusters at the end. `false` is the same as `--keep-clusters` |
+| `output.dir` | `results` | Root the run folder is created under |
+| `infra.readinessTimeout` | `10m` | How long to wait for every agent to become ready before giving up |
+| `infra.liqoProvider` | `kind` | Which Liqo provider `liqoctl` installs |
+| `experiment.warmupTimeout` | `5m` | Wait for the federation to settle before Phase A starts |
+| `experiment.reservationPoll` | `5s` | How often a pending reservation is polled |
+| `experiment.reservationTimeout` | `10m` | When a reservation that never reaches `Peered` is given up on |
+| `experiment.federationSampleInterval` | `1m` | The rate `federation.csv` is sampled at |
+| `experiment.tcDelays` / `consumerDelays` | — | Latency test: fixed delays instead of drawn ones, one per provider or per (consumer, provider) pair. Setting them replaces the random draw, so the replay no longer varies |
+
+The topology is checked before anything is built: `providers` must be at least 2,
+`consumers` at least 1, and `providerRegions` — when given — must have exactly one entry
+per provider. With `duration: time`, `timer` must be greater than zero. A config that
+breaks one of these fails at load time rather than half an hour into the deployment.
+
 ---
 
 ## 7. Changing the chunks available per provider
@@ -360,14 +407,18 @@ The files end up in `results/<test-type>/<UTC timestamp>/`, for example
 | File | Content |
 |---|---|
 | `summary.md` / `summary.json` | Readable summary: durations, number of iterations, distribution of choices, mean metric per phase |
-| `reservations.csv` | One row per reservation: who, where, when, outcome, metric and carbon intensity of the chosen provider |
+| `reservations.csv` | Reserve mode only: one row per reservation — who, where, when, outcome, metric and carbon intensity of the chosen provider |
 | `selections.csv` | One row per placement decision, even when it does not lead to a reservation |
-| `nodegroups.csv` | **The richest file**: one row for every time a consumer looked at a provider, with the value it saw at that moment. It is the basis for verifying the alignment |
-| `federation.csv` | Snapshot of the whole federation at a fixed rate (1 min), independent of the iteration pace |
-| `probes.csv` | Latency test only: the measured RTTs |
+| `nodegroups.csv` | **Eco test only, and the richest file**: one row for every time a consumer looked at a provider, with the value it saw at that moment. It is the basis for verifying the alignment and for the chart's shaded range |
+| `federation.csv` | Reserve mode only: snapshot of the whole federation every `experiment.federationSampleInterval` (1 min by default), independent of the iteration pace |
+| `probes.csv` | Latency test only: the measured RTTs. It plays for latency the role `nodegroups.csv` plays for eco — alignment check and shaded range |
 
 The `phase` field (`phase-a` / `phase-b`) is present everywhere and is the key to separate
 the two phases in the analysis.
+
+The two suites do not produce the same set: eco writes `nodegroups.csv` and latency
+writes `probes.csv`, never both. That is why the next section has one script per suite,
+and why the chart scripts read a different second file in each case.
 
 ---
 
@@ -375,6 +426,8 @@ the two phases in the analysis.
 
 **Do it before looking at the charts.** A run can complete without errors and still be
 unusable for the comparison, if the two phases did not see the same environment.
+
+**For the eco test**, from its `nodegroups.csv`:
 
 ```bash
 python3 federation-tests/scripts/verifyReplayAlignment.py --input results/.../nodegroups.csv
@@ -393,7 +446,9 @@ by luck.
 | FAIL | < 50 % | 1 | Do not overlay the charts. Check the observation delay |
 
 If you changed `carbonRefreshInterval`, also pass `--tick-seconds` with the new value in
-seconds, otherwise the script groups with the wrong window.
+seconds, otherwise the script groups with the wrong window. **The same applies to the
+latency script below and `latencyRefreshInterval`**: both default to 120 s, which is the
+value every shipped config uses, and neither can tell that you changed it.
 
 ### The latency test uses a different script
 
@@ -542,17 +597,34 @@ ticker starts after the policy wait, so windows nailed to minute zero would stra
 draws. Under Random a pair is probed once and dropped, so that phase borrows the policy
 phase's estimate and the summary says so.
 
-Useful flags:
-
-| Flag | Script | What it does |
-|---|---|---|
-| `--nodegroups PATH` / `--probes PATH` | eco / latency | Read the second file from somewhere else (default: next to `--input`) |
-| `--chunks-per-provider N` | eco | Override how many consumers one provider can host |
-| `--range-window-minutes N` | latency | The refresh window the probes are grouped into (default 2, the `latencyRefreshInterval` of every shipped config) |
-| `--no-range` | both | Only the two curves, and the curve stays the value recorded at reservation time |
-
 If the second file is missing the chart is drawn exactly as before, with a note in the
 summary: older result folders keep working.
+
+#### Every flag of every script
+
+Each script also answers `--help`. This table is the same information, in one place.
+
+| Flag | Scripts | Default | What it does |
+|---|---|---|---|
+| `--input PATH` | all | required | The CSV to read: `reservations.csv` for the charts, `nodegroups.csv` / `probes.csv` for the verifiers |
+| `--output-dir PATH` | eco, latency, boxplot | an `analysis/` folder beside the input | Where the figures are written |
+| `--nodegroups PATH` / `--probes PATH` | eco / latency | next to `--input` | Read the second file from somewhere else |
+| `--chunks-per-provider N` | eco, boxplot | read from `nodegroups.csv` | Override how many consumers one provider can host |
+| `--range-window-minutes N` | latency, boxplot | `2.0` | The refresh window the probes are grouped into — the `latencyRefreshInterval` of every shipped config |
+| `--no-range` | eco, latency | off | Only the two curves, and the curve stays the value recorded at reservation time |
+| `--log-scale` | eco, boxplot | off | Logarithmic Y axis, written with an `_log` suffix beside the linear one. The latency chart has none: its two phases sit on the same order of magnitude |
+| `--grid regular\|events` | eco, latency | `regular` | How each phase's timeline is built. `regular` resamples onto an evenly spaced grid; `events` uses every distinct event timestamp instead, giving the exact step function at the cost of a busier chart |
+| `--grid-minutes N` | eco, latency, boxplot | `1.0` | The grid spacing, with `--grid regular` |
+| `--labels A,B,…` | boxplot | the topology read from the data | One label per run, in place of `3x7`, `8x17`, … |
+| `--tick-seconds N` | verifiers, dump | `120.0` | The refresh interval of the run, in seconds. Change it whenever you changed `carbonRefreshInterval` or `latencyRefreshInterval` |
+| `--tolerance-ms N` | latency verifier | `10.0` | How far two RTT readings may differ and still count as the same conditions |
+| `--windows N` | verifiers | `6` | Minimum comparable windows before a verdict is trusted |
+| `--shuffles N` | verifiers | `200` | Shuffles used to build the chance baseline |
+| `--max-bracket-seconds N` | latency verifier | `45.0` | How far from a value change the refresh boundary may be estimated |
+| `--consumer ID` / `--provider ID` | dump | required | The pair whose sequence to print |
+
+`ecoDiagramMakerLog.py` takes exactly the flags of `ecoDiagramMaker.py`: it is that script
+with `--log-scale` already set.
 
 #### All the runs in one figure
 
@@ -571,6 +643,10 @@ RTT — because a sum grows with the scale and would flatten the small runs. The
 (`3x7`, `8x17`, …) come from the data, and `--labels` overrides them.
 
 Each box shows the median, the quartiles and whiskers at 1.5 IQR; there is no mean marker, because under the policy the distribution is skewed enough that the mean lands above the box and reads as a mistake (the mean is in the CSV and the summary). `--log-scale` writes an `_log` version beside the linear one, worth it for eco where the two phases sit an order of magnitude apart.
+
+It takes the band's flags too — `--chunks-per-provider` for eco, `--range-window-minutes`
+for latency — and they mean exactly what they mean for the charts, because the third box
+is built from the same range. The full list is in the flag table above.
 
 Each scale gets a third box, in sand, for the best the federation offered at those same moments —
 "Achievable minimum" for eco, where every provider's reading is known, "Measured minimum" for
@@ -695,6 +771,10 @@ Two practical differences from eco and latency:
   price, capacity, region) chosen so that no provider wins on everything;
 - the first run after touching Broker or agent code must **not** use `--skip-build`.
 
+The run script passes `--keep-clusters`, `--skip-build` and `--run-id` through to the
+harness, exactly as the comparative tests take them (section 5). Its own outputs, and the
+`consumerChoice:` config keys, are in the suite's README.
+
 ---
 
 ## 14. The scalability test
@@ -721,7 +801,13 @@ bash federation-tests/scalability/run-scalability-test.sh
 
 Everything else is fixed in the script (5 minutes of measurement, intervals, timeouts),
 so only the load changes. The file accepts only those two keys: any other one is an
-error.
+error. To point it at a different file, pass `--config FILE`; `--keep-cluster` leaves the
+Kind cluster up between runs.
+
+Besides `summary.md` the run writes `summary.json`, `configuration.json`, the raw
+per-request CSVs (`raw_evaluations.csv`, `raw_provider_requests.csv`,
+`raw_consumer_requests.csv`), `broker_resource_usage.csv` and the logs. They are
+described in [scalability/README.md](scalability/README.md).
 
 - **For the curve**, do one run per scale, changing the two numbers (for example 5, 10,
   25, 50, 100 per type). With `--keep-cluster` the Kind cluster stays between runs; at
