@@ -1,0 +1,57 @@
+{
+  "decisionLatencyMs": 15480.471,
+  "envelope": {
+    "model": "llama3.2",
+    "created_at": "2026-09-30T16:06:51.407073076Z",
+    "response": "{\n  \"reason\": \"Choose a provider close to you, and preferably with low emissions.\",\n  \"values\": [\n    {\n      \"providerId\": \"provider-9\",\n      \"costPerChunk\": 0.082,\n      \"carbonIntensity\": 25,\n      \"availableChunks\": 2,\n      \"availableCpuMillicores\": 4000,\n      \"latitude\": 45.6085,\n      \"longitude\": -73.5493,\n      \"region\": \"QC\"\n    },\n    {\n      \"providerId\": \"provider-4\",\n      \"costPerChunk\": 0.052,\n      \"carbonIntensity\": 350,\n      \"availableChunks\": 2,\n      \"availableCpuMillicores\": 4000,\n      \"latitude\": 50.1109,\n      \"longitude\": 8.6821,\n      \"region\": \"HE\"\n    },\n    {\n      \"providerId\": \"provider-2\",\n      \"costPerChunk\": 0.113,\n      \"carbonIntensity\": 45,\n      \"availableChunks\": 2,\n      \"availableCpuMillicores\": 4000,\n      \"latitude\": 47.3769,\n      \"longitude\": 8.5417,\n      \"region\": \"CH\"\n    },\n    {\n      \"providerId\": \"provider-8\",\n      \"costPerChunk\": 0.026,\n      \"carbonIntensity\": 720,\n      \"availableChunks\": 4,\n      \"availableCpuMillicores\": 8000,\n      \"latitude\": 19.076,\n      \"longitude\": 72.8777,\n      \"region\": \"MH\"\n    },\n    {\n      \"providerId\": \"provider-3\",\n      \"costPerChunk\": 0.09,\n      \"carbonIntensity\": 60,\n      \"availableChunks\": 3,\n      \"availableCpuMillicores\": 6000,\n      \"latitude\": 48.8566,\n      \"longitude\": 2.3522,\n      \"region\": \"IDF\"\n    },\n    {\n      \"providerId\": \"provider-6\",\n      \"costPerChunk\": 0.055,\n      \"carbonIntensity\": 230,\n      \"availableChunks\": 3,\n      \"availableCpuMillicores\": 6000,\n      \"latitude\": 51.5074,\n      \"longitude\": -0.1278,\n      \"region\": \"ENG\"\n    },\n    {\n      \"providerId\": \"provider-5\",\n      \"costPerChunk\": 0.076,\n      \"carbonIntensity\": 150,\n      \"availableChunks\": 1,\n      \"availableCpuMillicores\": 2000,\n      \"latitude\": 48.2082,\n      \"longitude\": 16.3738,\n      \"region\": \"AT\"\n    },\n    {\n      \"providerId\": \"provider-7\",\n      \"costPerChunk\": 0.064,\n      \"carbonIntensity\": 35,\n      \"availableChunks\": 2,\n      \"availableCpuMillicores\": 4000,\n      \"latitude\": 60.1699,\n      \"longitude\": 24.9384,\n      \"region\": \"FI\"\n    },\n    {\n      \"providerId\": \"provider-1\",\n      \"costPerChunk\": 0.076,\n      \"carbonIntensity\": 520,\n      \"availableChunks\": 2,\n      \"availableCpuMillicores\": 4000,\n      \"latitude\": 45.4642,\n      \"longitude\": 9.19,\n      \"region\": \"LOM\"\n    }\n  ],\n  \"rankedList\": [\n    \"provider-4\",\n    \"provider-9\",\n    \"provider-2\",\n    \"provider-8\",\n    \"provider-3\",\n    \"provider-6\",\n    \"provider-5\",\n    \"provider-7\",\n    \"provider-1\"\n  ],\n  \"providerId\": \"provider-4\",\n  \"confidence\": 0.8,\n  \"reasoning\": \"I chose provider-4 because it is close to you (50.11 degrees away) and has low emissions (350 gCO2eq/kWh). I traded away the second spot because provider-9 is only slightly closer to you (45.61 degrees away) and has slightly higher emissions (25 gCO2eq/kWh).\" \n}",
+    "done": true,
+    "done_reason": "stop",
+    "total_duration": 15473746468,
+    "load_duration": 2588593,
+    "prompt_eval_count": 2065,
+    "prompt_eval_duration": 32606000,
+    "eval_count": 913,
+    "eval_duration": 15413036000
+  },
+  "error": "",
+  "errorKind": "",
+  "httpStatus": 200,
+  "model": "llama3.2",
+  "note": "reason, reasoning and confidence are the model's own account and were not used to judge the choice",
+  "ollamaBaseUrl": "http://172.18.0.23:11434",
+  "ollamaVersion": "0.34.0",
+  "parsedResponse": {
+    "providerId": "provider-4",
+    "rankedList": [
+      "provider-4",
+      "provider-9",
+      "provider-2",
+      "provider-8",
+      "provider-3",
+      "provider-6",
+      "provider-5",
+      "provider-7",
+      "provider-1"
+    ],
+    "reason": "Choose a provider close to you, and preferably with low emissions.",
+    "confidence": 0.8,
+    "reasoning": "I chose provider-4 because it is close to you (50.11 degrees away) and has low emissions (350 gCO2eq/kWh). I traded away the second spot because provider-9 is only slightly closer to you (45.61 degrees away) and has slightly higher emissions (25 gCO2eq/kWh)."
+  },
+  "rankedValidIds": [
+    "provider-4",
+    "provider-9",
+    "provider-2",
+    "provider-8",
+    "provider-3",
+    "provider-6",
+    "provider-5",
+    "provider-7",
+    "provider-1"
+  ],
+  "rawResponse": "{\n  \"reason\": \"Choose a provider close to you, and preferably with low emissions.\",\n  \"values\": [\n    {\n      \"providerId\": \"provider-9\",\n      \"costPerChunk\": 0.082,\n      \"carbonIntensity\": 25,\n      \"availableChunks\": 2,\n      \"availableCpuMillicores\": 4000,\n      \"latitude\": 45.6085,\n      \"longitude\": -73.5493,\n      \"region\": \"QC\"\n    },\n    {\n      \"providerId\": \"provider-4\",\n      \"costPerChunk\": 0.052,\n      \"carbonIntensity\": 350,\n      \"availableChunks\": 2,\n      \"availableCpuMillicores\": 4000,\n      \"latitude\": 50.1109,\n      \"longitude\": 8.6821,\n      \"region\": \"HE\"\n    },\n    {\n      \"providerId\": \"provider-2\",\n      \"costPerChunk\": 0.113,\n      \"carbonIntensity\": 45,\n      \"availableChunks\": 2,\n      \"availableCpuMillicores\": 4000,\n      \"latitude\": 47.3769,\n      \"longitude\": 8.5417,\n      \"region\": \"CH\"\n    },\n    {\n      \"providerId\": \"provider-8\",\n      \"costPerChunk\": 0.026,\n      \"carbonIntensity\": 720,\n      \"availableChunks\": 4,\n      \"availableCpuMillicores\": 8000,\n      \"latitude\": 19.076,\n      \"longitude\": 72.8777,\n      \"region\": \"MH\"\n    },\n    {\n      \"providerId\": \"provider-3\",\n      \"costPerChunk\": 0.09,\n      \"carbonIntensity\": 60,\n      \"availableChunks\": 3,\n      \"availableCpuMillicores\": 6000,\n      \"latitude\": 48.8566,\n      \"longitude\": 2.3522,\n      \"region\": \"IDF\"\n    },\n    {\n      \"providerId\": \"provider-6\",\n      \"costPerChunk\": 0.055,\n      \"carbonIntensity\": 230,\n      \"availableChunks\": 3,\n      \"availableCpuMillicores\": 6000,\n      \"latitude\": 51.5074,\n      \"longitude\": -0.1278,\n      \"region\": \"ENG\"\n    },\n    {\n      \"providerId\": \"provider-5\",\n      \"costPerChunk\": 0.076,\n      \"carbonIntensity\": 150,\n      \"availableChunks\": 1,\n      \"availableCpuMillicores\": 2000,\n      \"latitude\": 48.2082,\n      \"longitude\": 16.3738,\n      \"region\": \"AT\"\n    },\n    {\n      \"providerId\": \"provider-7\",\n      \"costPerChunk\": 0.064,\n      \"carbonIntensity\": 35,\n      \"availableChunks\": 2,\n      \"availableCpuMillicores\": 4000,\n      \"latitude\": 60.1699,\n      \"longitude\": 24.9384,\n      \"region\": \"FI\"\n    },\n    {\n      \"providerId\": \"provider-1\",\n      \"costPerChunk\": 0.076,\n      \"carbonIntensity\": 520,\n      \"availableChunks\": 2,\n      \"availableCpuMillicores\": 4000,\n      \"latitude\": 45.4642,\n      \"longitude\": 9.19,\n      \"region\": \"LOM\"\n    }\n  ],\n  \"rankedList\": [\n    \"provider-4\",\n    \"provider-9\",\n    \"provider-2\",\n    \"provider-8\",\n    \"provider-3\",\n    \"provider-6\",\n    \"provider-5\",\n    \"provider-7\",\n    \"provider-1\"\n  ],\n  \"providerId\": \"provider-4\",\n  \"confidence\": 0.8,\n  \"reasoning\": \"I chose provider-4 because it is close to you (50.11 degrees away) and has low emissions (350 gCO2eq/kWh). I traded away the second spot because provider-9 is only slightly closer to you (45.61 degrees away) and has slightly higher emissions (25 gCO2eq/kWh).\" \n}",
+  "requestStartedAt": "2026-09-30T16:06:35.932071258Z",
+  "responseAt": "2026-09-30T16:06:51.411593279Z",
+  "selectorLatencyMs": 15479.521,
+  "singleCandidate": false,
+  "unknownIds": null
+}

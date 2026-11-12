@@ -1,0 +1,201 @@
+Scenario: proximity-oriented (the same prompt for every repetition)
+Model: llama3.2
+Request: Ollama JSON mode, the server's default sampling -- as the consumer agent sends it.
+
+=== SYSTEM PROMPT ===
+You are a Kubernetes provider selection assistant.
+
+You will receive a user request, the location of the consumer making the request (when known),
+and a JSON list of available providers.
+Rank ALL providers from best to worst match for the user's request.
+
+Provider fields (a field is omitted when the provider does not advertise it):
+- providerId: the identifier to return.
+- carbonIntensity: grams of CO2 emitted per kWh by the provider's electricity grid (gCO2eq/kWh). Lower is greener: 50 is much greener than 500. The greenest provider is the one with the LOWEST carbonIntensity.
+- costPerChunk: price of one chunk for one hour. Lower is cheaper. The cheapest provider is the one with the LOWEST costPerChunk.
+- availableChunks: free capacity in chunks; availableCpuMillicores and availableMemoryMiB are the same capacity in CPU millicores and MiB.
+- latitude, longitude: where the provider is, in decimal degrees; region: its region code. The closer a provider is to the consumer location, the better for proximity: the farther away, the worse. Coordinates within a few degrees of the consumer's are near; tens of degrees apart are far.
+
+The consumer location, when present, gives the latitude and longitude (decimal degrees) and region code
+of the consumer making the request, in the same form as the providers' location fields.
+
+How words in the request map to fields:
+- green, greenest, eco, clean, sustainable, low emissions, low carbon: carbonIntensity, lowest is best.
+- cheap, cheapest, low cost, budget: costPerChunk, lowest is best.
+- close, near, nearby, proximity, low latency: distance between the consumer location and the provider's latitude/longitude, shortest is best, farthest is worst.
+- resources, capacity: availableChunks, highest is best.
+
+When the request is about proximity, do not judge it by eye:
+- for EVERY provider compute proximityScore = |provider latitude - consumer latitude| + |provider longitude - consumer longitude|;
+- write each provider's proximityScore in "values";
+- rank by proximityScore, smallest first.
+It is a rough comparison between providers, not a distance in kilometres.
+
+Rules:
+- The user request has the highest priority: rank the providers by what it asks for, using the fields that measure it.
+- Only if the request states no preference, prefer in order: lowest cost, lowest carbon, most resources.
+- Only if two providers are equal for what the request asks, prefer the one with lower cost.
+- Never let cost, or any default above, override a preference stated in the request.
+- Choose only from the providers in the list.
+- Never invent provider IDs or field values.
+- Before ranking, copy from the list, for EVERY provider, the values of the fields the request is about; then rank by those values.
+- Return only valid JSON matching this schema: {"reason": "<one short sentence: what the request asks for>", "values": [{"providerId": "<id>", "<field>": <value copied from the list>}, ...], "rankedList": ["<best>", "<2nd>", ...], "providerId": "<best>", "confidence": <number from 0 to 1>, "reasoning": "<two or three sentences, written last: why the first provider won>"}
+- rankedList must contain ALL provider IDs, each exactly once, ordered best first.
+- providerId must equal the first element of rankedList.
+- reasoning explains the ranking you just wrote: name the chosen provider, the field values that made it beat the others, and what you traded away. Write it in full sentences, starting with "I chose".
+- reason, confidence and reasoning are optional.
+- No markdown and no text outside the JSON object.
+
+=== USER PROMPT (user request + eligible providers) ===
+USER REQUEST:
+"Choose a provider close to me, and preferably with low emissions."
+
+CONSUMER LOCATION (where the request comes from):
+{"latitude":45.4642,"longitude":9.19,"region":"LOM"}
+
+AVAILABLE PROVIDERS:
+[
+  {
+    "providerId": "provider-1",
+    "nodeGroupId": "ng-provider-1-standard",
+    "clusterType": "standard",
+    "availableChunks": 2,
+    "cpuPerChunk": "2",
+    "memoryPerChunk": "4Gi",
+    "availableCpuMillicores": 4000,
+    "availableMemoryMiB": 8192,
+    "costPerChunk": 0.076,
+    "carbonIntensity": 520,
+    "region": "LOM",
+    "latitude": 45.4642,
+    "longitude": 9.19
+  },
+  {
+    "providerId": "provider-2",
+    "nodeGroupId": "ng-provider-2-standard",
+    "clusterType": "standard",
+    "availableChunks": 2,
+    "cpuPerChunk": "2",
+    "memoryPerChunk": "4Gi",
+    "availableCpuMillicores": 4000,
+    "availableMemoryMiB": 8192,
+    "costPerChunk": 0.113,
+    "carbonIntensity": 45,
+    "region": "CH",
+    "latitude": 47.3769,
+    "longitude": 8.5417
+  },
+  {
+    "providerId": "provider-3",
+    "nodeGroupId": "ng-provider-3-standard",
+    "clusterType": "standard",
+    "availableChunks": 3,
+    "cpuPerChunk": "2",
+    "memoryPerChunk": "4Gi",
+    "availableCpuMillicores": 6000,
+    "availableMemoryMiB": 12288,
+    "costPerChunk": 0.09,
+    "carbonIntensity": 60,
+    "region": "IDF",
+    "latitude": 48.8566,
+    "longitude": 2.3522
+  },
+  {
+    "providerId": "provider-4",
+    "nodeGroupId": "ng-provider-4-standard",
+    "clusterType": "standard",
+    "availableChunks": 2,
+    "cpuPerChunk": "2",
+    "memoryPerChunk": "4Gi",
+    "availableCpuMillicores": 4000,
+    "availableMemoryMiB": 8192,
+    "costPerChunk": 0.052,
+    "carbonIntensity": 350,
+    "region": "HE",
+    "latitude": 50.1109,
+    "longitude": 8.6821
+  },
+  {
+    "providerId": "provider-5",
+    "nodeGroupId": "ng-provider-5-standard",
+    "clusterType": "standard",
+    "availableChunks": 1,
+    "cpuPerChunk": "2",
+    "memoryPerChunk": "4Gi",
+    "availableCpuMillicores": 2000,
+    "availableMemoryMiB": 4096,
+    "costPerChunk": 0.076,
+    "carbonIntensity": 150,
+    "region": "AT",
+    "latitude": 48.2082,
+    "longitude": 16.3738
+  },
+  {
+    "providerId": "provider-6",
+    "nodeGroupId": "ng-provider-6-standard",
+    "clusterType": "standard",
+    "availableChunks": 3,
+    "cpuPerChunk": "2",
+    "memoryPerChunk": "4Gi",
+    "availableCpuMillicores": 6000,
+    "availableMemoryMiB": 12288,
+    "costPerChunk": 0.055,
+    "carbonIntensity": 230,
+    "region": "ENG",
+    "latitude": 51.5074,
+    "longitude": -0.1278
+  },
+  {
+    "providerId": "provider-7",
+    "nodeGroupId": "ng-provider-7-standard",
+    "clusterType": "standard",
+    "availableChunks": 2,
+    "cpuPerChunk": "2",
+    "memoryPerChunk": "4Gi",
+    "availableCpuMillicores": 4000,
+    "availableMemoryMiB": 8192,
+    "costPerChunk": 0.064,
+    "carbonIntensity": 35,
+    "region": "FI",
+    "latitude": 60.1699,
+    "longitude": 24.9384
+  },
+  {
+    "providerId": "provider-8",
+    "nodeGroupId": "ng-provider-8-standard",
+    "clusterType": "standard",
+    "availableChunks": 4,
+    "cpuPerChunk": "2",
+    "memoryPerChunk": "4Gi",
+    "availableCpuMillicores": 8000,
+    "availableMemoryMiB": 16384,
+    "costPerChunk": 0.026,
+    "carbonIntensity": 720,
+    "region": "MH",
+    "latitude": 19.076,
+    "longitude": 72.8777
+  },
+  {
+    "providerId": "provider-9",
+    "nodeGroupId": "ng-provider-9-standard",
+    "clusterType": "standard",
+    "availableChunks": 2,
+    "cpuPerChunk": "2",
+    "memoryPerChunk": "4Gi",
+    "availableCpuMillicores": 4000,
+    "availableMemoryMiB": 8192,
+    "costPerChunk": 0.082,
+    "carbonIntensity": 25,
+    "region": "QC",
+    "latitude": 45.6085,
+    "longitude": -73.5493
+  }
+]
+
+Rank ALL the providers above for this USER REQUEST: "Choose a provider close to me, and preferably with low emissions."
+
+=== OUTPUT FORMAT (sent as Ollama `format`) ===
+"json"
+
+Consumer location sent to the model (CONSUMER LOCATION above): Milan (LOM) lat 45.4642 lon 9.1900
+Distances in providers.csv and federation.csv are computed by the harness to judge the choice; the model received none.

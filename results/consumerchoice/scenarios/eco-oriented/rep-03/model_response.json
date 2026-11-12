@@ -1,0 +1,19 @@
+{
+  "decisionLatencyMs": 120033.511,
+  "envelope": null,
+  "error": "call ollama: Post \"http://172.18.0.23:11434/api/generate\": context deadline exceeded",
+  "errorKind": "timeout",
+  "httpStatus": 0,
+  "model": "llama3.2",
+  "note": "reason, reasoning and confidence are the model's own account and were not used to judge the choice",
+  "ollamaBaseUrl": "http://172.18.0.23:11434",
+  "ollamaVersion": "0.34.0",
+  "parsedResponse": null,
+  "rankedValidIds": null,
+  "rawResponse": "",
+  "requestStartedAt": "2026-09-30T16:00:17.09490126Z",
+  "responseAt": "2026-09-30T16:02:17.125320814Z",
+  "selectorLatencyMs": 120030.419,
+  "singleCandidate": false,
+  "unknownIds": null
+}

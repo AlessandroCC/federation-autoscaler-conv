@@ -1,0 +1,57 @@
+{
+  "decisionLatencyMs": 15878.242,
+  "envelope": {
+    "model": "llama3.2",
+    "created_at": "2026-09-30T15:59:52.005175428Z",
+    "response": "{\n  \"reason\": \"Prioritize the greenest provider\",\n  \"values\": [\n    {\n      \"providerId\": \"provider-4\",\n      \"carbonIntensity\": 350\n    },\n    {\n      \"providerId\": \"provider-7\",\n      \"carbonIntensity\": 35\n    },\n    {\n      \"providerId\": \"provider-6\",\n      \"carbonIntensity\": 230\n    },\n    {\n      \"providerId\": \"provider-8\",\n      \"carbonIntensity\": 720\n    },\n    {\n      \"providerId\": \"provider-1\",\n      \"carbonIntensity\": 520\n    },\n    {\n      \"providerId\": \"provider-9\",\n      \"carbonIntensity\": 25\n    },\n    {\n      \"providerId\": \"provider-2\",\n      \"carbonIntensity\": 45\n    },\n    {\n      \"providerId\": \"provider-3\",\n      \"carbonIntensity\": 60\n    },\n    {\n      \"providerId\": \"provider-5\",\n      \"carbonIntensity\": 150\n    },\n    {\n      \"providerId\": \"provider-2\",\n      \"carbonIntensity\": 45\n    },\n    {\n      \"providerId\": \"provider-3\",\n      \"carbonIntensity\": 60\n    },\n    {\n      \"providerId\": \"provider-5\",\n      \"carbonIntensity\": 150\n    },\n    {\n      \"providerId\": \"provider-4\",\n      \"carbonIntensity\": 350\n    },\n    {\n      \"providerId\": \"provider-7\",\n      \"carbonIntensity\": 35\n    },\n    {\n      \"providerId\": \"provider-6\",\n      \"carbonIntensity\": 230\n    },\n    {\n      \"providerId\": \"provider-8\",\n      \"carbonIntensity\": 720\n    },\n    {\n      \"providerId\": \"provider-1\",\n      \"carbonIntensity\": 520\n    },\n    {\n      \"providerId\": \"provider-9\",\n      \"carbonIntensity\": 25\n    },\n    {\n      \"providerId\": \"provider-2\",\n      \"carbonIntensity\": 45\n    },\n    {\n      \"providerId\": \"provider-3\",\n      \"carbonIntensity\": 60\n    },\n    {\n      \"providerId\": \"provider-5\",\n      \"carbonIntensity\": 150\n    },\n    {\n      \"providerId\": \"provider-4\",\n      \"carbonIntensity\": 350\n    },\n    {\n      \"providerId\": \"provider-7\",\n      \"carbonIntensity\": 35\n    },\n    {\n      \"providerId\": \"provider-6\",\n      \"carbonIntensity\": 230\n    },\n    {\n      \"providerId\": \"provider-8\",\n      \"carbonIntensity\": 720\n    },\n    {\n      \"providerId\": \"provider-1\",\n      \"carbonIntensity\": 520\n    },\n    {\n      \"providerId\": \"provider-9\",\n      \"carbonIntensity\": 25\n    }\n  ],\n  \"rankedList\": [\n    \"provider-4\",\n    \"provider-7\",\n    \"provider-6\",\n    \"provider-8\",\n    \"provider-9\",\n    \"provider-1\",\n    \"provider-2\",\n    \"provider-3\",\n    \"provider-5\"\n  ],\n  \"providerId\": \"provider-4\",\n  \"confidence\": 1,\n  \"reasoning\": \"I chose provider-4 as the greenest provider. It has the lowest carbonIntensity of 350. I chose provider-7 as the second greenest provider. I chose provider-6 as the third greenest provider. I chose provider-8 as the fourth greenest provider. I chose provider-9 as the fifth greenest provider. I chose provider-1 as the sixth greenest provider. I chose provider-2 as the seventh greenest provider. I chose provider-3 as the eighth greenest provider. I chose provider-5 as the ninth greenest provider. I chose to prioritize the greenest provider over the cheapest provider. I chose to prioritize the greenest provider over the provider with the most resources. I chose to prioritize the greenest provider over the one with the closest proximity.\"}",
+    "done": true,
+    "done_reason": "stop",
+    "total_duration": 15868233868,
+    "load_duration": 2817400,
+    "prompt_eval_count": 2063,
+    "prompt_eval_duration": 44072000,
+    "eval_count": 863,
+    "eval_duration": 15798221000
+  },
+  "error": "",
+  "errorKind": "",
+  "httpStatus": 200,
+  "model": "llama3.2",
+  "note": "reason, reasoning and confidence are the model's own account and were not used to judge the choice",
+  "ollamaBaseUrl": "http://172.18.0.23:11434",
+  "ollamaVersion": "0.34.0",
+  "parsedResponse": {
+    "providerId": "provider-4",
+    "rankedList": [
+      "provider-4",
+      "provider-7",
+      "provider-6",
+      "provider-8",
+      "provider-9",
+      "provider-1",
+      "provider-2",
+      "provider-3",
+      "provider-5"
+    ],
+    "reason": "Prioritize the greenest provider",
+    "confidence": 1,
+    "reasoning": "I chose provider-4 as the greenest provider. It has the lowest carbonIntensity of 350. I chose provider-7 as the second greenest provider. I chose provider-6 as the third greenest provider. I chose provider-8 as the fourth greenest provider. I chose provider-9 as the fifth greenest provider. I chose provider-1 as the sixth greenest provider. I chose provider-2 as the seventh greenest provider. I chose provider-3 as the eighth greenest provider. I chose provider-5 as the ninth greenest provider. I chose to prioritize the greenest provider over the cheapest provider. I chose to prioritize the greenest provider over the provider with the most resources. I chose to prioritize the greenest provider over the one with the closest proximity."
+  },
+  "rankedValidIds": [
+    "provider-4",
+    "provider-7",
+    "provider-6",
+    "provider-8",
+    "provider-9",
+    "provider-1",
+    "provider-2",
+    "provider-3",
+    "provider-5"
+  ],
+  "rawResponse": "{\n  \"reason\": \"Prioritize the greenest provider\",\n  \"values\": [\n    {\n      \"providerId\": \"provider-4\",\n      \"carbonIntensity\": 350\n    },\n    {\n      \"providerId\": \"provider-7\",\n      \"carbonIntensity\": 35\n    },\n    {\n      \"providerId\": \"provider-6\",\n      \"carbonIntensity\": 230\n    },\n    {\n      \"providerId\": \"provider-8\",\n      \"carbonIntensity\": 720\n    },\n    {\n      \"providerId\": \"provider-1\",\n      \"carbonIntensity\": 520\n    },\n    {\n      \"providerId\": \"provider-9\",\n      \"carbonIntensity\": 25\n    },\n    {\n      \"providerId\": \"provider-2\",\n      \"carbonIntensity\": 45\n    },\n    {\n      \"providerId\": \"provider-3\",\n      \"carbonIntensity\": 60\n    },\n    {\n      \"providerId\": \"provider-5\",\n      \"carbonIntensity\": 150\n    },\n    {\n      \"providerId\": \"provider-2\",\n      \"carbonIntensity\": 45\n    },\n    {\n      \"providerId\": \"provider-3\",\n      \"carbonIntensity\": 60\n    },\n    {\n      \"providerId\": \"provider-5\",\n      \"carbonIntensity\": 150\n    },\n    {\n      \"providerId\": \"provider-4\",\n      \"carbonIntensity\": 350\n    },\n    {\n      \"providerId\": \"provider-7\",\n      \"carbonIntensity\": 35\n    },\n    {\n      \"providerId\": \"provider-6\",\n      \"carbonIntensity\": 230\n    },\n    {\n      \"providerId\": \"provider-8\",\n      \"carbonIntensity\": 720\n    },\n    {\n      \"providerId\": \"provider-1\",\n      \"carbonIntensity\": 520\n    },\n    {\n      \"providerId\": \"provider-9\",\n      \"carbonIntensity\": 25\n    },\n    {\n      \"providerId\": \"provider-2\",\n      \"carbonIntensity\": 45\n    },\n    {\n      \"providerId\": \"provider-3\",\n      \"carbonIntensity\": 60\n    },\n    {\n      \"providerId\": \"provider-5\",\n      \"carbonIntensity\": 150\n    },\n    {\n      \"providerId\": \"provider-4\",\n      \"carbonIntensity\": 350\n    },\n    {\n      \"providerId\": \"provider-7\",\n      \"carbonIntensity\": 35\n    },\n    {\n      \"providerId\": \"provider-6\",\n      \"carbonIntensity\": 230\n    },\n    {\n      \"providerId\": \"provider-8\",\n      \"carbonIntensity\": 720\n    },\n    {\n      \"providerId\": \"provider-1\",\n      \"carbonIntensity\": 520\n    },\n    {\n      \"providerId\": \"provider-9\",\n      \"carbonIntensity\": 25\n    }\n  ],\n  \"rankedList\": [\n    \"provider-4\",\n    \"provider-7\",\n    \"provider-6\",\n    \"provider-8\",\n    \"provider-9\",\n    \"provider-1\",\n    \"provider-2\",\n    \"provider-3\",\n    \"provider-5\"\n  ],\n  \"providerId\": \"provider-4\",\n  \"confidence\": 1,\n  \"reasoning\": \"I chose provider-4 as the greenest provider. It has the lowest carbonIntensity of 350. I chose provider-7 as the second greenest provider. I chose provider-6 as the third greenest provider. I chose provider-8 as the fourth greenest provider. I chose provider-9 as the fifth greenest provider. I chose provider-1 as the sixth greenest provider. I chose provider-2 as the seventh greenest provider. I chose provider-3 as the eighth greenest provider. I chose provider-5 as the ninth greenest provider. I chose to prioritize the greenest provider over the cheapest provider. I chose to prioritize the greenest provider over the provider with the most resources. I chose to prioritize the greenest provider over the one with the closest proximity.\"}",
+  "requestStartedAt": "2026-09-30T15:59:36.135431895Z",
+  "responseAt": "2026-09-30T15:59:52.012409653Z",
+  "selectorLatencyMs": 15876.977,
+  "singleCandidate": false,
+  "unknownIds": null
+}

@@ -1,0 +1,64 @@
+{
+  "decisionLatencyMs": 10990.241,
+  "envelope": {
+    "model": "llama3.2",
+    "created_at": "2026-09-30T16:03:26.646561333Z",
+    "response": "{\n  \"reason\": \"Prioritize the greenest provider. Latency is secondary.\",\n  \"values\": [\n    {\n      \"providerId\": \"provider-7\",\n      \"carbonIntensity\": 35,\n      \"costPerChunk\": 0.064\n    },\n    {\n      \"providerId\": \"provider-8\",\n      \"carbonIntensity\": 720,\n      \"costPerChunk\": 0.026\n    },\n    {\n      \"providerId\": \"provider-9\",\n      \"carbonIntensity\": 25,\n      \"costPerChunk\": 0.082\n    },\n    {\n      \"providerId\": \"provider-4\",\n      \"carbonIntensity\": 350,\n      \"costPerChunk\": 0.052\n    },\n    {\n      \"providerId\": \"provider-6\",\n      \"carbonIntensity\": 230,\n      \"costPerChunk\": 0.055\n    },\n    {\n      \"providerId\": \"provider-3\",\n      \"carbonIntensity\": 60,\n      \"costPerChunk\": 0.09\n    },\n    {\n      \"providerId\": \"provider-2\",\n      \"carbonIntensity\": 45,\n      \"costPerChunk\": 0.113\n    },\n    {\n      \"providerId\": \"provider-1\",\n      \"carbonIntensity\": 520,\n      \"costPerChunk\": 0.076\n    },\n    {\n      \"providerId\": \"provider-5\",\n      \"carbonIntensity\": 150,\n      \"costPerChunk\": 0.076\n    },\n    {\n      \"providerId\": \"provider-10\",\n      \"carbonIntensity\": null,\n      \"costPerChunk\": null\n    },\n    {\n      \"providerId\": \"provider-11\",\n      \"carbonIntensity\": null,\n      \"costPerChunk\": null\n    },\n    {\n      \"providerId\": \"provider-12\",\n      \"carbonIntensity\": null,\n      \"costPerChunk\": null\n    }\n  ],\n  \"rankedList\": [\n    \"provider-9\",\n    \"provider-7\",\n    \"provider-8\",\n    \"provider-4\",\n    \"provider-6\",\n    \"provider-3\",\n    \"provider-2\",\n    \"provider-1\",\n    \"provider-5\",\n    \"provider-10\",\n    \"provider-11\",\n    \"provider-12\"\n  ],\n  \"providerId\": \"provider-9\",\n  \"confidence\": 0.6666666666666666,\n  \"reasoning\": \"I chose provider-9 because it is the greenest. I chose it because its carbonIntensity is 25, which is lower than the other providers. I chose it because its costPerChunk is 0.082, which is not lower than the other providers, but I had to choose between the two lowest carbonIntensity providers, and the one with the lowest costPerChunk was provider-9. I traded away the possibility of choosing the provider with the lowest costPerChunk.\"\n}",
+    "done": true,
+    "done_reason": "stop",
+    "total_duration": 10981236646,
+    "load_duration": 2656923,
+    "prompt_eval_count": 2063,
+    "prompt_eval_duration": 33633000,
+    "eval_count": 618,
+    "eval_duration": 10920678000
+  },
+  "error": "",
+  "errorKind": "",
+  "httpStatus": 200,
+  "model": "llama3.2",
+  "note": "reason, reasoning and confidence are the model's own account and were not used to judge the choice",
+  "ollamaBaseUrl": "http://172.18.0.23:11434",
+  "ollamaVersion": "0.34.0",
+  "parsedResponse": {
+    "providerId": "provider-9",
+    "rankedList": [
+      "provider-9",
+      "provider-7",
+      "provider-8",
+      "provider-4",
+      "provider-6",
+      "provider-3",
+      "provider-2",
+      "provider-1",
+      "provider-5",
+      "provider-10",
+      "provider-11",
+      "provider-12"
+    ],
+    "reason": "Prioritize the greenest provider. Latency is secondary.",
+    "confidence": 0.6666666666666666,
+    "reasoning": "I chose provider-9 because it is the greenest. I chose it because its carbonIntensity is 25, which is lower than the other providers. I chose it because its costPerChunk is 0.082, which is not lower than the other providers, but I had to choose between the two lowest carbonIntensity providers, and the one with the lowest costPerChunk was provider-9. I traded away the possibility of choosing the provider with the lowest costPerChunk."
+  },
+  "rankedValidIds": [
+    "provider-9",
+    "provider-7",
+    "provider-8",
+    "provider-4",
+    "provider-6",
+    "provider-3",
+    "provider-2",
+    "provider-1",
+    "provider-5"
+  ],
+  "rawResponse": "{\n  \"reason\": \"Prioritize the greenest provider. Latency is secondary.\",\n  \"values\": [\n    {\n      \"providerId\": \"provider-7\",\n      \"carbonIntensity\": 35,\n      \"costPerChunk\": 0.064\n    },\n    {\n      \"providerId\": \"provider-8\",\n      \"carbonIntensity\": 720,\n      \"costPerChunk\": 0.026\n    },\n    {\n      \"providerId\": \"provider-9\",\n      \"carbonIntensity\": 25,\n      \"costPerChunk\": 0.082\n    },\n    {\n      \"providerId\": \"provider-4\",\n      \"carbonIntensity\": 350,\n      \"costPerChunk\": 0.052\n    },\n    {\n      \"providerId\": \"provider-6\",\n      \"carbonIntensity\": 230,\n      \"costPerChunk\": 0.055\n    },\n    {\n      \"providerId\": \"provider-3\",\n      \"carbonIntensity\": 60,\n      \"costPerChunk\": 0.09\n    },\n    {\n      \"providerId\": \"provider-2\",\n      \"carbonIntensity\": 45,\n      \"costPerChunk\": 0.113\n    },\n    {\n      \"providerId\": \"provider-1\",\n      \"carbonIntensity\": 520,\n      \"costPerChunk\": 0.076\n    },\n    {\n      \"providerId\": \"provider-5\",\n      \"carbonIntensity\": 150,\n      \"costPerChunk\": 0.076\n    },\n    {\n      \"providerId\": \"provider-10\",\n      \"carbonIntensity\": null,\n      \"costPerChunk\": null\n    },\n    {\n      \"providerId\": \"provider-11\",\n      \"carbonIntensity\": null,\n      \"costPerChunk\": null\n    },\n    {\n      \"providerId\": \"provider-12\",\n      \"carbonIntensity\": null,\n      \"costPerChunk\": null\n    }\n  ],\n  \"rankedList\": [\n    \"provider-9\",\n    \"provider-7\",\n    \"provider-8\",\n    \"provider-4\",\n    \"provider-6\",\n    \"provider-3\",\n    \"provider-2\",\n    \"provider-1\",\n    \"provider-5\",\n    \"provider-10\",\n    \"provider-11\",\n    \"provider-12\"\n  ],\n  \"providerId\": \"provider-9\",\n  \"confidence\": 0.6666666666666666,\n  \"reasoning\": \"I chose provider-9 because it is the greenest. I chose it because its carbonIntensity is 25, which is lower than the other providers. I chose it because its costPerChunk is 0.082, which is not lower than the other providers, but I had to choose between the two lowest carbonIntensity providers, and the one with the lowest costPerChunk was provider-9. I traded away the possibility of choosing the provider with the lowest costPerChunk.\"\n}",
+  "requestStartedAt": "2026-09-30T16:03:15.663804541Z",
+  "responseAt": "2026-09-30T16:03:26.652694774Z",
+  "selectorLatencyMs": 10988.89,
+  "singleCandidate": false,
+  "unknownIds": [
+    "provider-10",
+    "provider-11",
+    "provider-12"
+  ]
+}

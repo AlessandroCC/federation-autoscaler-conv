@@ -1,0 +1,242 @@
+{
+  "agentPath": {
+    "cpu": "1",
+    "enabled": true,
+    "memory": "1Gi",
+    "timeout": "10m0s"
+  },
+  "agentSystemPrompt": "see prompt.txt in each repetition directory",
+  "cleanup": true,
+  "clusterAutoscaler": "disabled: recorded decisions are reserved by the harness, the agent-path check by the consumer's manual-reservation controller",
+  "consumerRegion": "LOM",
+  "consumers": 1,
+  "fallback": {
+    "mode": "agent-default"
+  },
+  "generatedAt": "2026-09-30T15:59:01.120097651Z",
+  "gitCommit": "238c4f46978d7ec5f749bbddcab1c6ab316395f9",
+  "gitDirty": false,
+  "goVersion": "go1.24.5",
+  "mode": "consumerchoice",
+  "ollama": {
+    "agentBaseUrl": "http://172.18.0.23:11434",
+    "baseUrl": "http://172.18.0.23:11434",
+    "gpu": false,
+    "image": "ollama/ollama:0.34.0",
+    "managed": true,
+    "model": "llama3.2",
+    "pullIfMissing": true,
+    "request": "JSON mode, server-default sampling: exactly as the consumer agent sends it",
+    "serverVersion": "0.34.0",
+    "timeout": "2m0s"
+  },
+  "providerProfiles": [
+    {
+      "capacity": {
+        "cpu": "4000m",
+        "memory": "8Gi"
+      },
+      "carbonIntensity": 520,
+      "chunks": 2,
+      "city": "Milan",
+      "prices": {
+        "cpu": "0.030",
+        "memory": "0.0040"
+      },
+      "providerId": "provider-1",
+      "region": "LOM"
+    },
+    {
+      "capacity": {
+        "cpu": "4000m",
+        "memory": "8Gi"
+      },
+      "carbonIntensity": 45,
+      "chunks": 2,
+      "city": "Zurich",
+      "prices": {
+        "cpu": "0.045",
+        "memory": "0.0060"
+      },
+      "providerId": "provider-2",
+      "region": "CH"
+    },
+    {
+      "capacity": {
+        "cpu": "6000m",
+        "memory": "12Gi"
+      },
+      "carbonIntensity": 60,
+      "chunks": 3,
+      "city": "Paris",
+      "prices": {
+        "cpu": "0.035",
+        "memory": "0.0050"
+      },
+      "providerId": "provider-3",
+      "region": "IDF"
+    },
+    {
+      "capacity": {
+        "cpu": "4000m",
+        "memory": "8Gi"
+      },
+      "carbonIntensity": 350,
+      "chunks": 2,
+      "city": "Frankfurt",
+      "prices": {
+        "cpu": "0.020",
+        "memory": "0.0030"
+      },
+      "providerId": "provider-4",
+      "region": "HE"
+    },
+    {
+      "capacity": {
+        "cpu": "2000m",
+        "memory": "4Gi"
+      },
+      "carbonIntensity": 150,
+      "chunks": 1,
+      "city": "Vienna",
+      "prices": {
+        "cpu": "0.030",
+        "memory": "0.0040"
+      },
+      "providerId": "provider-5",
+      "region": "AT"
+    },
+    {
+      "capacity": {
+        "cpu": "6000m",
+        "memory": "12Gi"
+      },
+      "carbonIntensity": 230,
+      "chunks": 3,
+      "city": "London",
+      "prices": {
+        "cpu": "0.022",
+        "memory": "0.0030"
+      },
+      "providerId": "provider-6",
+      "region": "ENG"
+    },
+    {
+      "capacity": {
+        "cpu": "4000m",
+        "memory": "8Gi"
+      },
+      "carbonIntensity": 35,
+      "chunks": 2,
+      "city": "Helsinki",
+      "prices": {
+        "cpu": "0.025",
+        "memory": "0.0035"
+      },
+      "providerId": "provider-7",
+      "region": "FI"
+    },
+    {
+      "capacity": {
+        "cpu": "8000m",
+        "memory": "16Gi"
+      },
+      "carbonIntensity": 720,
+      "chunks": 4,
+      "city": "Mumbai",
+      "prices": {
+        "cpu": "0.010",
+        "memory": "0.0015"
+      },
+      "providerId": "provider-8",
+      "region": "MH"
+    },
+    {
+      "capacity": {
+        "cpu": "4000m",
+        "memory": "8Gi"
+      },
+      "carbonIntensity": 25,
+      "chunks": 2,
+      "city": "Montreal",
+      "prices": {
+        "cpu": "0.032",
+        "memory": "0.0045"
+      },
+      "providerId": "provider-9",
+      "region": "QC"
+    }
+  ],
+  "providers": 9,
+  "repetitions": 5,
+  "runId": "cmp-20260930-153544",
+  "scenarios": [
+    {
+      "criterion": {
+        "type": "eco",
+        "maxCarbonRank": 2,
+        "maxDistanceRank": 3,
+        "worstQuantile": 0.25
+      },
+      "name": "eco-oriented",
+      "referenceWeights": {
+        "carbon": 1,
+        "distance": 0,
+        "cost": 0
+      },
+      "userRequest": "Prioritize the greenest provider. Latency is secondary."
+    },
+    {
+      "criterion": {
+        "type": "proximity",
+        "maxCarbonRank": 2,
+        "maxDistanceRank": 3,
+        "worstQuantile": 0.25
+      },
+      "name": "proximity-oriented",
+      "referenceWeights": {
+        "carbon": 0.3,
+        "distance": 0.7,
+        "cost": 0
+      },
+      "userRequest": "Choose a provider close to me, and preferably with low emissions."
+    },
+    {
+      "criterion": {
+        "type": "balanced",
+        "maxCarbonRank": 2,
+        "maxDistanceRank": 3,
+        "worstQuantile": 0.25
+      },
+      "name": "balanced",
+      "referenceWeights": {
+        "carbon": 0.5,
+        "distance": 0.5,
+        "cost": 0
+      },
+      "userRequest": "I need a good balance between low emissions and proximity."
+    },
+    {
+      "criterion": {
+        "type": "none",
+        "maxCarbonRank": 2,
+        "maxDistanceRank": 3,
+        "worstQuantile": 0.25
+      },
+      "name": "ambiguous",
+      "referenceWeights": {
+        "carbon": 1,
+        "distance": 1,
+        "cost": 1
+      },
+      "userRequest": "Choose the best provider for my workload."
+    }
+  ],
+  "testType": "consumerchoice",
+  "timeouts": {
+    "metadata": "5m0s",
+    "policy": "2m0s",
+    "reservation": "10m0s",
+    "reservationPoll": "5s"
+  }
+}

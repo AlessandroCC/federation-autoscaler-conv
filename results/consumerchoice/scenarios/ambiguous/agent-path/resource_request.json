@@ -1,0 +1,62 @@
+{
+  "scenario": "ambiguous",
+  "userRequest": "Choose the best provider for my workload.",
+  "startedAt": "2026-09-30T16:14:56.934312356Z",
+  "reservationName": "manual-res-522nn",
+  "transitions": [
+    {
+      "phase": "",
+      "seenAt": "2026-09-30T16:14:56.986631397Z"
+    },
+    {
+      "phase": "Pending",
+      "message": "no provider with enough free capacity yet",
+      "seenAt": "2026-09-30T16:15:02.001976683Z"
+    },
+    {
+      "phase": "Reserved",
+      "provider": "provider-8",
+      "message": "reserved on provider-8; waiting for the virtual node",
+      "seenAt": "2026-09-30T16:15:27.099738132Z"
+    },
+    {
+      "phase": "Active",
+      "provider": "provider-8",
+      "message": "held on provider-8 — 1 node(s) protected from autoscaler scale-down",
+      "seenAt": "2026-09-30T16:15:42.169452475Z"
+    }
+  ],
+  "finalPhase": "Active",
+  "reservedProvider": "provider-8",
+  "activeAfterMs": 45235.216,
+  "selection": {
+    "loggedAt": "2026-09-30T16:15:15.037209121Z",
+    "source": "ai",
+    "prompt": "Choose the best provider for my workload.",
+    "ranked": [
+      "provider-8",
+      "provider-6",
+      "provider-4",
+      "provider-3",
+      "provider-2",
+      "provider-1",
+      "provider-7",
+      "provider-9",
+      "provider-5"
+    ],
+    "rawResponse": "{\n  \"reason\": \"best provider for workload\",\n  \"values\": [\n    {\n      \"providerId\": \"provider-8\",\n      \"costPerChunk\": 0.026,\n      \"carbonIntensity\": 720\n    },\n    {\n      \"providerId\": \"provider-6\",\n      \"costPerChunk\": 0.055,\n      \"carbonIntensity\": 230\n    },\n    {\n      \"providerId\": \"provider-4\",\n      \"costPerChunk\": 0.052,\n      \"carbonIntensity\": 350\n    },\n    {\n      \"providerId\": \"provider-3\",\n      \"costPerChunk\": 0.09,\n      \"carbonIntensity\": 60\n    },\n    {\n      \"providerId\": \"provider-2\",\n      \"costPerChunk\": 0.113,\n      \"carbonIntensity\": 45\n    },\n    {\n      \"providerId\": \"provider-1\",\n      \"costPerChunk\": 0.076,\n      \"carbonIntensity\": 520\n    },\n    {\n      \"providerId\": \"provider-7\",\n      \"costPerChunk\": 0.064,\n      \"carbonIntensity\": 35\n    },\n    {\n      \"providerId\": \"provider-9\",\n      \"costPerChunk\": 0.082,\n      \"carbonIntensity\": 25\n    },\n    {\n      \"providerId\": \"provider-5\",\n      \"costPerChunk\": 0.076,\n      \"carbonIntensity\": 150\n    },\n    {\n      \"providerId\": \"provider-7\",\n      \"costPerChunk\": 0.064,\n      \"carbonIntensity\": 35\n    },\n    {\n      \"providerId\": \"provider-5\",\n      \"costPerChunk\": 0.076,\n      \"carbonIntensity\": 150\n    },\n    {\n      \"providerId\": \"provider-9\",\n      \"costPerChunk\": 0.082,\n      \"carbonIntensity\": 25\n    },\n    {\n      \"providerId\": \"provider-7\",\n      \"costPerChunk\": 0.064,\n      \"carbonIntensity\": 35\n    },\n    {\n      \"providerId\": \"provider-5\",\n      \"costPerChunk\": 0.076,\n      \"carbonIntensity\": 150\n    },\n    {\n      \"providerId\": \"provider-1\",\n      \"costPerChunk\": 0.076,\n      \"carbonIntensity\": 520\n    },\n    {\n      \"providerId\": \"provider-2\",\n      \"costPerChunk\": 0.113,\n      \"carbonIntensity\": 45\n    },\n    {\n      \"providerId\": \"provider-3\",\n      \"costPerChunk\": 0.09,\n      \"carbonIntensity\": 60\n    },\n    {\n      \"providerId\": \"provider-4\",\n      \"costPerChunk\": 0.052,\n      \"carbonIntensity\": 350\n    },\n    {\n      \"providerId\": \"provider-6\",\n      \"costPerChunk\": 0.055,\n      \"carbonIntensity\": 230\n    },\n    {\n      \"providerId\": \"provider-8\",\n      \"costPerChunk\": 0.026,\n      \"carbonIntensity\": 720\n    },\n    {\n      \"providerId\": \"provider-7\",\n      \"costPerChunk\": 0.064,\n      \"carbonIntensity\": 35\n    },\n    {\n      \"providerId\": \"provider-5\",\n      \"costPerChunk\": 0.076,\n      \"carbonIntensity\": 150\n    },\n    {\n      \"providerId\": \"provider-9\",\n      \"costPerChunk\": 0.082,\n      \"carbonIntensity\": 25\n    }\n  ],\n  \"rankedList\": [\n    \"provider-8\",\n    \"provider-6\",\n    \"provider-4\",\n    \"provider-3\",\n    \"provider-2\",\n    \"provider-1\",\n    \"provider-7\",\n    \"provider-9\",\n    \"provider-5\",\n    \"provider-7\",\n    \"provider-9\",\n    \"provider-5\",\n    \"provider-1\",\n    \"provider-2\",\n    \"provider-3\",\n    \"provider-4\",\n    \"provider-6\",\n    \"provider-8\",\n    \"provider-7\",\n    \"provider-5\",\n    \"provider-9\"\n  ],\n  \"providerId\": \"provider-8\",\n  \"confidence\": 1,\n  \"reasoning\": \"I chose provider-8 because it has the lowest cost per chunk (0.026) and carbon intensity (720). This provider offers the best balance of cost and environmental responsibility. I traded away the proximity to the consumer location, as provider-8 is located in a region (MH) that is farthest away from the consumer location (LOM).\" \n}",
+    "durationMs": 18049,
+    "line": "2026-09-30T16:15:15.037209121Z\tINFO\tconsumer.localapi\tConsumerChoice selection finished\t{\"source\": \"ai\", \"prompt\": \"Choose the best provider for my workload.\", \"ranked\": [\"provider-8\", \"provider-6\", \"provider-4\", \"provider-3\", \"provider-2\", \"provider-1\", \"provider-7\", \"provider-9\", \"provider-5\"], \"rawResponse\": \"{\\n  \\\"reason\\\": \\\"best provider for workload\\\",\\n  \\\"values\\\": [\\n    {\\n      \\\"providerId\\\": \\\"provider-8\\\",\\n      \\\"costPerChunk\\\": 0.026,\\n      \\\"carbonIntensity\\\": 720\\n    },\\n    {\\n      \\\"providerId\\\": \\\"provider-6\\\",\\n      \\\"costPerChunk\\\": 0.055,\\n      \\\"carbonIntensity\\\": 230\\n    },\\n    {\\n      \\\"providerId\\\": \\\"provider-4\\\",\\n      \\\"costPerChunk\\\": 0.052,\\n      \\\"carbonIntensity\\\": 350\\n    },\\n    {\\n      \\\"providerId\\\": \\\"provider-3\\\",\\n      \\\"costPerChunk\\\": 0.09,\\n      \\\"carbonIntensity\\\": 60\\n    },\\n    {\\n      \\\"providerId\\\": \\\"provider-2\\\",\\n      \\\"costPerChunk\\\": 0.113,\\n      \\\"carbonIntensity\\\": 45\\n    },\\n    {\\n      \\\"providerId\\\": \\\"provider-1\\\",\\n      \\\"costPerChunk\\\": 0.076,\\n      \\\"carbonIntensity\\\": 520\\n    },\\n    {\\n      \\\"providerId\\\": \\\"provider-7\\\",\\n      \\\"costPerChunk\\\": 0.064,\\n      \\\"carbonIntensity\\\": 35\\n    },\\n    {\\n      \\\"providerId\\\": \\\"provider-9\\\",\\n      \\\"costPerChunk\\\": 0.082,\\n      \\\"carbonIntensity\\\": 25\\n    },\\n    {\\n      \\\"providerId\\\": \\\"provider-5\\\",\\n      \\\"costPerChunk\\\": 0.076,\\n      \\\"carbonIntensity\\\": 150\\n    },\\n    {\\n      \\\"providerId\\\": \\\"provider-7\\\",\\n      \\\"costPerChunk\\\": 0.064,\\n      \\\"carbonIntensity\\\": 35\\n    },\\n    {\\n      \\\"providerId\\\": \\\"provider-5\\\",\\n      \\\"costPerChunk\\\": 0.076,\\n      \\\"carbonIntensity\\\": 150\\n    },\\n    {\\n      \\\"providerId\\\": \\\"provider-9\\\",\\n      \\\"costPerChunk\\\": 0.082,\\n      \\\"carbonIntensity\\\": 25\\n    },\\n    {\\n      \\\"providerId\\\": \\\"provider-7\\\",\\n      \\\"costPerChunk\\\": 0.064,\\n      \\\"carbonIntensity\\\": 35\\n    },\\n    {\\n      \\\"providerId\\\": \\\"provider-5\\\",\\n      \\\"costPerChunk\\\": 0.076,\\n      \\\"carbonIntensity\\\": 150\\n    },\\n    {\\n      \\\"providerId\\\": \\\"provider-1\\\",\\n      \\\"costPerChunk\\\": 0.076,\\n      \\\"carbonIntensity\\\": 520\\n    },\\n    {\\n      \\\"providerId\\\": \\\"provider-2\\\",\\n      \\\"costPerChunk\\\": 0.113,\\n      \\\"carbonIntensity\\\": 45\\n    },\\n    {\\n      \\\"providerId\\\": \\\"provider-3\\\",\\n      \\\"costPerChunk\\\": 0.09,\\n      \\\"carbonIntensity\\\": 60\\n    },\\n    {\\n      \\\"providerId\\\": \\\"provider-4\\\",\\n      \\\"costPerChunk\\\": 0.052,\\n      \\\"carbonIntensity\\\": 350\\n    },\\n    {\\n      \\\"providerId\\\": \\\"provider-6\\\",\\n      \\\"costPerChunk\\\": 0.055,\\n      \\\"carbonIntensity\\\": 230\\n    },\\n    {\\n      \\\"providerId\\\": \\\"provider-8\\\",\\n      \\\"costPerChunk\\\": 0.026,\\n      \\\"carbonIntensity\\\": 720\\n    },\\n    {\\n      \\\"providerId\\\": \\\"provider-7\\\",\\n      \\\"costPerChunk\\\": 0.064,\\n      \\\"carbonIntensity\\\": 35\\n    },\\n    {\\n      \\\"providerId\\\": \\\"provider-5\\\",\\n      \\\"costPerChunk\\\": 0.076,\\n      \\\"carbonIntensity\\\": 150\\n    },\\n    {\\n      \\\"providerId\\\": \\\"provider-9\\\",\\n      \\\"costPerChunk\\\": 0.082,\\n      \\\"carbonIntensity\\\": 25\\n    }\\n  ],\\n  \\\"rankedList\\\": [\\n    \\\"provider-8\\\",\\n    \\\"provider-6\\\",\\n    \\\"provider-4\\\",\\n    \\\"provider-3\\\",\\n    \\\"provider-2\\\",\\n    \\\"provider-1\\\",\\n    \\\"provider-7\\\",\\n    \\\"provider-9\\\",\\n    \\\"provider-5\\\",\\n    \\\"provider-7\\\",\\n    \\\"provider-9\\\",\\n    \\\"provider-5\\\",\\n    \\\"provider-1\\\",\\n    \\\"provider-2\\\",\\n    \\\"provider-3\\\",\\n    \\\"provider-4\\\",\\n    \\\"provider-6\\\",\\n    \\\"provider-8\\\",\\n    \\\"provider-7\\\",\\n    \\\"provider-5\\\",\\n    \\\"provider-9\\\"\\n  ],\\n  \\\"providerId\\\": \\\"provider-8\\\",\\n  \\\"confidence\\\": 1,\\n  \\\"reasoning\\\": \\\"I chose provider-8 because it has the lowest cost per chunk (0.026) and carbon intensity (720). This provider offers the best balance of cost and environmental responsibility. I traded away the proximity to the consumer location, as provider-8 is located in a region (MH) that is farthest away from the consumer location (LOM).\\\" \\n}\", \"errorKind\": \"\", \"error\": \"\", \"durationMs\": 18049}"
+  },
+  "expectedProvider": "provider-8",
+  "criterion": {
+    "type": "none",
+    "passed": true,
+    "details": [
+      "no preference criterion: the selection only has to be valid and eligible",
+      "cost rank 1 of 9 (the prompt's rule for vague requests prefers cost rank 1)"
+    ]
+  },
+  "releasedAndSettled": true,
+  "passed": true
+}

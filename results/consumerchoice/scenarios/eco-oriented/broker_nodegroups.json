@@ -1,0 +1,242 @@
+{
+  "nodeGroups": [
+    {
+      "id": "ng-provider-1-standard",
+      "providerClusterId": "provider-1",
+      "providerLiqoClusterId": "provider-1",
+      "type": "standard",
+      "minSize": 0,
+      "maxSize": 2,
+      "currentReserved": 0,
+      "chunkResources": {
+        "cpu": "2",
+        "memory": "4Gi"
+      },
+      "cost": "76m",
+      "topology": {
+        "region": "LOM",
+        "city": "Milan",
+        "latitude": 45.4642,
+        "longitude": 9.19
+      },
+      "probeEndpoint": "172.18.0.6:30100",
+      "carbonIntensity": 520,
+      "unitPrices": {
+        "cpu": "30m",
+        "memory": "4m"
+      }
+    },
+    {
+      "id": "ng-provider-2-standard",
+      "providerClusterId": "provider-2",
+      "providerLiqoClusterId": "provider-2",
+      "type": "standard",
+      "minSize": 0,
+      "maxSize": 2,
+      "currentReserved": 0,
+      "chunkResources": {
+        "cpu": "2",
+        "memory": "4Gi"
+      },
+      "cost": "113m",
+      "topology": {
+        "region": "CH",
+        "city": "Zurich",
+        "latitude": 47.3769,
+        "longitude": 8.5417
+      },
+      "probeEndpoint": "172.18.0.7:30100",
+      "carbonIntensity": 45,
+      "unitPrices": {
+        "cpu": "45m",
+        "memory": "6m"
+      }
+    },
+    {
+      "id": "ng-provider-3-standard",
+      "providerClusterId": "provider-3",
+      "providerLiqoClusterId": "provider-3",
+      "type": "standard",
+      "minSize": 0,
+      "maxSize": 3,
+      "currentReserved": 0,
+      "chunkResources": {
+        "cpu": "2",
+        "memory": "4Gi"
+      },
+      "cost": "90m",
+      "topology": {
+        "region": "IDF",
+        "city": "Paris",
+        "latitude": 48.8566,
+        "longitude": 2.3522
+      },
+      "probeEndpoint": "172.18.0.9:30100",
+      "carbonIntensity": 60,
+      "unitPrices": {
+        "cpu": "35m",
+        "memory": "5m"
+      }
+    },
+    {
+      "id": "ng-provider-4-standard",
+      "providerClusterId": "provider-4",
+      "providerLiqoClusterId": "provider-4",
+      "type": "standard",
+      "minSize": 0,
+      "maxSize": 2,
+      "currentReserved": 0,
+      "chunkResources": {
+        "cpu": "2",
+        "memory": "4Gi"
+      },
+      "cost": "52m",
+      "topology": {
+        "region": "HE",
+        "city": "Frankfurt",
+        "latitude": 50.1109,
+        "longitude": 8.6821
+      },
+      "probeEndpoint": "172.18.0.12:30100",
+      "carbonIntensity": 350,
+      "unitPrices": {
+        "cpu": "20m",
+        "memory": "3m"
+      }
+    },
+    {
+      "id": "ng-provider-5-standard",
+      "providerClusterId": "provider-5",
+      "providerLiqoClusterId": "provider-5",
+      "type": "standard",
+      "minSize": 0,
+      "maxSize": 1,
+      "currentReserved": 0,
+      "chunkResources": {
+        "cpu": "2",
+        "memory": "4Gi"
+      },
+      "cost": "76m",
+      "topology": {
+        "region": "AT",
+        "city": "Vienna",
+        "latitude": 48.2082,
+        "longitude": 16.3738
+      },
+      "probeEndpoint": "172.18.0.13:30100",
+      "carbonIntensity": 150,
+      "unitPrices": {
+        "cpu": "30m",
+        "memory": "4m"
+      }
+    },
+    {
+      "id": "ng-provider-6-standard",
+      "providerClusterId": "provider-6",
+      "providerLiqoClusterId": "provider-6",
+      "type": "standard",
+      "minSize": 0,
+      "maxSize": 3,
+      "currentReserved": 0,
+      "chunkResources": {
+        "cpu": "2",
+        "memory": "4Gi"
+      },
+      "cost": "55m",
+      "topology": {
+        "region": "ENG",
+        "city": "London",
+        "latitude": 51.5074,
+        "longitude": -0.1278
+      },
+      "probeEndpoint": "172.18.0.16:30100",
+      "carbonIntensity": 230,
+      "unitPrices": {
+        "cpu": "22m",
+        "memory": "3m"
+      }
+    },
+    {
+      "id": "ng-provider-7-standard",
+      "providerClusterId": "provider-7",
+      "providerLiqoClusterId": "provider-7",
+      "type": "standard",
+      "minSize": 0,
+      "maxSize": 2,
+      "currentReserved": 0,
+      "chunkResources": {
+        "cpu": "2",
+        "memory": "4Gi"
+      },
+      "cost": "64m",
+      "topology": {
+        "region": "FI",
+        "city": "Helsinki",
+        "latitude": 60.1699,
+        "longitude": 24.9384
+      },
+      "probeEndpoint": "172.18.0.18:30100",
+      "carbonIntensity": 35,
+      "unitPrices": {
+        "cpu": "25m",
+        "memory": "3500u"
+      }
+    },
+    {
+      "id": "ng-provider-8-standard",
+      "providerClusterId": "provider-8",
+      "providerLiqoClusterId": "provider-8",
+      "type": "standard",
+      "minSize": 0,
+      "maxSize": 4,
+      "currentReserved": 0,
+      "chunkResources": {
+        "cpu": "2",
+        "memory": "4Gi"
+      },
+      "cost": "26m",
+      "topology": {
+        "region": "MH",
+        "city": "Mumbai",
+        "latitude": 19.076,
+        "longitude": 72.8777
+      },
+      "probeEndpoint": "172.18.0.19:30100",
+      "carbonIntensity": 720,
+      "unitPrices": {
+        "cpu": "10m",
+        "memory": "1500u"
+      }
+    },
+    {
+      "id": "ng-provider-9-standard",
+      "providerClusterId": "provider-9",
+      "providerLiqoClusterId": "provider-9",
+      "type": "standard",
+      "minSize": 0,
+      "maxSize": 2,
+      "currentReserved": 0,
+      "chunkResources": {
+        "cpu": "2",
+        "memory": "4Gi"
+      },
+      "cost": "82m",
+      "topology": {
+        "region": "QC",
+        "city": "Montreal",
+        "latitude": 45.6085,
+        "longitude": -73.5493
+      },
+      "probeEndpoint": "172.18.0.21:30100",
+      "carbonIntensity": 25,
+      "unitPrices": {
+        "cpu": "32m",
+        "memory": "4500u"
+      }
+    }
+  ],
+  "appliedPlacement": "ConsumerChoice",
+  "generation": 0,
+  "servedAt": "2026-09-30T15:59:01Z",
+  "cacheAgeSeconds": 0
+}

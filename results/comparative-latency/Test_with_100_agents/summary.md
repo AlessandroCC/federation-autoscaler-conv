@@ -1,0 +1,111 @@
+# Comparative Test Summary: comparative-latency
+
+- Run ID: `cmp-20260913-194846`
+- Start: 2026-09-13T23:06:28Z
+- End: 2026-09-14T01:19:25Z
+- Consumer: `consumer-1`
+- Broker: https://172.18.0.2:30443
+- Providers: 70
+- Phase length: 1h0m0s (wall clock; configured iterations ignored)
+
+## Phase A (baseline) — Random
+
+- Iterations: 1573 (success: 1573, fail: 0)
+- Selection distribution:
+  - `provider-18`: 27 (1.7%)
+  - `provider-56`: 21 (1.3%)
+  - `provider-44`: 31 (2.0%)
+  - `provider-39`: 18 (1.1%)
+  - `provider-12`: 29 (1.8%)
+  - `provider-13`: 26 (1.7%)
+  - `provider-61`: 18 (1.1%)
+  - `provider-33`: 17 (1.1%)
+  - `provider-45`: 24 (1.5%)
+  - `provider-20`: 27 (1.7%)
+  - `provider-57`: 18 (1.1%)
+  - `provider-32`: 17 (1.1%)
+  - `provider-4`: 25 (1.6%)
+  - `provider-66`: 15 (1.0%)
+  - `provider-67`: 27 (1.7%)
+  - `provider-59`: 22 (1.4%)
+  - `provider-1`: 26 (1.7%)
+  - `provider-7`: 18 (1.1%)
+  - `provider-50`: 25 (1.6%)
+  - `provider-70`: 20 (1.3%)
+  - `provider-25`: 20 (1.3%)
+  - `provider-55`: 23 (1.5%)
+  - `provider-10`: 25 (1.6%)
+  - `provider-42`: 24 (1.5%)
+  - `provider-48`: 23 (1.5%)
+  - `provider-2`: 27 (1.7%)
+  - `provider-29`: 18 (1.1%)
+  - `provider-68`: 25 (1.6%)
+  - `provider-65`: 25 (1.6%)
+  - `provider-11`: 20 (1.3%)
+  - `provider-38`: 24 (1.5%)
+  - `provider-5`: 23 (1.5%)
+  - `provider-30`: 27 (1.7%)
+  - `provider-26`: 19 (1.2%)
+  - `provider-28`: 20 (1.3%)
+  - `provider-47`: 22 (1.4%)
+  - `provider-8`: 14 (0.9%)
+  - `provider-34`: 14 (0.9%)
+  - `provider-46`: 21 (1.3%)
+  - `provider-41`: 25 (1.6%)
+  - `provider-23`: 26 (1.7%)
+  - `provider-31`: 23 (1.5%)
+  - `provider-53`: 24 (1.5%)
+  - `provider-21`: 25 (1.6%)
+  - `provider-54`: 18 (1.1%)
+  - `provider-17`: 29 (1.8%)
+  - `provider-52`: 26 (1.7%)
+  - `provider-60`: 23 (1.5%)
+  - `provider-27`: 23 (1.5%)
+  - `provider-37`: 21 (1.3%)
+  - `provider-15`: 29 (1.8%)
+  - `provider-40`: 23 (1.5%)
+  - `provider-58`: 26 (1.7%)
+  - `provider-69`: 25 (1.6%)
+  - `provider-64`: 18 (1.1%)
+  - `provider-22`: 17 (1.1%)
+  - `provider-19`: 25 (1.6%)
+  - `provider-36`: 21 (1.3%)
+  - `provider-63`: 21 (1.3%)
+  - `provider-24`: 21 (1.3%)
+  - `provider-62`: 29 (1.8%)
+  - `provider-35`: 20 (1.3%)
+  - `provider-14`: 27 (1.7%)
+  - `provider-51`: 21 (1.3%)
+  - `provider-43`: 21 (1.3%)
+  - `provider-16`: 23 (1.5%)
+  - `provider-6`: 25 (1.6%)
+  - `provider-9`: 21 (1.3%)
+  - `provider-3`: 16 (1.0%)
+  - `provider-49`: 16 (1.0%)
+- Mean RTT: 140.18 ms
+- Median RTT: 140.35 ms
+
+## Phase B (policy-aware) — Latency
+
+- Iterations: 2131 (success: 2114, fail: 17)
+- Selection distribution:
+  - `provider-27`: 143 (6.7%)
+  - `provider-10`: 108 (5.1%)
+  - `provider-11`: 87 (4.1%)
+  - `provider-9`: 138 (6.5%)
+  - `provider-51`: 138 (6.5%)
+  - `provider-2`: 138 (6.5%)
+  - `provider-59`: 147 (6.9%)
+  - `provider-52`: 136 (6.4%)
+  - `provider-7`: 134 (6.3%)
+  - `provider-23`: 152 (7.1%)
+  - `provider-42`: 125 (5.9%)
+  - `provider-1`: 141 (6.6%)
+  - `provider-57`: 136 (6.4%)
+  - `provider-25`: 117 (5.5%)
+  - `provider-60`: 110 (5.2%)
+  - `provider-39`: 138 (6.5%)
+  - `provider-61`: 26 (1.2%)
+- Mean RTT: 72.57 ms
+- Median RTT: 61.40 ms
+

@@ -1,0 +1,57 @@
+{
+  "decisionLatencyMs": 18714.977,
+  "envelope": {
+    "model": "llama3.2",
+    "created_at": "2026-09-30T16:09:58.253594096Z",
+    "response": "{\n  \"reason\": \"good balance between low emissions and proximity\",\n  \"values\": [\n    {\n      \"providerId\": \"provider-3\",\n      \"carbonIntensity\": 60,\n      \"values\": {\n        \"proximityScore\": 23.6233\n      }\n    },\n    {\n      \"providerId\": \"provider-2\",\n      \"carbonIntensity\": 45,\n      \"values\": {\n        \"proximityScore\": 15.2151\n      }\n    },\n    {\n      \"providerId\": \"provider-6\",\n      \"carbonIntensity\": 230,\n      \"values\": {\n        \"proximityScore\": 12.3551\n      }\n    },\n    {\n      \"providerId\": \"provider-8\",\n      \"carbonIntensity\": 720,\n      \"values\": {\n        \"proximityScore\": 11.4546\n      }\n    },\n    {\n      \"providerId\": \"provider-4\",\n      \"carbonIntensity\": 350,\n      \"values\": {\n        \"proximityScore\": 9.9119\n      }\n    },\n    {\n      \"providerId\": \"provider-9\",\n      \"carbonIntensity\": 25,\n      \"values\": {\n        \"proximityScore\": 9.3696\n      }\n    },\n    {\n      \"providerId\": \"provider-7\",\n      \"carbonIntensity\": 35,\n      \"values\": {\n        \"proximityScore\": 8.5555\n      }\n    },\n    {\n      \"providerId\": \"provider-1\",\n      \"carbonIntensity\": 520,\n      \"values\": {\n        \"proximityScore\": 4.6233\n      }\n    },\n    {\n      \"providerId\": \"provider-5\",\n      \"carbonIntensity\": 150,\n      \"values\": {\n        \"proximityScore\": 4.2365\n      }\n    },\n    {\n      \"providerId\": \"provider-7\",\n      \"carbonIntensity\": 35,\n      \"values\": {\n        \"proximityScore\": 8.5555\n      }\n    },\n    {\n      \"providerId\": \"provider-7\",\n      \"carbonIntensity\": 35,\n      \"values\": {\n        \"proximityScore\": 8.5555\n      }\n    },\n    {\n      \"providerId\": \"provider-4\",\n      \"carbonIntensity\": 350,\n      \"values\": {\n        \"proximityScore\": 9.9119\n      }\n    },\n    {\n      \"providerId\": \"provider-4\",\n      \"carbonIntensity\": 350,\n      \"values\": {\n        \"proximityScore\": 9.9119\n      }\n    },\n    {\n      \"providerId\": \"provider-8\",\n      \"carbonIntensity\": 720,\n      \"values\": {\n        \"proximityScore\": 11.4546\n      }\n    },\n    {\n      \"providerId\": \"provider-8\",\n      \"carbonIntensity\": 720,\n      \"values\": {\n        \"proximityScore\": 11.4546\n      }\n    },\n    {\n      \"providerId\": \"provider-6\",\n      \"carbonIntensity\": 230,\n      \"values\": {\n        \"proximityScore\": 12.3551\n      }\n    },\n    {\n      \"providerId\": \"provider-6\",\n      \"carbonIntensity\": 230,\n      \"values\": {\n        \"proximityScore\": 12.3551\n      }\n    },\n    {\n      \"providerId\": \"provider-2\",\n      \"carbonIntensity\": 45,\n      \"values\": {\n        \"proximityScore\": 15.2151\n      }\n    },\n    {\n      \"providerId\": \"provider-2\",\n      \"carbonIntensity\": 45,\n      \"values\": {\n        \"proximityScore\": 15.2151\n      }\n    },\n    {\n      \"providerId\": \"provider-3\",\n      \"carbonIntensity\": 60,\n      \"values\": {\n        \"proximityScore\": 23.6233\n      }\n    },\n    {\n      \"providerId\": \"provider-3\",\n      \"carbonIntensity\": 60,\n      \"values\": {\n        \"proximityScore\": 23.6233\n      }\n    }\n  ],\n  \"rankedList\": [\n    \"provider-3\",\n    \"provider-2\",\n    \"provider-8\",\n    \"provider-6\",\n    \"provider-4\",\n    \"provider-9\",\n    \"provider-7\",\n    \"provider-1\",\n    \"provider-5\"\n  ],\n  \"providerId\": \"provider-3\",\n  \"confidence\": 1,\n  \"reasoning\": \"I chose provider-3 because it balances low emissions (carbonIntensity: 60) with high proximity (proximityScore: 23.6233) to the consumer's location. I traded away the best proximity score for provider-6, and the best low emissions value for provider-8, as both provided better balance than the next best option, provider-3.\"}",
+    "done": true,
+    "done_reason": "stop",
+    "total_duration": 18704444744,
+    "load_duration": 2661237,
+    "prompt_eval_count": 2060,
+    "prompt_eval_duration": 35727000,
+    "eval_count": 1044,
+    "eval_duration": 18645393000
+  },
+  "error": "",
+  "errorKind": "",
+  "httpStatus": 200,
+  "model": "llama3.2",
+  "note": "reason, reasoning and confidence are the model's own account and were not used to judge the choice",
+  "ollamaBaseUrl": "http://172.18.0.23:11434",
+  "ollamaVersion": "0.34.0",
+  "parsedResponse": {
+    "providerId": "provider-3",
+    "rankedList": [
+      "provider-3",
+      "provider-2",
+      "provider-8",
+      "provider-6",
+      "provider-4",
+      "provider-9",
+      "provider-7",
+      "provider-1",
+      "provider-5"
+    ],
+    "reason": "good balance between low emissions and proximity",
+    "confidence": 1,
+    "reasoning": "I chose provider-3 because it balances low emissions (carbonIntensity: 60) with high proximity (proximityScore: 23.6233) to the consumer's location. I traded away the best proximity score for provider-6, and the best low emissions value for provider-8, as both provided better balance than the next best option, provider-3."
+  },
+  "rankedValidIds": [
+    "provider-3",
+    "provider-2",
+    "provider-8",
+    "provider-6",
+    "provider-4",
+    "provider-9",
+    "provider-7",
+    "provider-1",
+    "provider-5"
+  ],
+  "rawResponse": "{\n  \"reason\": \"good balance between low emissions and proximity\",\n  \"values\": [\n    {\n      \"providerId\": \"provider-3\",\n      \"carbonIntensity\": 60,\n      \"values\": {\n        \"proximityScore\": 23.6233\n      }\n    },\n    {\n      \"providerId\": \"provider-2\",\n      \"carbonIntensity\": 45,\n      \"values\": {\n        \"proximityScore\": 15.2151\n      }\n    },\n    {\n      \"providerId\": \"provider-6\",\n      \"carbonIntensity\": 230,\n      \"values\": {\n        \"proximityScore\": 12.3551\n      }\n    },\n    {\n      \"providerId\": \"provider-8\",\n      \"carbonIntensity\": 720,\n      \"values\": {\n        \"proximityScore\": 11.4546\n      }\n    },\n    {\n      \"providerId\": \"provider-4\",\n      \"carbonIntensity\": 350,\n      \"values\": {\n        \"proximityScore\": 9.9119\n      }\n    },\n    {\n      \"providerId\": \"provider-9\",\n      \"carbonIntensity\": 25,\n      \"values\": {\n        \"proximityScore\": 9.3696\n      }\n    },\n    {\n      \"providerId\": \"provider-7\",\n      \"carbonIntensity\": 35,\n      \"values\": {\n        \"proximityScore\": 8.5555\n      }\n    },\n    {\n      \"providerId\": \"provider-1\",\n      \"carbonIntensity\": 520,\n      \"values\": {\n        \"proximityScore\": 4.6233\n      }\n    },\n    {\n      \"providerId\": \"provider-5\",\n      \"carbonIntensity\": 150,\n      \"values\": {\n        \"proximityScore\": 4.2365\n      }\n    },\n    {\n      \"providerId\": \"provider-7\",\n      \"carbonIntensity\": 35,\n      \"values\": {\n        \"proximityScore\": 8.5555\n      }\n    },\n    {\n      \"providerId\": \"provider-7\",\n      \"carbonIntensity\": 35,\n      \"values\": {\n        \"proximityScore\": 8.5555\n      }\n    },\n    {\n      \"providerId\": \"provider-4\",\n      \"carbonIntensity\": 350,\n      \"values\": {\n        \"proximityScore\": 9.9119\n      }\n    },\n    {\n      \"providerId\": \"provider-4\",\n      \"carbonIntensity\": 350,\n      \"values\": {\n        \"proximityScore\": 9.9119\n      }\n    },\n    {\n      \"providerId\": \"provider-8\",\n      \"carbonIntensity\": 720,\n      \"values\": {\n        \"proximityScore\": 11.4546\n      }\n    },\n    {\n      \"providerId\": \"provider-8\",\n      \"carbonIntensity\": 720,\n      \"values\": {\n        \"proximityScore\": 11.4546\n      }\n    },\n    {\n      \"providerId\": \"provider-6\",\n      \"carbonIntensity\": 230,\n      \"values\": {\n        \"proximityScore\": 12.3551\n      }\n    },\n    {\n      \"providerId\": \"provider-6\",\n      \"carbonIntensity\": 230,\n      \"values\": {\n        \"proximityScore\": 12.3551\n      }\n    },\n    {\n      \"providerId\": \"provider-2\",\n      \"carbonIntensity\": 45,\n      \"values\": {\n        \"proximityScore\": 15.2151\n      }\n    },\n    {\n      \"providerId\": \"provider-2\",\n      \"carbonIntensity\": 45,\n      \"values\": {\n        \"proximityScore\": 15.2151\n      }\n    },\n    {\n      \"providerId\": \"provider-3\",\n      \"carbonIntensity\": 60,\n      \"values\": {\n        \"proximityScore\": 23.6233\n      }\n    },\n    {\n      \"providerId\": \"provider-3\",\n      \"carbonIntensity\": 60,\n      \"values\": {\n        \"proximityScore\": 23.6233\n      }\n    }\n  ],\n  \"rankedList\": [\n    \"provider-3\",\n    \"provider-2\",\n    \"provider-8\",\n    \"provider-6\",\n    \"provider-4\",\n    \"provider-9\",\n    \"provider-7\",\n    \"provider-1\",\n    \"provider-5\"\n  ],\n  \"providerId\": \"provider-3\",\n  \"confidence\": 1,\n  \"reasoning\": \"I chose provider-3 because it balances low emissions (carbonIntensity: 60) with high proximity (proximityScore: 23.6233) to the consumer's location. I traded away the best proximity score for provider-6, and the best low emissions value for provider-8, as both provided better balance than the next best option, provider-3.\"}",
+  "requestStartedAt": "2026-09-30T16:09:39.547621894Z",
+  "responseAt": "2026-09-30T16:09:58.261636128Z",
+  "selectorLatencyMs": 18714.014,
+  "singleCandidate": false,
+  "unknownIds": null
+}

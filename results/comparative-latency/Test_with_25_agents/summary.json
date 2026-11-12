@@ -1,0 +1,58 @@
+{
+  "runId": "cmp-20260913-112453",
+  "testType": "comparative-latency",
+  "startTime": "2026-09-13T12:13:55.669479364Z",
+  "endTime": "2026-09-13T14:19:14.090650489Z",
+  "consumerId": "consumer-1",
+  "consumerCertFingerprint": "c08b4691f00db34256de27280fc6be110bb321b20d16e6f1be4f6dee1faf6009",
+  "brokerUrl": "https://172.18.0.3:30443",
+  "consoleUrl": "http://172.18.0.6:30445",
+  "providerCount": 17,
+  "iterationsPerPhase": 15,
+  "durationMode": "time",
+  "timerConfigured": "1h0m0s",
+  "phaseAPolicy": "Random",
+  "phaseBPolicy": "Latency",
+  "phaseASummary": {
+    "iterations": 460,
+    "successes": 460,
+    "failures": 0,
+    "selectionCounts": {
+      "provider-1": 31,
+      "provider-10": 22,
+      "provider-11": 28,
+      "provider-12": 26,
+      "provider-13": 22,
+      "provider-14": 22,
+      "provider-15": 22,
+      "provider-16": 27,
+      "provider-17": 26,
+      "provider-2": 28,
+      "provider-3": 31,
+      "provider-4": 26,
+      "provider-5": 37,
+      "provider-6": 33,
+      "provider-7": 30,
+      "provider-8": 23,
+      "provider-9": 26
+    },
+    "meanRttMs": 135.10448913043479,
+    "medianRttMs": 131.596
+  },
+  "phaseBSummary": {
+    "iterations": 604,
+    "successes": 601,
+    "failures": 3,
+    "selectionCounts": {
+      "provider-1": 90,
+      "provider-13": 76,
+      "provider-14": 113,
+      "provider-16": 95,
+      "provider-17": 110,
+      "provider-3": 9,
+      "provider-9": 108
+    },
+    "meanRttMs": 71.458693843594,
+    "medianRttMs": 60.314
+  }
+}

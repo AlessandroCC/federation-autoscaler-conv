@@ -1,0 +1,58 @@
+{
+  "decisionLatencyMs": 15009.139,
+  "envelope": {
+    "model": "llama3.2",
+    "created_at": "2026-09-30T16:10:33.334797961Z",
+    "response": "{\"reason\": \"balance between low emissions and proximity\", \"values\": [{\"providerId\": \"provider-2\", \"carbonIntensity\": 45, \"availableChunks\": 2, \"latitude\": 47.3769, \"longitude\": 8.5417, \"costPerChunk\": 0.113}, {\"providerId\": \"provider-4\", \"carbonIntensity\": 350, \"availableChunks\": 2, \"latitude\": 50.1109, \"longitude\": 8.6821, \"costPerChunk\": 0.052}, {\"providerId\": \"provider-6\", \"carbonIntensity\": 230, \"availableChunks\": 3, \"latitude\": 51.5074, \"longitude\": -0.1278, \"costPerChunk\": 0.055}, {\"providerId\": \"provider-1\", \"carbonIntensity\": 520, \"availableChunks\": 2, \"latitude\": 45.4642, \"longitude\": 9.19, \"costPerChunk\": 0.076}, {\"providerId\": \"provider-9\", \"carbonIntensity\": 25, \"availableChunks\": 2, \"latitude\": 45.6085, \"longitude\": -73.5493, \"costPerChunk\": 0.082}, {\"providerId\": \"provider-8\", \"carbonIntensity\": 720, \"availableChunks\": 4, \"latitude\": 19.076, \"longitude\": 72.8777, \"costPerChunk\": 0.026}, {\"providerId\": \"provider-3\", \"carbonIntensity\": 60, \"availableChunks\": 3, \"latitude\": 48.8566, \"longitude\": 2.3522, \"costPerChunk\": 0.09}, {\"providerId\": \"provider-5\", \"carbonIntensity\": 150, \"availableChunks\": 1, \"latitude\": 48.2082, \"longitude\": 16.3738, \"costPerChunk\": 0.076}, {\"providerId\": \"provider-7\", \"carbonIntensity\": 35, \"availableChunks\": 2, \"latitude\": 60.1699, \"longitude\": 24.9384, \"costPerChunk\": 0.064}, {\"providerId\": \"provider-3\", \"carbonIntensity\": 60, \"availableChunks\": 3, \"latitude\": 48.8566, \"longitude\": 2.3522, \"costPerChunk\": 0.09}, {\"providerId\": \"provider-7\", \"carbonIntensity\": 35, \"availableChunks\": 2, \"latitude\": 60.1699, \"longitude\": 24.9384, \"costPerChunk\": 0.064}, {\"providerId\": \"provider-3\", \"carbonIntensity\": 60, \"availableChunks\": 3, \"latitude\": 48.8566, \"longitude\": 2.3522, \"costPerChunk\": 0.09}, {\"providerId\": \"provider-5\", \"carbonIntensity\": 150, \"availableChunks\": 1, \"latitude\": 48.2082, \"longitude\": 16.3738, \"costPerChunk\": 0.076}, {\"providerId\": \"provider-7\", \"carbonIntensity\": 35, \"availableChunks\": 2, \"latitude\": 60.1699, \"longitude\": 24.9384, \"costPerChunk\": 0.064}], \"rankedList\": [\"provider-2\", \"provider-4\", \"provider-6\", \"provider-9\", \"provider-1\", \"provider-8\", \"provider-3\", \"provider-5\", \"provider-7\", \"provider-8\"], \"providerId\": \"provider-2\", \"confidence\": 0.5, \"reasoning\": \"I chose provider-2 because it has the best balance between low emissions (lowest carbonIntensity) and proximity to the consumer location. Provider-2 is closer to the consumer than any other provider with a lower carbonIntensity, and it has a slightly lower costPerChunk than provider-4. I traded away the tie with provider-4 for the benefit of the smaller distance.\"}",
+    "done": true,
+    "done_reason": "stop",
+    "total_duration": 14997778113,
+    "load_duration": 2704566,
+    "prompt_eval_count": 2060,
+    "prompt_eval_duration": 59260000,
+    "eval_count": 879,
+    "eval_duration": 14911611000
+  },
+  "error": "",
+  "errorKind": "",
+  "httpStatus": 200,
+  "model": "llama3.2",
+  "note": "reason, reasoning and confidence are the model's own account and were not used to judge the choice",
+  "ollamaBaseUrl": "http://172.18.0.23:11434",
+  "ollamaVersion": "0.34.0",
+  "parsedResponse": {
+    "providerId": "provider-2",
+    "rankedList": [
+      "provider-2",
+      "provider-4",
+      "provider-6",
+      "provider-9",
+      "provider-1",
+      "provider-8",
+      "provider-3",
+      "provider-5",
+      "provider-7",
+      "provider-8"
+    ],
+    "reason": "balance between low emissions and proximity",
+    "confidence": 0.5,
+    "reasoning": "I chose provider-2 because it has the best balance between low emissions (lowest carbonIntensity) and proximity to the consumer location. Provider-2 is closer to the consumer than any other provider with a lower carbonIntensity, and it has a slightly lower costPerChunk than provider-4. I traded away the tie with provider-4 for the benefit of the smaller distance."
+  },
+  "rankedValidIds": [
+    "provider-2",
+    "provider-4",
+    "provider-6",
+    "provider-9",
+    "provider-1",
+    "provider-8",
+    "provider-3",
+    "provider-5",
+    "provider-7"
+  ],
+  "rawResponse": "{\"reason\": \"balance between low emissions and proximity\", \"values\": [{\"providerId\": \"provider-2\", \"carbonIntensity\": 45, \"availableChunks\": 2, \"latitude\": 47.3769, \"longitude\": 8.5417, \"costPerChunk\": 0.113}, {\"providerId\": \"provider-4\", \"carbonIntensity\": 350, \"availableChunks\": 2, \"latitude\": 50.1109, \"longitude\": 8.6821, \"costPerChunk\": 0.052}, {\"providerId\": \"provider-6\", \"carbonIntensity\": 230, \"availableChunks\": 3, \"latitude\": 51.5074, \"longitude\": -0.1278, \"costPerChunk\": 0.055}, {\"providerId\": \"provider-1\", \"carbonIntensity\": 520, \"availableChunks\": 2, \"latitude\": 45.4642, \"longitude\": 9.19, \"costPerChunk\": 0.076}, {\"providerId\": \"provider-9\", \"carbonIntensity\": 25, \"availableChunks\": 2, \"latitude\": 45.6085, \"longitude\": -73.5493, \"costPerChunk\": 0.082}, {\"providerId\": \"provider-8\", \"carbonIntensity\": 720, \"availableChunks\": 4, \"latitude\": 19.076, \"longitude\": 72.8777, \"costPerChunk\": 0.026}, {\"providerId\": \"provider-3\", \"carbonIntensity\": 60, \"availableChunks\": 3, \"latitude\": 48.8566, \"longitude\": 2.3522, \"costPerChunk\": 0.09}, {\"providerId\": \"provider-5\", \"carbonIntensity\": 150, \"availableChunks\": 1, \"latitude\": 48.2082, \"longitude\": 16.3738, \"costPerChunk\": 0.076}, {\"providerId\": \"provider-7\", \"carbonIntensity\": 35, \"availableChunks\": 2, \"latitude\": 60.1699, \"longitude\": 24.9384, \"costPerChunk\": 0.064}, {\"providerId\": \"provider-3\", \"carbonIntensity\": 60, \"availableChunks\": 3, \"latitude\": 48.8566, \"longitude\": 2.3522, \"costPerChunk\": 0.09}, {\"providerId\": \"provider-7\", \"carbonIntensity\": 35, \"availableChunks\": 2, \"latitude\": 60.1699, \"longitude\": 24.9384, \"costPerChunk\": 0.064}, {\"providerId\": \"provider-3\", \"carbonIntensity\": 60, \"availableChunks\": 3, \"latitude\": 48.8566, \"longitude\": 2.3522, \"costPerChunk\": 0.09}, {\"providerId\": \"provider-5\", \"carbonIntensity\": 150, \"availableChunks\": 1, \"latitude\": 48.2082, \"longitude\": 16.3738, \"costPerChunk\": 0.076}, {\"providerId\": \"provider-7\", \"carbonIntensity\": 35, \"availableChunks\": 2, \"latitude\": 60.1699, \"longitude\": 24.9384, \"costPerChunk\": 0.064}], \"rankedList\": [\"provider-2\", \"provider-4\", \"provider-6\", \"provider-9\", \"provider-1\", \"provider-8\", \"provider-3\", \"provider-5\", \"provider-7\", \"provider-8\"], \"providerId\": \"provider-2\", \"confidence\": 0.5, \"reasoning\": \"I chose provider-2 because it has the best balance between low emissions (lowest carbonIntensity) and proximity to the consumer location. Provider-2 is closer to the consumer than any other provider with a lower carbonIntensity, and it has a slightly lower costPerChunk than provider-4. I traded away the tie with provider-4 for the benefit of the smaller distance.\"}",
+  "requestStartedAt": "2026-09-30T16:10:18.336262576Z",
+  "responseAt": "2026-09-30T16:10:33.344126279Z",
+  "selectorLatencyMs": 15007.863,
+  "singleCandidate": false,
+  "unknownIds": null
+}

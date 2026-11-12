@@ -29,7 +29,10 @@ federation-tests/comparative-latency/comparative-latency
 federation-tests/comparative-eco/results/
 federation-tests/comparative-latency/results/
 
-# Test results (generated per-run)
+# Test results: every run writes in here, so the folder stays ignored and a fresh
+# run never shows up in git status. The runs reported by the thesis are the
+# exception: they were added once with `git add -f` and, being tracked, this rule
+# no longer applies to them. See results/README.md.
 results/
 
 # editor and IDE paraphernalia
@@ -49,3 +52,6 @@ __pycache__/
 # Per-deployment Ansible inventory (VM addresses, registry, image tag).
 # inventory.yaml.example is the committed template.
 deploy/ansible/inventory.yaml
+
+# local copy of the Overleaf thesis project
+/OVERLEAF/

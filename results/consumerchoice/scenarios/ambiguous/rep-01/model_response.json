@@ -1,0 +1,57 @@
+{
+  "decisionLatencyMs": 10188.567,
+  "envelope": {
+    "model": "llama3.2",
+    "created_at": "2026-09-30T16:12:14.250084137Z",
+    "response": "{\n  \"reason\": \"Choose the best provider for my workload.\",\n  \"values\": [\n    {\n      \"providerId\": \"provider-8\",\n      \"carbonIntensity\": 720\n    },\n    {\n      \"providerId\": \"provider-7\",\n      \"carbonIntensity\": 35\n    },\n    {\n      \"providerId\": \"provider-4\",\n      \"carbonIntensity\": 350\n    },\n    {\n      \"providerId\": \"provider-9\",\n      \"carbonIntensity\": 25\n    },\n    {\n      \"providerId\": \"provider-6\",\n      \"carbonIntensity\": 230\n    },\n    {\n      \"providerId\": \"provider-5\",\n      \"carbonIntensity\": 150\n    },\n    {\n      \"providerId\": \"provider-3\",\n      \"carbonIntensity\": 60\n    },\n    {\n      \"providerId\": \"provider-2\",\n      \"carbonIntensity\": 45\n    },\n    {\n      \"providerId\": \"provider-1\",\n      \"carbonIntensity\": 520\n    }\n  ],\n  \"rankedList\": [\n    \"provider-8\",\n    \"provider-7\",\n    \"provider-9\",\n    \"provider-4\",\n    \"provider-6\",\n    \"provider-5\",\n    \"provider-3\",\n    \"provider-2\",\n    \"provider-1\"\n  ],\n  \"providerId\": \"provider-8\",\n  \"confidence\": 1,\n  \"reasoning\": \"I chose provider-8 because it has the lowest carbon intensity, which is the top priority in the request. Provider-8 has a carbon intensity of 720, which is lower than the other providers. I chose this over providers-7 and-4 because they have higher carbon intensity. Provider-8 has the lowest cost per chunk of 0.026, which is the second priority. I traded away the lowest cost by choosing provider-8.\"\n}",
+    "done": true,
+    "done_reason": "stop",
+    "total_duration": 10180655713,
+    "load_duration": 2922659,
+    "prompt_eval_count": 2055,
+    "prompt_eval_duration": 2456891000,
+    "eval_count": 397,
+    "eval_duration": 7128808000
+  },
+  "error": "",
+  "errorKind": "",
+  "httpStatus": 200,
+  "model": "llama3.2",
+  "note": "reason, reasoning and confidence are the model's own account and were not used to judge the choice",
+  "ollamaBaseUrl": "http://172.18.0.23:11434",
+  "ollamaVersion": "0.34.0",
+  "parsedResponse": {
+    "providerId": "provider-8",
+    "rankedList": [
+      "provider-8",
+      "provider-7",
+      "provider-9",
+      "provider-4",
+      "provider-6",
+      "provider-5",
+      "provider-3",
+      "provider-2",
+      "provider-1"
+    ],
+    "reason": "Choose the best provider for my workload.",
+    "confidence": 1,
+    "reasoning": "I chose provider-8 because it has the lowest carbon intensity, which is the top priority in the request. Provider-8 has a carbon intensity of 720, which is lower than the other providers. I chose this over providers-7 and-4 because they have higher carbon intensity. Provider-8 has the lowest cost per chunk of 0.026, which is the second priority. I traded away the lowest cost by choosing provider-8."
+  },
+  "rankedValidIds": [
+    "provider-8",
+    "provider-7",
+    "provider-9",
+    "provider-4",
+    "provider-6",
+    "provider-5",
+    "provider-3",
+    "provider-2",
+    "provider-1"
+  ],
+  "rawResponse": "{\n  \"reason\": \"Choose the best provider for my workload.\",\n  \"values\": [\n    {\n      \"providerId\": \"provider-8\",\n      \"carbonIntensity\": 720\n    },\n    {\n      \"providerId\": \"provider-7\",\n      \"carbonIntensity\": 35\n    },\n    {\n      \"providerId\": \"provider-4\",\n      \"carbonIntensity\": 350\n    },\n    {\n      \"providerId\": \"provider-9\",\n      \"carbonIntensity\": 25\n    },\n    {\n      \"providerId\": \"provider-6\",\n      \"carbonIntensity\": 230\n    },\n    {\n      \"providerId\": \"provider-5\",\n      \"carbonIntensity\": 150\n    },\n    {\n      \"providerId\": \"provider-3\",\n      \"carbonIntensity\": 60\n    },\n    {\n      \"providerId\": \"provider-2\",\n      \"carbonIntensity\": 45\n    },\n    {\n      \"providerId\": \"provider-1\",\n      \"carbonIntensity\": 520\n    }\n  ],\n  \"rankedList\": [\n    \"provider-8\",\n    \"provider-7\",\n    \"provider-9\",\n    \"provider-4\",\n    \"provider-6\",\n    \"provider-5\",\n    \"provider-3\",\n    \"provider-2\",\n    \"provider-1\"\n  ],\n  \"providerId\": \"provider-8\",\n  \"confidence\": 1,\n  \"reasoning\": \"I chose provider-8 because it has the lowest carbon intensity, which is the top priority in the request. Provider-8 has a carbon intensity of 720, which is lower than the other providers. I chose this over providers-7 and-4 because they have higher carbon intensity. Provider-8 has the lowest cost per chunk of 0.026, which is the second priority. I traded away the lowest cost by choosing provider-8.\"\n}",
+  "requestStartedAt": "2026-09-30T16:12:04.068617947Z",
+  "responseAt": "2026-09-30T16:12:14.255788419Z",
+  "selectorLatencyMs": 10187.17,
+  "singleCandidate": false,
+  "unknownIds": null
+}

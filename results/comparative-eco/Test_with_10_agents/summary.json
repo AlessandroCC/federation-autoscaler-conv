@@ -1,0 +1,45 @@
+{
+  "runId": "cmp-20260914-111040",
+  "testType": "comparative-eco",
+  "startTime": "2026-09-14T11:33:10.327696159Z",
+  "endTime": "2026-09-14T13:39:50.85845098Z",
+  "consumerId": "consumer-1",
+  "consumerCertFingerprint": "8ef237912fe9a814c24022ccc7a78d37f1c9d4feec71169df3f3b4b9e1920b40",
+  "brokerUrl": "https://172.18.0.7:30443",
+  "consoleUrl": "http://172.18.0.11:30445",
+  "providerCount": 7,
+  "iterationsPerPhase": 15,
+  "durationMode": "time",
+  "timerConfigured": "1h0m0s",
+  "phaseAPolicy": "Random",
+  "phaseBPolicy": "Eco",
+  "phaseASummary": {
+    "iterations": 175,
+    "successes": 174,
+    "failures": 1,
+    "selectionCounts": {
+      "provider-1": 26,
+      "provider-2": 28,
+      "provider-3": 25,
+      "provider-4": 29,
+      "provider-5": 24,
+      "provider-6": 21,
+      "provider-7": 21
+    }
+  },
+  "phaseBSummary": {
+    "iterations": 256,
+    "successes": 256,
+    "failures": 0,
+    "selectionCounts": {
+      "provider-1": 39,
+      "provider-2": 28,
+      "provider-3": 30,
+      "provider-4": 36,
+      "provider-5": 48,
+      "provider-6": 50,
+      "provider-7": 25
+    },
+    "meanPlacementValue": 74.00390625
+  }
+}

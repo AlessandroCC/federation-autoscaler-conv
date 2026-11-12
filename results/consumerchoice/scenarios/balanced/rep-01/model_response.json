@@ -1,0 +1,60 @@
+{
+  "decisionLatencyMs": 7776.426,
+  "envelope": {
+    "model": "llama3.2",
+    "created_at": "2026-09-30T16:08:46.84830647Z",
+    "response": "{\"reason\": \"balance between low emissions and proximity\", \"values\": [{\"providerId\": \"provider-8\", \"carbonIntensity\": 720}, {\"providerId\": \"provider-7\", \"carbonIntensity\": 35}, {\"providerId\": \"provider-4\", \"carbonIntensity\": 350}, {\"providerId\": \"provider-6\", \"carbonIntensity\": 230}, {\"providerId\": \"provider-3\", \"carbonIntensity\": 60}, {\"providerId\": \"provider-2\", \"carbonIntensity\": 45}, {\"providerId\": \"provider-1\", \"carbonIntensity\": 520}, {\"providerId\": \"provider-5\", \"carbonIntensity\": 150}, {\"providerId\": \"provider-9\", \"carbonIntensity\": 25}, {\"providerId\": \"provider-10\", \"carbonIntensity\": 25}], \"rankedList\": [\"provider-8\", \"provider-7\", \"provider-4\", \"provider-6\", \"provider-3\", \"provider-2\", \"provider-1\", \"provider-5\", \"provider-9\", \"provider-11\"], \"providerId\": \"provider-8\", \"confidence\": 0.6666666666666666, \"reasoning\": \"I chose provider-8 because its low carbon intensity (720 gCO2eq/kWh) and high available chunks (4) make it a good balance between low emissions and proximity. I traded away a slight preference for lower carbon intensity (35 gCO2eq/kWh) and higher proximity (farther away from the consumer location at 60.1699 degrees latitude).\"}",
+    "done": true,
+    "done_reason": "stop",
+    "total_duration": 7769993653,
+    "load_duration": 2834833,
+    "prompt_eval_count": 2060,
+    "prompt_eval_duration": 1920992000,
+    "eval_count": 333,
+    "eval_duration": 5525240000
+  },
+  "error": "",
+  "errorKind": "",
+  "httpStatus": 200,
+  "model": "llama3.2",
+  "note": "reason, reasoning and confidence are the model's own account and were not used to judge the choice",
+  "ollamaBaseUrl": "http://172.18.0.23:11434",
+  "ollamaVersion": "0.34.0",
+  "parsedResponse": {
+    "providerId": "provider-8",
+    "rankedList": [
+      "provider-8",
+      "provider-7",
+      "provider-4",
+      "provider-6",
+      "provider-3",
+      "provider-2",
+      "provider-1",
+      "provider-5",
+      "provider-9",
+      "provider-11"
+    ],
+    "reason": "balance between low emissions and proximity",
+    "confidence": 0.6666666666666666,
+    "reasoning": "I chose provider-8 because its low carbon intensity (720 gCO2eq/kWh) and high available chunks (4) make it a good balance between low emissions and proximity. I traded away a slight preference for lower carbon intensity (35 gCO2eq/kWh) and higher proximity (farther away from the consumer location at 60.1699 degrees latitude)."
+  },
+  "rankedValidIds": [
+    "provider-8",
+    "provider-7",
+    "provider-4",
+    "provider-6",
+    "provider-3",
+    "provider-2",
+    "provider-1",
+    "provider-5",
+    "provider-9"
+  ],
+  "rawResponse": "{\"reason\": \"balance between low emissions and proximity\", \"values\": [{\"providerId\": \"provider-8\", \"carbonIntensity\": 720}, {\"providerId\": \"provider-7\", \"carbonIntensity\": 35}, {\"providerId\": \"provider-4\", \"carbonIntensity\": 350}, {\"providerId\": \"provider-6\", \"carbonIntensity\": 230}, {\"providerId\": \"provider-3\", \"carbonIntensity\": 60}, {\"providerId\": \"provider-2\", \"carbonIntensity\": 45}, {\"providerId\": \"provider-1\", \"carbonIntensity\": 520}, {\"providerId\": \"provider-5\", \"carbonIntensity\": 150}, {\"providerId\": \"provider-9\", \"carbonIntensity\": 25}, {\"providerId\": \"provider-10\", \"carbonIntensity\": 25}], \"rankedList\": [\"provider-8\", \"provider-7\", \"provider-4\", \"provider-6\", \"provider-3\", \"provider-2\", \"provider-1\", \"provider-5\", \"provider-9\", \"provider-11\"], \"providerId\": \"provider-8\", \"confidence\": 0.6666666666666666, \"reasoning\": \"I chose provider-8 because its low carbon intensity (720 gCO2eq/kWh) and high available chunks (4) make it a good balance between low emissions and proximity. I traded away a slight preference for lower carbon intensity (35 gCO2eq/kWh) and higher proximity (farther away from the consumer location at 60.1699 degrees latitude).\"}",
+  "requestStartedAt": "2026-09-30T16:08:39.077146302Z",
+  "responseAt": "2026-09-30T16:08:46.852545456Z",
+  "selectorLatencyMs": 7775.399,
+  "singleCandidate": false,
+  "unknownIds": [
+    "provider-11"
+  ]
+}

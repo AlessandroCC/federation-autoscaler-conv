@@ -1,0 +1,96 @@
+Prompt: Prioritize the greenest provider. Latency is secondary.
+Chosen provider: provider-9
+Reasoning: I chose provider-9 because it has the lowest carbonIntensity (25). I chose provider-9 over provider-8 because it has a lower costPerChunk (0.082) and therefore the lowest total cost. I traded away a higher number of availableChunks (4) for the lowest carbonIntensity. I did not choose provider-8 because it has the lowest costPerChunk (0.026), but it has the highest carbonIntensity (720) which I considered secondary to the greenest provider. I did not choose the other providers because they have higher carbonIntensity values, which are not as low as provider-9's.
+-------
+Prompt: Prioritize the greenest provider. Latency is secondary.
+Chosen provider: provider-4
+Reasoning: I chose provider-4 as the greenest provider. It has the lowest carbonIntensity of 350. I chose provider-7 as the second greenest provider. I chose provider-6 as the third greenest provider. I chose provider-8 as the fourth greenest provider. I chose provider-9 as the fifth greenest provider. I chose provider-1 as the sixth greenest provider. I chose provider-2 as the seventh greenest provider. I chose provider-3 as the eighth greenest provider. I chose provider-5 as the ninth greenest provider. I chose to prioritize the greenest provider over the cheapest provider. I chose to prioritize the greenest provider over the provider with the most resources. I chose to prioritize the greenest provider over the one with the closest proximity.
+-------
+Prompt: Prioritize the greenest provider. Latency is secondary.
+Chosen provider: provider-8 [the deterministic fallback chose instead (timeout)]
+Reasoning: (the model wrote none)
+-------
+Prompt: Prioritize the greenest provider. Latency is secondary.
+Chosen provider: provider-7
+Reasoning: I chose provider-7 because it is the greenest, with the lowest carbonIntensity of 35. Since latency is secondary, it was the next best option among the remaining providers, but all of them are quite far from the consumer location, making it a trade-off between greenness and distance.
+-------
+Prompt: Prioritize the greenest provider. Latency is secondary.
+Chosen provider: provider-9
+Reasoning: I chose provider-9 because it is the greenest. I chose it because its carbonIntensity is 25, which is lower than the other providers. I chose it because its costPerChunk is 0.082, which is not lower than the other providers, but I had to choose between the two lowest carbonIntensity providers, and the one with the lowest costPerChunk was provider-9. I traded away the possibility of choosing the provider with the lowest costPerChunk.
+-------
+Prompt: Prioritize the greenest provider. Latency is secondary.
+Chosen provider: provider-6
+Reasoning: I chose provider-6 because it is the greenest provider with the lowest carbonIntensity. I chose provider-7 because it is the second greenest provider. I traded away proximity by choosing provider-6, but it is not a significant factor in this ranking since the request prioritizes greenest over latency. I chose provider-4 because it is the third greenest provider, and I traded away cost by choosing provider-4 over provider-7, which is the second greenest but more expensive. I chose provider-8 because it is the fourth greenest provider, but I traded away proximity and cost by choosing provider-8 over providers-4 and -7. I chose provider-5 because it is the fifth greenest provider, and I traded away cost by choosing provider-5 over providers-4 and -8. I chose provider-9 because it is the sixth greenest provider, and I traded away cost by choosing provider-9 over providers-4, -5, and -8. I chose provider-2 because it is the seventh greenest provider, and I traded away cost by choosing provider-2 over provider-9. I chose provider-3 because it is the eighth greenest provider, and I traded away cost by choosing provider-3 over provider-2. I chose provider-1 because it is the ninth greenest provider, but I traded away cost by choosing provider-1 over provider-3.
+-------
+Prompt: Choose a provider close to me, and preferably with low emissions.
+Chosen provider: provider-3
+Reasoning: I chose provider-3. It has the lowest carbon intensity (60 gCO2eq/kWh) and is closest to the consumer's location (latitude: 48.8566, longitude: 2.3522, region: IDF). I chose it over the other providers because it has the lowest carbon intensity, and its proximity to the consumer's location is also relatively low. I traded away the fact that provider-4 has the lowest cost per chunk, as its carbon intensity is significantly higher. I could not choose provider-2 because it has a higher carbon intensity than provider-3.
+-------
+Prompt: Choose a provider close to me, and preferably with low emissions.
+Chosen provider: provider-2
+Reasoning: I chose provider-2 because it is closest to the consumer location (CH is 11.216 degrees from LOM). I chose provider-6 because it has the lowest emissions (230gCO2eq/kWh). I chose provider-3 because it is relatively close to the consumer location (IDF is 103.226 degrees from LOM). I chose provider-4 because it has the lowest emissions (350gCO2eq/kWh). I chose provider-5 because it is relatively close to the consumer location (AT is 146.191 degrees from LOM). I chose provider-7 because it has the lowest emissions (35gCO2eq/kWh). I chose provider-9 because it is relatively close to the consumer location (QC is 193.388 degrees from LOM). I chose provider-8 because it has the lowest emissions (720gCO2eq/kWh). I chose provider-1 because it is relatively close to the consumer location (LOM is 0 degrees from LOM).
+-------
+Prompt: Choose a provider close to me, and preferably with low emissions.
+Chosen provider: provider-4
+Reasoning: I chose provider-4 because it is the closest to the consumer location with the lowest carbon intensity. Provider-3 is the second closest with the lowest carbon intensity. Provider-2 is the third closest with the lowest carbon intensity, but it has a higher cost per chunk than provider-4.
+-------
+Prompt: Choose a provider close to me, and preferably with low emissions.
+Chosen provider: provider-4
+Reasoning: I chose provider-4 because it is close to you (50.11 degrees away) and has low emissions (350 gCO2eq/kWh). I traded away the second spot because provider-9 is only slightly closer to you (45.61 degrees away) and has slightly higher emissions (25 gCO2eq/kWh).
+-------
+Prompt: Choose a provider close to me, and preferably with low emissions.
+Chosen provider: provider-4
+Reasoning: I chose provider-4 because it is closest to the consumer location with a low carbon intensity of 350 gCO2eq/kWh. Provider-6 is the second closest provider with a low carbon intensity. Providers-7, -2, -8, -9, -1, -3, -5, and -10 are ranked lower due to their higher carbon intensity or further distance from the consumer location.
+-------
+Prompt: Choose a provider close to me, and preferably with low emissions.
+Chosen provider: provider-7
+Reasoning: I chose provider-7 because it is the closest to the consumer location, with a proximity score of 15.38 (|60.1699 - 45.4642| + |24.9384 - 9.19|), and it has the lowest carbon intensity (35 gCO2eq/kWh). I traded away a slight preference for low emissions by choosing provider-7 over provider-2, which also has low emissions (45 gCO2eq/kWh), due to its higher cost and lower available chunks (2 vs 3).
+-------
+Prompt: I need a good balance between low emissions and proximity.
+Chosen provider: provider-8
+Reasoning: I chose provider-8 because its low carbon intensity (720 gCO2eq/kWh) and high available chunks (4) make it a good balance between low emissions and proximity. I traded away a slight preference for lower carbon intensity (35 gCO2eq/kWh) and higher proximity (farther away from the consumer location at 60.1699 degrees latitude).
+-------
+Prompt: I need a good balance between low emissions and proximity.
+Chosen provider: provider-8
+Reasoning: I chose provider-8 because it has the lowest carbonIntensity (720), and a good balance between availableChunks (4) and costPerChunk (0.026). It is also relatively close to the consumer location (19.076, 72.8777) compared to other providers.
+-------
+Prompt: I need a good balance between low emissions and proximity.
+Chosen provider: provider-3
+Reasoning: I chose provider-3 because it balances low emissions (carbonIntensity: 60) with high proximity (proximityScore: 23.6233) to the consumer's location. I traded away the best proximity score for provider-6, and the best low emissions value for provider-8, as both provided better balance than the next best option, provider-3.
+-------
+Prompt: I need a good balance between low emissions and proximity.
+Chosen provider: provider-2
+Reasoning: I chose provider-2 because it has the best balance between low emissions (lowest carbonIntensity) and proximity to the consumer location. Provider-2 is closer to the consumer than any other provider with a lower carbonIntensity, and it has a slightly lower costPerChunk than provider-4. I traded away the tie with provider-4 for the benefit of the smaller distance.
+-------
+Prompt: I need a good balance between low emissions and proximity.
+Chosen provider: provider-3
+Reasoning: I chose provider-3 because it has a low carbonIntensity (60), a good balance of availableChunks (3) and costPerChunk (0.09), and a reasonable proximity to the consumer location (48.8566, 2.3522, 1.12). I traded away a lower costPerChunk (0.026) and a lower carbonIntensity (720) for this provider. However, the trade-off is worth it for the balance of low emissions and proximity.
+-------
+Prompt: I need a good balance between low emissions and proximity.
+Chosen provider: provider-3
+Reasoning: I chose provider-3 because it has the lowest carbonIntensity (60) and the highest availableChunks (3) among the providers with the shortest distance from the consumer location (2.3522 degrees). I traded away the lowest costPerChunk (0.09) because the balance between emissions and proximity was prioritized over cost. While provider-8 has the lowest costPerChunk, its carbonIntensity is significantly higher than provider-3.
+-------
+Prompt: Choose the best provider for my workload.
+Chosen provider: provider-8
+Reasoning: I chose provider-8 because it has the lowest carbon intensity, which is the top priority in the request. Provider-8 has a carbon intensity of 720, which is lower than the other providers. I chose this over providers-7 and-4 because they have higher carbon intensity. Provider-8 has the lowest cost per chunk of 0.026, which is the second priority. I traded away the lowest cost by choosing provider-8.
+-------
+Prompt: Choose the best provider for my workload.
+Chosen provider: provider-8
+Reasoning: I chose provider-8 because it has the lowest carbon intensity, which is the best fit for the request. I traded away the second best provider, provider-9, because it has a higher carbon intensity and higher cost per chunk, even though it has more available chunks. The ranking was determined by the values of the fields that measure the request's criteria, with the lowest values being the best fit.
+-------
+Prompt: Choose the best provider for my workload.
+Chosen provider: provider-8
+Reasoning: I chose provider-8 because it is the lowest in carbonIntensity, which is the top priority. Provider-8 also has the lowest costPerChunk, which is the second priority. The third priority is resources, but since provider-8 has the highest availableChunks, it is ranked first. Note that provider-8 is located in MH, which is not the region of the consumer's location, but since the request does not specify region, it is not a consideration.
+-------
+Prompt: Choose the best provider for my workload.
+Chosen provider: provider-8
+Reasoning: I chose provider-8 because it is the cheapest and has the lowest carbon intensity. I chose provider-9 as the second best because it has a lower cost than provider-8 but a higher carbon intensity. I chose provider-7 as the third best because it has a lower cost than provider-9 but a higher carbon intensity than provider-9. I chose provider-6 as the fourth best because it has the lowest carbon intensity but a higher cost than provider-7. I chose provider-4 as the fifth best because it has a lower cost than provider-6 but a higher carbon intensity than provider-6. I chose provider-3 as the sixth best because it has a lower cost than provider-4 but a higher carbon intensity than provider-4. I chose provider-2 as the seventh best because it has a lower cost than provider-3 but a higher carbon intensity than provider-3. I chose provider-1 as the eighth best because it has a lower cost than provider-2 but a higher carbon intensity than provider-2. I chose provider-5 as the ninth best because it has a lower cost than provider-1 but a higher carbon intensity than provider-1.
+-------
+Prompt: Choose the best provider for my workload.
+Chosen provider: provider-8
+Reasoning: I chose provider-8 because it has the lowest cost per chunk ($0.026) and the highest available chunks (4). This is a strong preference since it means provider-8 has the most resources to handle the workload. I traded away the closest location to the consumer by choosing a provider in a different region (MH) than the closest one (LOM), but this is a relatively small trade-off given the strong preference for lowest cost.
+-------
+Prompt: Choose the best provider for my workload.
+Chosen provider: provider-8
+Reasoning: I chose provider-8 because it has the lowest cost per chunk (0.026) and carbon intensity (720). This provider offers the best balance of cost and environmental responsibility. I traded away the proximity to the consumer location, as provider-8 is located in a region (MH) that is farthest away from the consumer location (LOM).
+-------

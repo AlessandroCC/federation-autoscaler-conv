@@ -1,0 +1,9 @@
+2026/09/18 14:47:48 resolved 5 provider identit(y/ies) and 5 consumer identit(y/ies) from /home/prognose/federation-autoscaler-conv/tests/scalability/certs/scaltest
+2026/09/18 14:47:48 checking Broker reachability at https://localhost:9444 ...
+2026/09/18 14:47:48 broker reachable
+2026/09/18 14:47:51 provider warm-up: 5/5 ready in 2.0s
+2026/09/18 14:47:51 consumer warm-up: 5/5 ready in 0.0s
+2026/09/18 14:47:51 measurement phase started: duration=5m0s
+2026/09/18 14:52:51 measurement duration elapsed
+2026/09/18 14:52:51 done — results in /home/prognose/federation-autoscaler-conv/results/scalability/20260918T144747Z
+2026/09/18 14:52:51 evaluation: 300 attempts, 300 success, 0.0% error rate, p95=1.7ms

@@ -1,0 +1,58 @@
+{
+  "decisionLatencyMs": 12542.218,
+  "envelope": {
+    "model": "llama3.2",
+    "created_at": "2026-09-30T16:09:19.476493282Z",
+    "response": "{\"reason\": \"find the provider with a good balance between low emissions and proximity\", \"values\": [{\"providerId\": \"provider-2\", \"carbonIntensity\": 45, \"availableChunks\": 2, \"latitude\": 47.3769, \"longitude\": 8.5417, \"costPerChunk\": 0.113}, {\"providerId\": \"provider-4\", \"carbonIntensity\": 350, \"availableChunks\": 2, \"latitude\": 50.1109, \"longitude\": 8.6821, \"costPerChunk\": 0.052}, {\"providerId\": \"provider-8\", \"carbonIntensity\": 720, \"availableChunks\": 4, \"latitude\": 19.076, \"longitude\": 72.8777, \"costPerChunk\": 0.026}, {\"providerId\": \"provider-6\", \"carbonIntensity\": 230, \"availableChunks\": 3, \"latitude\": 51.5074, \"longitude\": -0.1278, \"costPerChunk\": 0.055}, {\"providerId\": \"provider-3\", \"carbonIntensity\": 60, \"availableChunks\": 3, \"latitude\": 48.8566, \"longitude\": 2.3522, \"costPerChunk\": 0.09}, {\"providerId\": \"provider-7\", \"carbonIntensity\": 35, \"availableChunks\": 2, \"latitude\": 60.1699, \"longitude\": 24.9384, \"costPerChunk\": 0.064}, {\"providerId\": \"provider-1\", \"carbonIntensity\": 520, \"availableChunks\": 2, \"latitude\": 45.4642, \"longitude\": 9.19, \"costPerChunk\": 0.076}, {\"providerId\": \"provider-9\", \"carbonIntensity\": 25, \"availableChunks\": 2, \"latitude\": 45.6085, \"longitude\": -73.5493, \"costPerChunk\": 0.082}, {\"providerId\": \"provider-5\", \"carbonIntensity\": 150, \"availableChunks\": 1, \"latitude\": 48.2082, \"longitude\": 16.3738, \"costPerChunk\": 0.076}, {\"providerId\": \"provider-8\", \"carbonIntensity\": 720, \"availableChunks\": 4, \"latitude\": 19.076, \"longitude\": 72.8777, \"costPerChunk\": 0.026}, {\"providerId\": \"provider-2\", \"carbonIntensity\": 45, \"availableChunks\": 2, \"latitude\": 47.3769, \"longitude\": 8.5417, \"costPerChunk\": 0.113}], \"rankedList\": [\"provider-8\", \"provider-2\", \"provider-6\", \"provider-4\", \"provider-3\", \"provider-7\", \"provider-1\", \"provider-9\", \"provider-5\", \"provider-7\"], \"providerId\": \"provider-8\", \"confidence\": 0.6666666666666666, \"reasoning\": \"I chose provider-8 because it has the lowest carbonIntensity (720), and a good balance between availableChunks (4) and costPerChunk (0.026). It is also relatively close to the consumer location (19.076, 72.8777) compared to other providers.\"}",
+    "done": true,
+    "done_reason": "stop",
+    "total_duration": 12535135180,
+    "load_duration": 2552315,
+    "prompt_eval_count": 2060,
+    "prompt_eval_duration": 38558000,
+    "eval_count": 720,
+    "eval_duration": 12475188000
+  },
+  "error": "",
+  "errorKind": "",
+  "httpStatus": 200,
+  "model": "llama3.2",
+  "note": "reason, reasoning and confidence are the model's own account and were not used to judge the choice",
+  "ollamaBaseUrl": "http://172.18.0.23:11434",
+  "ollamaVersion": "0.34.0",
+  "parsedResponse": {
+    "providerId": "provider-8",
+    "rankedList": [
+      "provider-8",
+      "provider-2",
+      "provider-6",
+      "provider-4",
+      "provider-3",
+      "provider-7",
+      "provider-1",
+      "provider-9",
+      "provider-5",
+      "provider-7"
+    ],
+    "reason": "find the provider with a good balance between low emissions and proximity",
+    "confidence": 0.6666666666666666,
+    "reasoning": "I chose provider-8 because it has the lowest carbonIntensity (720), and a good balance between availableChunks (4) and costPerChunk (0.026). It is also relatively close to the consumer location (19.076, 72.8777) compared to other providers."
+  },
+  "rankedValidIds": [
+    "provider-8",
+    "provider-2",
+    "provider-6",
+    "provider-4",
+    "provider-3",
+    "provider-7",
+    "provider-1",
+    "provider-9",
+    "provider-5"
+  ],
+  "rawResponse": "{\"reason\": \"find the provider with a good balance between low emissions and proximity\", \"values\": [{\"providerId\": \"provider-2\", \"carbonIntensity\": 45, \"availableChunks\": 2, \"latitude\": 47.3769, \"longitude\": 8.5417, \"costPerChunk\": 0.113}, {\"providerId\": \"provider-4\", \"carbonIntensity\": 350, \"availableChunks\": 2, \"latitude\": 50.1109, \"longitude\": 8.6821, \"costPerChunk\": 0.052}, {\"providerId\": \"provider-8\", \"carbonIntensity\": 720, \"availableChunks\": 4, \"latitude\": 19.076, \"longitude\": 72.8777, \"costPerChunk\": 0.026}, {\"providerId\": \"provider-6\", \"carbonIntensity\": 230, \"availableChunks\": 3, \"latitude\": 51.5074, \"longitude\": -0.1278, \"costPerChunk\": 0.055}, {\"providerId\": \"provider-3\", \"carbonIntensity\": 60, \"availableChunks\": 3, \"latitude\": 48.8566, \"longitude\": 2.3522, \"costPerChunk\": 0.09}, {\"providerId\": \"provider-7\", \"carbonIntensity\": 35, \"availableChunks\": 2, \"latitude\": 60.1699, \"longitude\": 24.9384, \"costPerChunk\": 0.064}, {\"providerId\": \"provider-1\", \"carbonIntensity\": 520, \"availableChunks\": 2, \"latitude\": 45.4642, \"longitude\": 9.19, \"costPerChunk\": 0.076}, {\"providerId\": \"provider-9\", \"carbonIntensity\": 25, \"availableChunks\": 2, \"latitude\": 45.6085, \"longitude\": -73.5493, \"costPerChunk\": 0.082}, {\"providerId\": \"provider-5\", \"carbonIntensity\": 150, \"availableChunks\": 1, \"latitude\": 48.2082, \"longitude\": 16.3738, \"costPerChunk\": 0.076}, {\"providerId\": \"provider-8\", \"carbonIntensity\": 720, \"availableChunks\": 4, \"latitude\": 19.076, \"longitude\": 72.8777, \"costPerChunk\": 0.026}, {\"providerId\": \"provider-2\", \"carbonIntensity\": 45, \"availableChunks\": 2, \"latitude\": 47.3769, \"longitude\": 8.5417, \"costPerChunk\": 0.113}], \"rankedList\": [\"provider-8\", \"provider-2\", \"provider-6\", \"provider-4\", \"provider-3\", \"provider-7\", \"provider-1\", \"provider-9\", \"provider-5\", \"provider-7\"], \"providerId\": \"provider-8\", \"confidence\": 0.6666666666666666, \"reasoning\": \"I chose provider-8 because it has the lowest carbonIntensity (720), and a good balance between availableChunks (4) and costPerChunk (0.026). It is also relatively close to the consumer location (19.076, 72.8777) compared to other providers.\"}",
+  "requestStartedAt": "2026-09-30T16:09:06.940157444Z",
+  "responseAt": "2026-09-30T16:09:19.480809327Z",
+  "selectorLatencyMs": 12540.651,
+  "singleCandidate": false,
+  "unknownIds": null
+}

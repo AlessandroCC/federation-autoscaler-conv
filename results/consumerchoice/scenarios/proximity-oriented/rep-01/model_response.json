@@ -1,0 +1,57 @@
+{
+  "decisionLatencyMs": 12266.482,
+  "envelope": {
+    "model": "llama3.2",
+    "created_at": "2026-09-30T16:04:49.436436529Z",
+    "response": "{\n  \"reason\": \"Choose a provider close to me, and preferably with low emissions.\",\n  \"values\": [\n    {\n      \"providerId\": \"provider-3\",\n      \"carbonIntensity\": 60,\n      \"costPerChunk\": 0.09\n    },\n    {\n      \"providerId\": \"provider-2\",\n      \"carbonIntensity\": 45,\n      \"costPerChunk\": 0.113\n    },\n    {\n      \"providerId\": \"provider-4\",\n      \"carbonIntensity\": 350,\n      \"costPerChunk\": 0.052\n    },\n    {\n      \"providerId\": \"provider-7\",\n      \"carbonIntensity\": 35,\n      \"costPerChunk\": 0.064\n    },\n    {\n      \"providerId\": \"provider-6\",\n      \"carbonIntensity\": 230,\n      \"costPerChunk\": 0.055\n    },\n    {\n      \"providerId\": \"provider-8\",\n      \"carbonIntensity\": 720,\n      \"costPerChunk\": 0.026\n    },\n    {\n      \"providerId\": \"provider-1\",\n      \"carbonIntensity\": 520,\n      \"costPerChunk\": 0.076\n    },\n    {\n      \"providerId\": \"provider-9\",\n      \"carbonIntensity\": 25,\n      \"costPerChunk\": 0.082\n    },\n    {\n      \"providerId\": \"provider-5\",\n      \"carbonIntensity\": 150,\n      \"costPerChunk\": 0.076\n    },\n    {\n      \"providerId\": \"provider-7\",\n      \"carbonIntensity\": 35,\n      \"costPerChunk\": 0.064\n    },\n    {\n      \"providerId\": \"provider-3\",\n      \"carbonIntensity\": 60,\n      \"costPerChunk\": 0.09\n    }\n  ],\n  \"rankedList\": [\n    \"provider-3\",\n    \"provider-7\",\n    \"provider-2\",\n    \"provider-6\",\n    \"provider-4\",\n    \"provider-1\",\n    \"provider-9\",\n    \"provider-5\",\n    \"provider-8\"\n  ],\n  \"providerId\": \"provider-3\",\n  \"confidence\": 1,\n  \"reasoning\": \"I chose provider-3. It has the lowest carbon intensity (60 gCO2eq/kWh) and is closest to the consumer's location (latitude: 48.8566, longitude: 2.3522, region: IDF). I chose it over the other providers because it has the lowest carbon intensity, and its proximity to the consumer's location is also relatively low. I traded away the fact that provider-4 has the lowest cost per chunk, as its carbon intensity is significantly higher. I could not choose provider-2 because it has a higher carbon intensity than provider-3.\" \n}",
+    "done": true,
+    "done_reason": "stop",
+    "total_duration": 12260175712,
+    "load_duration": 2499676,
+    "prompt_eval_count": 2065,
+    "prompt_eval_duration": 1862062000,
+    "eval_count": 598,
+    "eval_duration": 10071329000
+  },
+  "error": "",
+  "errorKind": "",
+  "httpStatus": 200,
+  "model": "llama3.2",
+  "note": "reason, reasoning and confidence are the model's own account and were not used to judge the choice",
+  "ollamaBaseUrl": "http://172.18.0.23:11434",
+  "ollamaVersion": "0.34.0",
+  "parsedResponse": {
+    "providerId": "provider-3",
+    "rankedList": [
+      "provider-3",
+      "provider-7",
+      "provider-2",
+      "provider-6",
+      "provider-4",
+      "provider-1",
+      "provider-9",
+      "provider-5",
+      "provider-8"
+    ],
+    "reason": "Choose a provider close to me, and preferably with low emissions.",
+    "confidence": 1,
+    "reasoning": "I chose provider-3. It has the lowest carbon intensity (60 gCO2eq/kWh) and is closest to the consumer's location (latitude: 48.8566, longitude: 2.3522, region: IDF). I chose it over the other providers because it has the lowest carbon intensity, and its proximity to the consumer's location is also relatively low. I traded away the fact that provider-4 has the lowest cost per chunk, as its carbon intensity is significantly higher. I could not choose provider-2 because it has a higher carbon intensity than provider-3."
+  },
+  "rankedValidIds": [
+    "provider-3",
+    "provider-7",
+    "provider-2",
+    "provider-6",
+    "provider-4",
+    "provider-1",
+    "provider-9",
+    "provider-5",
+    "provider-8"
+  ],
+  "rawResponse": "{\n  \"reason\": \"Choose a provider close to me, and preferably with low emissions.\",\n  \"values\": [\n    {\n      \"providerId\": \"provider-3\",\n      \"carbonIntensity\": 60,\n      \"costPerChunk\": 0.09\n    },\n    {\n      \"providerId\": \"provider-2\",\n      \"carbonIntensity\": 45,\n      \"costPerChunk\": 0.113\n    },\n    {\n      \"providerId\": \"provider-4\",\n      \"carbonIntensity\": 350,\n      \"costPerChunk\": 0.052\n    },\n    {\n      \"providerId\": \"provider-7\",\n      \"carbonIntensity\": 35,\n      \"costPerChunk\": 0.064\n    },\n    {\n      \"providerId\": \"provider-6\",\n      \"carbonIntensity\": 230,\n      \"costPerChunk\": 0.055\n    },\n    {\n      \"providerId\": \"provider-8\",\n      \"carbonIntensity\": 720,\n      \"costPerChunk\": 0.026\n    },\n    {\n      \"providerId\": \"provider-1\",\n      \"carbonIntensity\": 520,\n      \"costPerChunk\": 0.076\n    },\n    {\n      \"providerId\": \"provider-9\",\n      \"carbonIntensity\": 25,\n      \"costPerChunk\": 0.082\n    },\n    {\n      \"providerId\": \"provider-5\",\n      \"carbonIntensity\": 150,\n      \"costPerChunk\": 0.076\n    },\n    {\n      \"providerId\": \"provider-7\",\n      \"carbonIntensity\": 35,\n      \"costPerChunk\": 0.064\n    },\n    {\n      \"providerId\": \"provider-3\",\n      \"carbonIntensity\": 60,\n      \"costPerChunk\": 0.09\n    }\n  ],\n  \"rankedList\": [\n    \"provider-3\",\n    \"provider-7\",\n    \"provider-2\",\n    \"provider-6\",\n    \"provider-4\",\n    \"provider-1\",\n    \"provider-9\",\n    \"provider-5\",\n    \"provider-8\"\n  ],\n  \"providerId\": \"provider-3\",\n  \"confidence\": 1,\n  \"reasoning\": \"I chose provider-3. It has the lowest carbon intensity (60 gCO2eq/kWh) and is closest to the consumer's location (latitude: 48.8566, longitude: 2.3522, region: IDF). I chose it over the other providers because it has the lowest carbon intensity, and its proximity to the consumer's location is also relatively low. I traded away the fact that provider-4 has the lowest cost per chunk, as its carbon intensity is significantly higher. I could not choose provider-2 because it has a higher carbon intensity than provider-3.\" \n}",
+  "requestStartedAt": "2026-09-30T16:04:37.17492897Z",
+  "responseAt": "2026-09-30T16:04:49.440549375Z",
+  "selectorLatencyMs": 12265.62,
+  "singleCandidate": false,
+  "unknownIds": null
+}

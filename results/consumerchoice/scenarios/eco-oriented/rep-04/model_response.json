@@ -1,0 +1,58 @@
+{
+  "decisionLatencyMs": 8318.499,
+  "envelope": {
+    "model": "llama3.2",
+    "created_at": "2026-09-30T16:02:50.520681612Z",
+    "response": "{\"reason\": \"Prioritize the greenest provider. Latency is secondary.\", \"values\": [{\"providerId\": \"provider-7\", \"carbonIntensity\": 35}, {\"providerId\": \"provider-9\", \"carbonIntensity\": 25}, {\"providerId\": \"provider-3\", \"carbonIntensity\": 60}, {\"providerId\": \"provider-2\", \"carbonIntensity\": 45}, {\"providerId\": \"provider-4\", \"carbonIntensity\": 350}, {\"providerId\": \"provider-6\", \"carbonIntensity\": 230}, {\"providerId\": \"provider-5\", \"carbonIntensity\": 150}, {\"providerId\": \"provider-1\", \"carbonIntensity\": 520}, {\"providerId\": \"provider-8\", \"carbonIntensity\": 720}, {\"providerId\": \"provider-7\", \"carbonIntensity\": 35}], \"rankedList\": [\"provider-7\", \"provider-9\", \"provider-3\", \"provider-2\", \"provider-4\", \"provider-6\", \"provider-5\", \"provider-1\", \"provider-8\", \"provider-7\"], \"providerId\": \"provider-7\", \"confidence\": 0.5, \"reasoning\": \"I chose provider-7 because it is the greenest, with the lowest carbonIntensity of 35. Since latency is secondary, it was the next best option among the remaining providers, but all of them are quite far from the consumer location, making it a trade-off between greenness and distance.\"}",
+    "done": true,
+    "done_reason": "stop",
+    "total_duration": 8312028239,
+    "load_duration": 2777468,
+    "prompt_eval_count": 2063,
+    "prompt_eval_duration": 2714209000,
+    "eval_count": 317,
+    "eval_duration": 5272793000
+  },
+  "error": "",
+  "errorKind": "",
+  "httpStatus": 200,
+  "model": "llama3.2",
+  "note": "reason, reasoning and confidence are the model's own account and were not used to judge the choice",
+  "ollamaBaseUrl": "http://172.18.0.23:11434",
+  "ollamaVersion": "0.34.0",
+  "parsedResponse": {
+    "providerId": "provider-7",
+    "rankedList": [
+      "provider-7",
+      "provider-9",
+      "provider-3",
+      "provider-2",
+      "provider-4",
+      "provider-6",
+      "provider-5",
+      "provider-1",
+      "provider-8",
+      "provider-7"
+    ],
+    "reason": "Prioritize the greenest provider. Latency is secondary.",
+    "confidence": 0.5,
+    "reasoning": "I chose provider-7 because it is the greenest, with the lowest carbonIntensity of 35. Since latency is secondary, it was the next best option among the remaining providers, but all of them are quite far from the consumer location, making it a trade-off between greenness and distance."
+  },
+  "rankedValidIds": [
+    "provider-7",
+    "provider-9",
+    "provider-3",
+    "provider-2",
+    "provider-4",
+    "provider-6",
+    "provider-5",
+    "provider-1",
+    "provider-8"
+  ],
+  "rawResponse": "{\"reason\": \"Prioritize the greenest provider. Latency is secondary.\", \"values\": [{\"providerId\": \"provider-7\", \"carbonIntensity\": 35}, {\"providerId\": \"provider-9\", \"carbonIntensity\": 25}, {\"providerId\": \"provider-3\", \"carbonIntensity\": 60}, {\"providerId\": \"provider-2\", \"carbonIntensity\": 45}, {\"providerId\": \"provider-4\", \"carbonIntensity\": 350}, {\"providerId\": \"provider-6\", \"carbonIntensity\": 230}, {\"providerId\": \"provider-5\", \"carbonIntensity\": 150}, {\"providerId\": \"provider-1\", \"carbonIntensity\": 520}, {\"providerId\": \"provider-8\", \"carbonIntensity\": 720}, {\"providerId\": \"provider-7\", \"carbonIntensity\": 35}], \"rankedList\": [\"provider-7\", \"provider-9\", \"provider-3\", \"provider-2\", \"provider-4\", \"provider-6\", \"provider-5\", \"provider-1\", \"provider-8\", \"provider-7\"], \"providerId\": \"provider-7\", \"confidence\": 0.5, \"reasoning\": \"I chose provider-7 because it is the greenest, with the lowest carbonIntensity of 35. Since latency is secondary, it was the next best option among the remaining providers, but all of them are quite far from the consumer location, making it a trade-off between greenness and distance.\"}",
+  "requestStartedAt": "2026-09-30T16:02:42.207403435Z",
+  "responseAt": "2026-09-30T16:02:50.524932874Z",
+  "selectorLatencyMs": 8317.529,
+  "singleCandidate": false,
+  "unknownIds": null
+}

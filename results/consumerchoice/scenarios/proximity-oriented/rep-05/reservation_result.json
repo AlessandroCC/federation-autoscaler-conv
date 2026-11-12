@@ -1,0 +1,51 @@
+{
+  "reservationId": "test-cmp-20260930-153544-cc2-consumer-1-5",
+  "requestedProviderId": "provider-4",
+  "request": {
+    "providerClusterId": "provider-4",
+    "nodeGroupId": "ng-provider-4-standard",
+    "chunkCount": 1,
+    "chunkType": "standard"
+  },
+  "submittedAt": "2026-09-30T16:07:38.651786385Z",
+  "brokerCreatedAt": "2026-09-30T16:07:38Z",
+  "transitions": [
+    {
+      "phase": "Pending",
+      "seenAt": "2026-09-30T16:07:38.661110145Z"
+    },
+    {
+      "phase": "Peering",
+      "seenAt": "2026-09-30T16:07:43.666865319Z",
+      "message": "queued Peer instruction for consumer"
+    },
+    {
+      "phase": "Peered",
+      "seenAt": "2026-09-30T16:07:53.6781268Z",
+      "message": "peering completed"
+    }
+  ],
+  "finalPhase": "Peered",
+  "peered": true,
+  "peeredAt": "2026-09-30T16:07:53.678218175Z",
+  "peeringDurationMs": 15026.431,
+  "lastResponse": {
+    "reservationId": "test-cmp-20260930-153544-cc2-consumer-1-5",
+    "status": "Peered",
+    "providerClusterId": "provider-4",
+    "providerLiqoClusterId": "provider-4",
+    "consumerClusterId": "consumer-1",
+    "consumerLiqoClusterId": "consumer-1",
+    "chunkCount": 1,
+    "chunkType": "standard",
+    "resources": {
+      "cpu": "2",
+      "memory": "4Gi"
+    },
+    "createdAt": "2026-09-30T16:07:38Z",
+    "expiresAt": "2026-10-01T16:07:38Z",
+    "message": "peering completed"
+  },
+  "released": true,
+  "releasedAt": "2026-09-30T16:08:03.714283922Z"
+}

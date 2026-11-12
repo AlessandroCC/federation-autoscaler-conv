@@ -1,0 +1,57 @@
+{
+  "decisionLatencyMs": 6930.371,
+  "envelope": {
+    "model": "llama3.2",
+    "created_at": "2026-09-30T16:06:15.86897428Z",
+    "response": "{\"reason\": \"Choose a provider close to me, and preferably with low emissions.\", \"values\": [{\"providerId\": \"provider-4\", \"carbonIntensity\": 350, \"availableChunks\": 2}, {\"providerId\": \"provider-3\", \"carbonIntensity\": 60, \"availableChunks\": 3}, {\"providerId\": \"provider-2\", \"carbonIntensity\": 45, \"availableChunks\": 2}, {\"providerId\": \"provider-1\", \"carbonIntensity\": 520, \"availableChunks\": 2}, {\"providerId\": \"provider-8\", \"carbonIntensity\": 720, \"availableChunks\": 4}, {\"providerId\": \"provider-9\", \"carbonIntensity\": 25, \"availableChunks\": 2}, {\"providerId\": \"provider-6\", \"carbonIntensity\": 230, \"availableChunks\": 3}, {\"providerId\": \"provider-7\", \"carbonIntensity\": 35, \"availableChunks\": 2}, {\"providerId\": \"provider-5\", \"carbonIntensity\": 150, \"availableChunks\": 1}, {\"providerId\": \"provider-7\", \"carbonIntensity\": 35, \"availableChunks\": 2}, {\"providerId\": \"provider-8\", \"carbonIntensity\": 720, \"availableChunks\": 4}], \"rankedList\": [\"provider-4\", \"provider-3\", \"provider-2\", \"provider-1\", \"provider-9\", \"provider-6\", \"provider-7\", \"provider-5\", \"provider-8\"], \"providerId\": \"provider-4\", \"confidence\": 0.5, \"reasoning\": \"I chose provider-4 because it is the closest to the consumer location with the lowest carbon intensity. Provider-3 is the second closest with the lowest carbon intensity. Provider-2 is the third closest with the lowest carbon intensity, but it has a higher cost per chunk than provider-4.\"}",
+    "done": true,
+    "done_reason": "stop",
+    "total_duration": 6923189967,
+    "load_duration": 2889703,
+    "prompt_eval_count": 2065,
+    "prompt_eval_duration": 35519000,
+    "eval_count": 405,
+    "eval_duration": 6861547000
+  },
+  "error": "",
+  "errorKind": "",
+  "httpStatus": 200,
+  "model": "llama3.2",
+  "note": "reason, reasoning and confidence are the model's own account and were not used to judge the choice",
+  "ollamaBaseUrl": "http://172.18.0.23:11434",
+  "ollamaVersion": "0.34.0",
+  "parsedResponse": {
+    "providerId": "provider-4",
+    "rankedList": [
+      "provider-4",
+      "provider-3",
+      "provider-2",
+      "provider-1",
+      "provider-9",
+      "provider-6",
+      "provider-7",
+      "provider-5",
+      "provider-8"
+    ],
+    "reason": "Choose a provider close to me, and preferably with low emissions.",
+    "confidence": 0.5,
+    "reasoning": "I chose provider-4 because it is the closest to the consumer location with the lowest carbon intensity. Provider-3 is the second closest with the lowest carbon intensity. Provider-2 is the third closest with the lowest carbon intensity, but it has a higher cost per chunk than provider-4."
+  },
+  "rankedValidIds": [
+    "provider-4",
+    "provider-3",
+    "provider-2",
+    "provider-1",
+    "provider-9",
+    "provider-6",
+    "provider-7",
+    "provider-5",
+    "provider-8"
+  ],
+  "rawResponse": "{\"reason\": \"Choose a provider close to me, and preferably with low emissions.\", \"values\": [{\"providerId\": \"provider-4\", \"carbonIntensity\": 350, \"availableChunks\": 2}, {\"providerId\": \"provider-3\", \"carbonIntensity\": 60, \"availableChunks\": 3}, {\"providerId\": \"provider-2\", \"carbonIntensity\": 45, \"availableChunks\": 2}, {\"providerId\": \"provider-1\", \"carbonIntensity\": 520, \"availableChunks\": 2}, {\"providerId\": \"provider-8\", \"carbonIntensity\": 720, \"availableChunks\": 4}, {\"providerId\": \"provider-9\", \"carbonIntensity\": 25, \"availableChunks\": 2}, {\"providerId\": \"provider-6\", \"carbonIntensity\": 230, \"availableChunks\": 3}, {\"providerId\": \"provider-7\", \"carbonIntensity\": 35, \"availableChunks\": 2}, {\"providerId\": \"provider-5\", \"carbonIntensity\": 150, \"availableChunks\": 1}, {\"providerId\": \"provider-7\", \"carbonIntensity\": 35, \"availableChunks\": 2}, {\"providerId\": \"provider-8\", \"carbonIntensity\": 720, \"availableChunks\": 4}], \"rankedList\": [\"provider-4\", \"provider-3\", \"provider-2\", \"provider-1\", \"provider-9\", \"provider-6\", \"provider-7\", \"provider-5\", \"provider-8\"], \"providerId\": \"provider-4\", \"confidence\": 0.5, \"reasoning\": \"I chose provider-4 because it is the closest to the consumer location with the lowest carbon intensity. Provider-3 is the second closest with the lowest carbon intensity. Provider-2 is the third closest with the lowest carbon intensity, but it has a higher cost per chunk than provider-4.\"}",
+  "requestStartedAt": "2026-09-30T16:06:08.944321753Z",
+  "responseAt": "2026-09-30T16:06:15.873718336Z",
+  "selectorLatencyMs": 6929.396,
+  "singleCandidate": false,
+  "unknownIds": null
+}

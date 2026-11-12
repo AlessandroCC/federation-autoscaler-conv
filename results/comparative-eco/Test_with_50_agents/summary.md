@@ -1,0 +1,91 @@
+# Comparative Test Summary: comparative-eco
+
+- Run ID: `cmp-20260913-112432`
+- Start: 2026-09-13T13:05:09Z
+- End: 2026-09-13T15:15:53Z
+- Consumer: `consumer-1`
+- Broker: https://172.18.0.2:30443
+- Providers: 35
+- Phase length: 1h0m0s (wall clock; configured iterations ignored)
+
+## Phase A (baseline) — Random
+
+- Iterations: 851 (success: 850, fail: 1)
+- Selection distribution:
+  - `provider-25`: 24 (2.8%)
+  - `provider-26`: 33 (3.9%)
+  - `provider-20`: 24 (2.8%)
+  - `provider-9`: 20 (2.4%)
+  - `provider-18`: 20 (2.4%)
+  - `provider-8`: 26 (3.1%)
+  - `provider-5`: 21 (2.5%)
+  - `provider-19`: 27 (3.2%)
+  - `provider-16`: 22 (2.6%)
+  - `provider-29`: 21 (2.5%)
+  - `provider-32`: 25 (2.9%)
+  - `provider-1`: 18 (2.1%)
+  - `provider-12`: 27 (3.2%)
+  - `provider-34`: 29 (3.4%)
+  - `provider-21`: 22 (2.6%)
+  - `provider-31`: 20 (2.4%)
+  - `provider-11`: 27 (3.2%)
+  - `provider-14`: 25 (2.9%)
+  - `provider-22`: 24 (2.8%)
+  - `provider-23`: 29 (3.4%)
+  - `provider-2`: 20 (2.4%)
+  - `provider-17`: 31 (3.6%)
+  - `provider-15`: 31 (3.6%)
+  - `provider-24`: 28 (3.3%)
+  - `provider-4`: 25 (2.9%)
+  - `provider-33`: 22 (2.6%)
+  - `provider-13`: 32 (3.8%)
+  - `provider-6`: 24 (2.8%)
+  - `provider-10`: 32 (3.8%)
+  - `provider-28`: 19 (2.2%)
+  - `provider-30`: 16 (1.9%)
+  - `provider-3`: 27 (3.2%)
+  - `provider-27`: 19 (2.2%)
+  - `provider-7`: 20 (2.4%)
+  - `provider-35`: 20 (2.4%)
+
+## Phase B (policy-aware) — Eco
+
+- Iterations: 1192 (success: 1189, fail: 3)
+- Selection distribution:
+  - `provider-26`: 50 (4.2%)
+  - `provider-18`: 45 (3.8%)
+  - `provider-21`: 44 (3.7%)
+  - `provider-34`: 14 (1.2%)
+  - `provider-27`: 31 (2.6%)
+  - `provider-23`: 39 (3.3%)
+  - `provider-31`: 34 (2.9%)
+  - `provider-25`: 34 (2.9%)
+  - `provider-35`: 42 (3.5%)
+  - `provider-3`: 33 (2.8%)
+  - `provider-10`: 48 (4.0%)
+  - `provider-2`: 28 (2.3%)
+  - `provider-13`: 17 (1.4%)
+  - `provider-15`: 47 (3.9%)
+  - `provider-22`: 35 (2.9%)
+  - `provider-7`: 30 (2.5%)
+  - `provider-28`: 67 (5.6%)
+  - `provider-14`: 45 (3.8%)
+  - `provider-32`: 33 (2.8%)
+  - `provider-30`: 18 (1.5%)
+  - `provider-12`: 49 (4.1%)
+  - `provider-1`: 20 (1.7%)
+  - `provider-24`: 37 (3.1%)
+  - `provider-20`: 37 (3.1%)
+  - `provider-29`: 17 (1.4%)
+  - `provider-19`: 32 (2.7%)
+  - `provider-33`: 24 (2.0%)
+  - `provider-4`: 24 (2.0%)
+  - `provider-17`: 6 (0.5%)
+  - `provider-5`: 42 (3.5%)
+  - `provider-8`: 26 (2.2%)
+  - `provider-11`: 32 (2.7%)
+  - `provider-16`: 21 (1.8%)
+  - `provider-6`: 59 (4.9%)
+  - `provider-9`: 29 (2.4%)
+- Mean placement value: 41.4037
+

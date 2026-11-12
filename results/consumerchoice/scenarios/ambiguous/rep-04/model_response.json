@@ -1,0 +1,57 @@
+{
+  "decisionLatencyMs": 16411.868,
+  "envelope": {
+    "model": "llama3.2",
+    "created_at": "2026-09-30T16:13:55.999509227Z",
+    "response": "{\n  \"reason\": \"Choose the best provider for my workload.\",\n  \"values\": [\n    {\n      \"providerId\": \"provider-9\",\n      \"costPerChunk\": 0.082,\n      \"carbonIntensity\": 25\n    },\n    {\n      \"providerId\": \"provider-8\",\n      \"costPerChunk\": 0.026,\n      \"carbonIntensity\": 720\n    },\n    {\n      \"providerId\": \"provider-7\",\n      \"costPerChunk\": 0.064,\n      \"carbonIntensity\": 35\n    },\n    {\n      \"providerId\": \"provider-6\",\n      \"costPerChunk\": 0.055,\n      \"carbonIntensity\": 230\n    },\n    {\n      \"providerId\": \"provider-4\",\n      \"costPerChunk\": 0.052,\n      \"carbonIntensity\": 350\n    },\n    {\n      \"providerId\": \"provider-3\",\n      \"costPerChunk\": 0.09,\n      \"carbonIntensity\": 60\n    },\n    {\n      \"providerId\": \"provider-2\",\n      \"costPerChunk\": 0.113,\n      \"carbonIntensity\": 45\n    },\n    {\n      \"providerId\": \"provider-1\",\n      \"costPerChunk\": 0.076,\n      \"carbonIntensity\": 520\n    },\n    {\n      \"providerId\": \"provider-5\",\n      \"costPerChunk\": 0.076,\n      \"carbonIntensity\": 150\n    },\n    {\n      \"providerId\": \"provider-9\",\n      \"costPerChunk\": 0.082,\n      \"carbonIntensity\": 25\n    },\n    {\n      \"providerId\": \"provider-8\",\n      \"costPerChunk\": 0.026,\n      \"carbonIntensity\": 720\n    },\n    {\n      \"providerId\": \"provider-7\",\n      \"costPerChunk\": 0.064,\n      \"carbonIntensity\": 35\n    },\n    {\n      \"providerId\": \"provider-6\",\n      \"costPerChunk\": 0.055,\n      \"carbonIntensity\": 230\n    },\n    {\n      \"providerId\": \"provider-4\",\n      \"costPerChunk\": 0.052,\n      \"carbonIntensity\": 350\n    },\n    {\n      \"providerId\": \"provider-3\",\n      \"costPerChunk\": 0.09,\n      \"carbonIntensity\": 60\n    },\n    {\n      \"providerId\": \"provider-2\",\n      \"costPerChunk\": 0.113,\n      \"carbonIntensity\": 45\n    },\n    {\n      \"providerId\": \"provider-1\",\n      \"costPerChunk\": 0.076,\n      \"carbonIntensity\": 520\n    },\n    {\n      \"providerId\": \"provider-5\",\n      \"costPerChunk\": 0.076,\n      \"carbonIntensity\": 150\n    }\n  ],\n  \"rankedList\": [\"provider-8\", \"provider-9\", \"provider-7\", \"provider-6\", \"provider-4\", \"provider-3\", \"provider-2\", \"provider-1\", \"provider-5\"],\n  \"providerId\": \"provider-8\",\n  \"confidence\": 1,\n  \"reasoning\": \"I chose provider-8 because it is the cheapest and has the lowest carbon intensity. I chose provider-9 as the second best because it has a lower cost than provider-8 but a higher carbon intensity. I chose provider-7 as the third best because it has a lower cost than provider-9 but a higher carbon intensity than provider-9. I chose provider-6 as the fourth best because it has the lowest carbon intensity but a higher cost than provider-7. I chose provider-4 as the fifth best because it has a lower cost than provider-6 but a higher carbon intensity than provider-6. I chose provider-3 as the sixth best because it has a lower cost than provider-4 but a higher carbon intensity than provider-4. I chose provider-2 as the seventh best because it has a lower cost than provider-3 but a higher carbon intensity than provider-3. I chose provider-1 as the eighth best because it has a lower cost than provider-2 but a higher carbon intensity than provider-2. I chose provider-5 as the ninth best because it has a lower cost than provider-1 but a higher carbon intensity than provider-1.\" \n}",
+    "done": true,
+    "done_reason": "stop",
+    "total_duration": 16395643529,
+    "load_duration": 2482971,
+    "prompt_eval_count": 2055,
+    "prompt_eval_duration": 39737000,
+    "eval_count": 932,
+    "eval_duration": 16328546000
+  },
+  "error": "",
+  "errorKind": "",
+  "httpStatus": 200,
+  "model": "llama3.2",
+  "note": "reason, reasoning and confidence are the model's own account and were not used to judge the choice",
+  "ollamaBaseUrl": "http://172.18.0.23:11434",
+  "ollamaVersion": "0.34.0",
+  "parsedResponse": {
+    "providerId": "provider-8",
+    "rankedList": [
+      "provider-8",
+      "provider-9",
+      "provider-7",
+      "provider-6",
+      "provider-4",
+      "provider-3",
+      "provider-2",
+      "provider-1",
+      "provider-5"
+    ],
+    "reason": "Choose the best provider for my workload.",
+    "confidence": 1,
+    "reasoning": "I chose provider-8 because it is the cheapest and has the lowest carbon intensity. I chose provider-9 as the second best because it has a lower cost than provider-8 but a higher carbon intensity. I chose provider-7 as the third best because it has a lower cost than provider-9 but a higher carbon intensity than provider-9. I chose provider-6 as the fourth best because it has the lowest carbon intensity but a higher cost than provider-7. I chose provider-4 as the fifth best because it has a lower cost than provider-6 but a higher carbon intensity than provider-6. I chose provider-3 as the sixth best because it has a lower cost than provider-4 but a higher carbon intensity than provider-4. I chose provider-2 as the seventh best because it has a lower cost than provider-3 but a higher carbon intensity than provider-3. I chose provider-1 as the eighth best because it has a lower cost than provider-2 but a higher carbon intensity than provider-2. I chose provider-5 as the ninth best because it has a lower cost than provider-1 but a higher carbon intensity than provider-1."
+  },
+  "rankedValidIds": [
+    "provider-8",
+    "provider-9",
+    "provider-7",
+    "provider-6",
+    "provider-4",
+    "provider-3",
+    "provider-2",
+    "provider-1",
+    "provider-5"
+  ],
+  "rawResponse": "{\n  \"reason\": \"Choose the best provider for my workload.\",\n  \"values\": [\n    {\n      \"providerId\": \"provider-9\",\n      \"costPerChunk\": 0.082,\n      \"carbonIntensity\": 25\n    },\n    {\n      \"providerId\": \"provider-8\",\n      \"costPerChunk\": 0.026,\n      \"carbonIntensity\": 720\n    },\n    {\n      \"providerId\": \"provider-7\",\n      \"costPerChunk\": 0.064,\n      \"carbonIntensity\": 35\n    },\n    {\n      \"providerId\": \"provider-6\",\n      \"costPerChunk\": 0.055,\n      \"carbonIntensity\": 230\n    },\n    {\n      \"providerId\": \"provider-4\",\n      \"costPerChunk\": 0.052,\n      \"carbonIntensity\": 350\n    },\n    {\n      \"providerId\": \"provider-3\",\n      \"costPerChunk\": 0.09,\n      \"carbonIntensity\": 60\n    },\n    {\n      \"providerId\": \"provider-2\",\n      \"costPerChunk\": 0.113,\n      \"carbonIntensity\": 45\n    },\n    {\n      \"providerId\": \"provider-1\",\n      \"costPerChunk\": 0.076,\n      \"carbonIntensity\": 520\n    },\n    {\n      \"providerId\": \"provider-5\",\n      \"costPerChunk\": 0.076,\n      \"carbonIntensity\": 150\n    },\n    {\n      \"providerId\": \"provider-9\",\n      \"costPerChunk\": 0.082,\n      \"carbonIntensity\": 25\n    },\n    {\n      \"providerId\": \"provider-8\",\n      \"costPerChunk\": 0.026,\n      \"carbonIntensity\": 720\n    },\n    {\n      \"providerId\": \"provider-7\",\n      \"costPerChunk\": 0.064,\n      \"carbonIntensity\": 35\n    },\n    {\n      \"providerId\": \"provider-6\",\n      \"costPerChunk\": 0.055,\n      \"carbonIntensity\": 230\n    },\n    {\n      \"providerId\": \"provider-4\",\n      \"costPerChunk\": 0.052,\n      \"carbonIntensity\": 350\n    },\n    {\n      \"providerId\": \"provider-3\",\n      \"costPerChunk\": 0.09,\n      \"carbonIntensity\": 60\n    },\n    {\n      \"providerId\": \"provider-2\",\n      \"costPerChunk\": 0.113,\n      \"carbonIntensity\": 45\n    },\n    {\n      \"providerId\": \"provider-1\",\n      \"costPerChunk\": 0.076,\n      \"carbonIntensity\": 520\n    },\n    {\n      \"providerId\": \"provider-5\",\n      \"costPerChunk\": 0.076,\n      \"carbonIntensity\": 150\n    }\n  ],\n  \"rankedList\": [\"provider-8\", \"provider-9\", \"provider-7\", \"provider-6\", \"provider-4\", \"provider-3\", \"provider-2\", \"provider-1\", \"provider-5\"],\n  \"providerId\": \"provider-8\",\n  \"confidence\": 1,\n  \"reasoning\": \"I chose provider-8 because it is the cheapest and has the lowest carbon intensity. I chose provider-9 as the second best because it has a lower cost than provider-8 but a higher carbon intensity. I chose provider-7 as the third best because it has a lower cost than provider-9 but a higher carbon intensity than provider-9. I chose provider-6 as the fourth best because it has the lowest carbon intensity but a higher cost than provider-7. I chose provider-4 as the fifth best because it has a lower cost than provider-6 but a higher carbon intensity than provider-6. I chose provider-3 as the sixth best because it has a lower cost than provider-4 but a higher carbon intensity than provider-4. I chose provider-2 as the seventh best because it has a lower cost than provider-3 but a higher carbon intensity than provider-3. I chose provider-1 as the eighth best because it has a lower cost than provider-2 but a higher carbon intensity than provider-2. I chose provider-5 as the ninth best because it has a lower cost than provider-1 but a higher carbon intensity than provider-1.\" \n}",
+  "requestStartedAt": "2026-09-30T16:13:39.602540112Z",
+  "responseAt": "2026-09-30T16:13:56.013315163Z",
+  "selectorLatencyMs": 16410.775,
+  "singleCandidate": false,
+  "unknownIds": null
+}
